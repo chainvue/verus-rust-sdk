@@ -56,6 +56,16 @@
 //!
 //! `block_cmus` is every Sapling output commitment in the note's own block, in
 //! order — not only yours. `my_cmu_index` is where yours sits in that list.
+//!
+//! **Do not assume your note is output 0.** The Sapling builder shuffles a
+//! bundle's outputs — hiding which one is the real recipient is the point of the
+//! padding output — so the index moves between transactions built the same way.
+//! Two shields built by this SDK on consecutive days put the note at index 0 and
+//! then index 1. Find it by trial decryption (the `read_notes` example) and take
+//! the index from that. Guessing gives you a witness for someone else's leaf: it
+//! passes the commitment check here, proves, serializes, and then fails to
+//! decrypt as `NoteNotDecryptable` — or, if it did decrypt, would spend value you
+//! do not own and be rejected.
 
 use std::io::Read;
 

@@ -103,6 +103,28 @@ proof.
 
 [`witness_anchor`]: crates/verus-sapling/src/scan.rs
 
+#### And a transfer that never surfaces
+
+VRSCTEST txid
+[`9478fe9bee08db2dcf49d84288932adde89950a9c01d4f81848d0e361b6b3728`](https://testex.verus.io/tx/9478fe9bee08db2dcf49d84288932adde89950a9c01d4f81848d0e361b6b3728),
+mined at height 1 166 368: `vin 0, vout 0`, one shielded spend, two shielded
+outputs, `valueBalance` exactly the fee. A second account then scanned that
+transaction with only its viewing key and found 9 870 000 zatoshi and a memo
+addressed to it. **Nothing about the transfer is visible on the transparent
+side.**
+
+This one used the frontier workflow that actually generalises: `getsaplingtree`
+captured *before* broadcasting the shield, then checked — nothing else was
+shielded in the two blocks in between, and `witness_anchor` matched the block's
+`finalsaplingroot` before any proving ran.
+
+One trap on the way. **Your note is not reliably output 0.** The Sapling builder
+shuffles a bundle's outputs — concealing which is the real recipient is the
+point of the padding output — so the index moves between transactions built the
+same way. The first shield here landed at index 0, the second at index 1. Find
+it by trial decryption; guessing builds a witness for the wrong leaf, which
+proves and serializes happily before failing.
+
 The offline gate covers what the chain has not:
 
 ```sh
@@ -111,7 +133,8 @@ cargo run --release -p verus-sapling --features prover,multicore --example prove
 
 It shields, spends the very note that created, and checks every proof and
 signature with `SaplingVerificationContext` — the verifier a consensus node
-runs. Tokens remain byte-identical to the TypeScript SDK and never broadcast.
+runs. Every shielded flow is now also proven on chain; tokens remain
+byte-identical to the TypeScript SDK and never broadcast.
 
 **Money is integers.** Satoshis are `u64`/`i128` end to end, parsed from decimal
 strings. There is no float in the value path.
@@ -158,7 +181,7 @@ first and stops.
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
 | `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
 | `verus-sapling` — z→t spend | ✅ **accepted on chain** (VRSCTEST 4c16d1e7…) |
-| `verus-sapling` — z→z | ✅ built; proofs verify offline, not yet broadcast |
+| `verus-sapling` — z→z | ✅ **accepted on chain** (VRSCTEST 9478fe9b…) |
 | VerusID, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a

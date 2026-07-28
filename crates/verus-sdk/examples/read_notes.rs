@@ -22,6 +22,11 @@
 //! without ever touching a spending key. Outputs that are not yours simply do
 //! not decrypt, which is the whole mechanism — there is no flag on an output
 //! saying who it belongs to.
+//!
+//! That is also why `output_index` is reported rather than assumed. The Sapling
+//! builder shuffles outputs, so even your own transaction will not reliably put
+//! your note first — trial decryption is the only way to know which one is
+//! yours, and a spend needs that index to build the right witness.
 
 use std::io::Read;
 
