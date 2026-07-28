@@ -109,6 +109,72 @@ impl Identity {
         self.flags & FLAG_LOCKED != 0
     }
 
+    /// Serialize the identity back to the bytes an output carries.
+    ///
+    /// Exactly inverts [`Identity::from_bytes`], which is what an update needs:
+    /// an identity update restates the WHOLE object, so anything this drops or
+    /// reorders is a silent change to the identity being published — including
+    /// its authority.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, TxError> {
+        if self.version == 0 || self.version > IDENTITY_VERSION_PBAAS {
+            return Err(malformed(&format!(
+                "identity version {} is not one this crate encodes",
+                self.version
+            )));
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(&self.flags.to_le_bytes());
+        write_compact_size(&mut out, self.primary_addresses.len());
+        for destination in &self.primary_addresses {
+            write_var_slice(&mut out, &destination.to_push());
+        }
+        out.extend_from_slice(&self.min_sigs.to_le_bytes());
+
+        out.extend_from_slice(&self.parent);
+        write_var_slice(&mut out, self.name.as_bytes());
+
+        if self.version >= IDENTITY_VERSION_PBAAS {
+            write_compact_size(&mut out, self.content_multimap.len());
+            for (key, values) in &self.content_multimap {
+                out.extend_from_slice(key);
+                write_compact_size(&mut out, values.len());
+                for value in values {
+                    write_var_slice(&mut out, value);
+                }
+            }
+        } else if !self.content_multimap.is_empty() {
+            // Encoding it anyway would produce bytes the chain reads as
+            // something else entirely; dropping it would silently discard
+            // published content.
+            return Err(malformed(&format!(
+                "version {} carries no content multimap, but {} entries were set",
+                self.version,
+                self.content_multimap.len()
+            )));
+        }
+
+        write_compact_size(&mut out, self.content_map.len());
+        for (key, value) in &self.content_map {
+            out.extend_from_slice(key);
+            out.extend_from_slice(value);
+        }
+
+        out.extend_from_slice(&self.revocation_authority);
+        out.extend_from_slice(&self.recovery_authority);
+
+        write_compact_size(&mut out, self.private_addresses.len());
+        for address in &self.private_addresses {
+            out.extend_from_slice(address);
+        }
+
+        if self.version >= IDENTITY_VERSION_VAULT {
+            out.extend_from_slice(&self.system_id);
+            out.extend_from_slice(&self.unlock_after.to_le_bytes());
+        }
+        Ok(out)
+    }
+
     /// Parse an identity from the `vdata` payload of an `EVAL_IDENTITY_PRIMARY`
     /// output.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TxError> {
@@ -270,4 +336,28 @@ impl<'a> Reader<'a> {
         let length = self.compact_size()?;
         self.take(length)
     }
+}
+
+/// CompactSize — matches [`Reader::compact_size`].
+fn write_compact_size(out: &mut Vec<u8>, value: usize) {
+    match value {
+        0..=0xfc => out.push(u8::try_from(value).expect("checked above")),
+        0xfd..=0xffff => {
+            out.push(0xfd);
+            out.extend_from_slice(&u16::try_from(value).expect("checked above").to_le_bytes());
+        }
+        0x1_0000..=0xffff_ffff => {
+            out.push(0xfe);
+            out.extend_from_slice(&u32::try_from(value).expect("checked above").to_le_bytes());
+        }
+        _ => {
+            out.push(0xff);
+            out.extend_from_slice(&(value as u64).to_le_bytes());
+        }
+    }
+}
+
+fn write_var_slice(out: &mut Vec<u8>, bytes: &[u8]) {
+    write_compact_size(out, bytes.len());
+    out.extend_from_slice(bytes);
 }

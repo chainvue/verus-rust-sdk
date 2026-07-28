@@ -179,3 +179,67 @@ fn an_unknown_identity_version_is_refused() {
     broken[position] = 99;
     assert!(decode_output_script(&broken).is_err());
 }
+
+/// The round trip that an identity update depends on.
+///
+/// An update restates the whole identity, so it is built by decoding the current
+/// one, changing a field, and re-encoding. If encode∘decode is not the identity
+/// function, an update silently rewrites parts of the object nobody touched —
+/// including who may sign for it. Re-encoding the entire on-chain SCRIPT, not
+/// just the payload, also covers the master condition and the revoke/recover
+/// conditions that make revocation possible.
+#[test]
+fn every_on_chain_identity_output_re_encodes_byte_for_byte() {
+    for vector in vectors() {
+        let label = vector["name"].as_str().expect("name");
+        let original = vector["script"].as_str().expect("script");
+        let script = hex::decode(original).expect("hex");
+
+        let identity = match decode_output_script(&script).expect("decode") {
+            OutputKind::IdentityPrimary { identity } => identity,
+            other => panic!("{label}: expected an identity output, got {other:?}"),
+        };
+
+        let rebuilt = verus_tx::identity_primary_script(
+            hash_of(vector["identity_address"].as_str().expect("address")),
+            identity.to_bytes().expect("encode"),
+            identity.revocation_authority,
+            identity.recovery_authority,
+        )
+        .expect("build");
+
+        assert_eq!(
+            hex::encode(rebuilt),
+            original,
+            "{label}: re-encoded output differs from the chain's"
+        );
+    }
+}
+
+/// Encoding must be sensitive to the fields that carry authority — a serializer
+/// that quietly dropped `min_sigs` or reordered primary addresses would still
+/// pass a round trip on identities that happen to be 1-of-1.
+#[test]
+fn changing_the_authority_changes_the_bytes() {
+    let vector = vectors().into_iter().next().expect("a vector");
+    let script = hex::decode(vector["script"].as_str().expect("script")).expect("hex");
+    let identity = match decode_output_script(&script).expect("decode") {
+        OutputKind::IdentityPrimary { identity } => identity,
+        other => panic!("expected an identity, got {other:?}"),
+    };
+    let baseline = identity.to_bytes().expect("encode");
+
+    let mut more_signatures = (*identity).clone();
+    more_signatures.min_sigs += 1;
+    assert_ne!(more_signatures.to_bytes().expect("encode"), baseline);
+
+    let mut other_revocation = (*identity).clone();
+    other_revocation.revocation_authority = [0x42; 20];
+    assert_ne!(other_revocation.to_bytes().expect("encode"), baseline);
+
+    let mut extra_signer = (*identity).clone();
+    extra_signer
+        .primary_addresses
+        .push(verus_tx::Destination::PubKeyHash([0x7; 20]));
+    assert_ne!(extra_signer.to_bytes().expect("encode"), baseline);
+}

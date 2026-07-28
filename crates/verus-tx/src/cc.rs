@@ -27,6 +27,7 @@
 //! a test cannot catch.
 
 use crate::error::TxError;
+use crate::identity::{EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE};
 
 /// `EVAL_NONE` — the master params of every CC output.
 pub const EVAL_NONE: u8 = 0;
@@ -317,6 +318,71 @@ pub fn fulfillment_script_sig(
     let mut script_sig = Vec::new();
     push_data(&mut script_sig, &fulfillment)?;
     Ok(script_sig)
+}
+
+/// Build the output script that HOLDS a VerusID.
+///
+/// Its shape is not the token layout. The master condition is `1-of-3` over the
+/// identity and its two authorities, and the params carry **three** `vdata`
+/// entries: the identity itself, then compiled revoke and recover conditions.
+/// Those last two are what let the revocation and recovery authorities spend the
+/// output at all — an identity output without them cannot be revoked.
+///
+/// ```text
+/// master  v3 eval 0  1-of-3  [identity, revocation, recovery]
+/// params  v3 eval 14 1-of-1  [identity]
+///         vdata: identity bytes
+///                v3 eval 15 1-of-1 [revocation]
+///                v3 eval 16 1-of-1 [recovery]
+/// ```
+///
+/// Verified by re-encoding live VRSCTEST identity outputs byte for byte.
+pub fn identity_primary_script(
+    identity_id: [u8; 20],
+    identity_bytes: Vec<u8>,
+    revocation_authority: [u8; 20],
+    recovery_authority: [u8; 20],
+) -> Result<Vec<u8>, TxError> {
+    let condition = |eval_code: u8, destination: [u8; 20]| OptCcParams {
+        version: OPT_CC_PARAMS_VERSION,
+        eval_code,
+        m: 1,
+        n: 1,
+        destinations: vec![Destination::Identity(destination)],
+        vdata: Vec::new(),
+    };
+
+    let master = OptCcParams {
+        version: OPT_CC_PARAMS_VERSION,
+        eval_code: EVAL_NONE,
+        m: 1,
+        n: 3,
+        destinations: vec![
+            Destination::Identity(identity_id),
+            Destination::Identity(revocation_authority),
+            Destination::Identity(recovery_authority),
+        ],
+        vdata: Vec::new(),
+    };
+    let params = OptCcParams {
+        version: OPT_CC_PARAMS_VERSION,
+        eval_code: EVAL_IDENTITY_PRIMARY,
+        m: 1,
+        n: 1,
+        destinations: vec![Destination::Identity(identity_id)],
+        vdata: vec![
+            identity_bytes,
+            condition(EVAL_IDENTITY_REVOKE, revocation_authority).to_chunk()?,
+            condition(EVAL_IDENTITY_RECOVER, recovery_authority).to_chunk()?,
+        ],
+    };
+
+    let mut script = Vec::new();
+    push_data(&mut script, &master.to_chunk()?)?;
+    script.push(OP_CHECKCRYPTOCONDITION);
+    push_data(&mut script, &params.to_chunk()?)?;
+    script.push(OP_DROP);
+    Ok(script)
 }
 
 #[cfg(test)]

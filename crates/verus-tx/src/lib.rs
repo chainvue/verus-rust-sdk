@@ -50,7 +50,7 @@ mod send;
 mod token;
 mod txid;
 
-pub use cc::{identity_payment_script, Destination};
+pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};

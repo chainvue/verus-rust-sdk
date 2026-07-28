@@ -199,6 +199,7 @@ first and stops.
 | `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
 | `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
 | `verus-tx` — read a VerusID | ✅ 16 live identities decode field-for-field vs `getidentity` |
+| `verus-tx` — re-encode a VerusID | ✅ all 16 outputs rebuild byte-for-byte |
 | `verus-tx` — pay a VerusID | ✅ **accepted on chain** (VRSCTEST 5e19de6d…) |
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
