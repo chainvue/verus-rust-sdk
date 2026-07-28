@@ -1,6 +1,6 @@
 [package]
 name = "verus-sapling"
-description = "Verus shielded (Sapling) transactions: proving, note scanning, ZIP-32"
+description = "Verus shielded (Sapling) transactions: note scanning, ZIP-32 derivation, and zk proving"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,25 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# Heavy dependencies (sapling-crypto/bellman/Groth16) arrive in Phase 4 with the
-# ported code, so Phase 0..3 builds stay fast and a transparent-only consumer
-# never compiles a zk-SNARK prover.
+[features]
+# Scanning and key derivation are the light half: no zk-SNARK prover, no ~50 MB
+# of proving parameters. A wallet that only needs to FIND its notes and derive
+# its keys should not compile bellman.
+default = []
+prover = ["sapling-crypto/circuit"]
+# Off on wasm32 (bellman's rayon backend does not build there); on by default
+# for native builds, where it is a large speedup.
+multicore = ["sapling-crypto/multicore"]
+
 [dependencies]
+sapling-crypto = { workspace = true }
+zcash_note_encryption = { workspace = true }
+zip32 = { workspace = true }
+verus-wire = { path = "../verus-wire" }
+rand = { workspace = true }
+rand_core = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-hex = { workspace = true }
+serde_json = "1"

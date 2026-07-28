@@ -52,7 +52,7 @@ crate here ever opens a socket.
 | `verus-wire` | v4 transaction serialization, ZIP-243 sighashes. No keys, no network. |
 | `verus-keys` | WIF, base58check, `R`/`i` addresses, P2PKH scripts, ECDSA |
 | `verus-tx` | transparent transactions: coin selection, fees, change, signing |
-| `verus-sapling` | shielded transactions: Groth16 proving, note scanning, ZIP-32 |
+| `verus-sapling` | shielded: note scanning and ZIP-32 today; Groth16 proving behind `prover` |
 | `verus-sdk` | the facade you actually depend on |
 
 ```toml
@@ -73,7 +73,8 @@ that.
 | `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
 | `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
 | `verus-tx` — native VRSC send | ✅ byte-identical on 6 differential vectors |
-| `verus-sapling` — port the proven prover | ⬜ |
+| `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
+| `verus-sapling` — proving (t→z, z→z, z→t) | 🚧 next |
 | Tokens, VerusID, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
