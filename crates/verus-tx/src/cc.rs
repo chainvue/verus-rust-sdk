@@ -40,6 +40,8 @@ const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;
 const OP_DROP: u8 = 0x75;
 /// `OP_PUSHDATA1`.
 const OP_PUSHDATA1: u8 = 0x4c;
+/// `OP_PUSHDATA2`.
+const OP_PUSHDATA2: u8 = 0x4d;
 
 /// The `OptCCParams` serialization version Verus uses.
 pub const OPT_CC_PARAMS_VERSION: u8 = 3;
@@ -61,10 +63,20 @@ fn push_data(script: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TxError> {
             script.push(OP_PUSHDATA1);
             script.push(u8::try_from(bytes.len()).expect("checked above"));
         }
+        // An identity carrying any content outgrows OP_PUSHDATA1 immediately —
+        // a single content-map entry puts the params chunk at 266 bytes. The
+        // daemon writes those as OP_PUSHDATA2, little-endian length.
+        256..=65535 => {
+            script.push(OP_PUSHDATA2);
+            script.extend_from_slice(
+                &u16::try_from(bytes.len())
+                    .expect("checked above")
+                    .to_le_bytes(),
+            );
+        }
         other => {
-            // Larger pushes exist in the script language but no CC payload this
-            // crate builds reaches them; refusing beats emitting an untested
-            // encoding.
+            // OP_PUSHDATA4 exists but no CC payload this crate builds reaches
+            // it; refusing beats emitting an untested encoding.
             return Err(TxError::CcPayloadTooLarge(other));
         }
     }
@@ -188,6 +200,19 @@ pub struct OptCcParams {
 }
 
 impl OptCcParams {
+    /// A `1-of-1` condition over a single destination, carrying no payload — the
+    /// shape most CryptoCondition sections have.
+    pub fn one_of_one(eval_code: u8, destination: Destination) -> Self {
+        Self {
+            version: OPT_CC_PARAMS_VERSION,
+            eval_code,
+            m: 1,
+            n: 1,
+            destinations: vec![destination],
+            vdata: Vec::new(),
+        }
+    }
+
     /// Serialize to the chunk that gets pushed into the outer script.
     pub fn to_chunk(&self) -> Result<Vec<u8>, TxError> {
         let mut chunk = Vec::new();
@@ -200,6 +225,24 @@ impl OptCcParams {
         }
         Ok(chunk)
     }
+}
+
+/// Assemble the two `OptCCParams` sections into a scriptPubKey.
+///
+/// Every CryptoCondition output this crate builds has the same outer frame:
+///
+/// ```text
+/// PUSH(master) OP_CHECKCRYPTOCONDITION PUSH(params) OP_DROP
+/// ```
+///
+/// What varies is only what goes in the two sections.
+pub fn cc_script(master: &OptCcParams, params: &OptCcParams) -> Result<Vec<u8>, TxError> {
+    let mut script = Vec::new();
+    push_data(&mut script, &master.to_chunk()?)?;
+    script.push(OP_CHECKCRYPTOCONDITION);
+    push_data(&mut script, &params.to_chunk()?)?;
+    script.push(OP_DROP);
+    Ok(script)
 }
 
 /// Build the standard pay-to-identity output script.
@@ -221,21 +264,8 @@ pub fn identity_payment_script(identity: [u8; 20]) -> Result<Vec<u8>, TxError> {
         destinations: Vec::new(),
         vdata: Vec::new(),
     };
-    let params = OptCcParams {
-        version: OPT_CC_PARAMS_VERSION,
-        eval_code: EVAL_NONE,
-        m: 1,
-        n: 1,
-        destinations: vec![Destination::Identity(identity)],
-        vdata: Vec::new(),
-    };
-
-    let mut script = Vec::new();
-    push_data(&mut script, &master.to_chunk()?)?;
-    script.push(OP_CHECKCRYPTOCONDITION);
-    push_data(&mut script, &params.to_chunk()?)?;
-    script.push(OP_DROP);
-    Ok(script)
+    let params = OptCcParams::one_of_one(EVAL_NONE, Destination::Identity(identity));
+    cc_script(&master, &params)
 }
 
 /// Serialize a single-currency `TokenOutput`: the payload that says *which*
@@ -256,29 +286,12 @@ pub fn reserve_output_script(
     currency: [u8; 20],
     amount: u64,
 ) -> Result<Vec<u8>, TxError> {
-    let master = OptCcParams {
-        version: OPT_CC_PARAMS_VERSION,
-        eval_code: EVAL_NONE,
-        m: 1,
-        n: 1,
-        destinations: vec![Destination::PubKeyHash(destination)],
-        vdata: Vec::new(),
-    };
+    let master = OptCcParams::one_of_one(EVAL_NONE, Destination::PubKeyHash(destination));
     let params = OptCcParams {
-        version: OPT_CC_PARAMS_VERSION,
-        eval_code: EVAL_RESERVE_OUTPUT,
-        m: 1,
-        n: 1,
-        destinations: vec![Destination::PubKeyHash(destination)],
         vdata: vec![token_output(currency, amount)],
+        ..OptCcParams::one_of_one(EVAL_RESERVE_OUTPUT, Destination::PubKeyHash(destination))
     };
-
-    let mut script = Vec::new();
-    push_data(&mut script, &master.to_chunk()?)?;
-    script.push(OP_CHECKCRYPTOCONDITION);
-    push_data(&mut script, &params.to_chunk()?)?;
-    script.push(OP_DROP);
-    Ok(script)
+    cc_script(&master, &params)
 }
 
 /// Build the scriptSig that SPENDS a CryptoCondition output.
@@ -343,13 +356,8 @@ pub fn identity_primary_script(
     revocation_authority: [u8; 20],
     recovery_authority: [u8; 20],
 ) -> Result<Vec<u8>, TxError> {
-    let condition = |eval_code: u8, destination: [u8; 20]| OptCcParams {
-        version: OPT_CC_PARAMS_VERSION,
-        eval_code,
-        m: 1,
-        n: 1,
-        destinations: vec![Destination::Identity(destination)],
-        vdata: Vec::new(),
+    let condition = |eval_code: u8, destination: [u8; 20]| {
+        OptCcParams::one_of_one(eval_code, Destination::Identity(destination))
     };
 
     let master = OptCcParams {
@@ -365,24 +373,14 @@ pub fn identity_primary_script(
         vdata: Vec::new(),
     };
     let params = OptCcParams {
-        version: OPT_CC_PARAMS_VERSION,
-        eval_code: EVAL_IDENTITY_PRIMARY,
-        m: 1,
-        n: 1,
-        destinations: vec![Destination::Identity(identity_id)],
         vdata: vec![
             identity_bytes,
             condition(EVAL_IDENTITY_REVOKE, revocation_authority).to_chunk()?,
             condition(EVAL_IDENTITY_RECOVER, recovery_authority).to_chunk()?,
         ],
+        ..OptCcParams::one_of_one(EVAL_IDENTITY_PRIMARY, Destination::Identity(identity_id))
     };
-
-    let mut script = Vec::new();
-    push_data(&mut script, &master.to_chunk()?)?;
-    script.push(OP_CHECKCRYPTOCONDITION);
-    push_data(&mut script, &params.to_chunk()?)?;
-    script.push(OP_DROP);
-    Ok(script)
+    cc_script(&master, &params)
 }
 
 #[cfg(test)]
@@ -434,19 +432,41 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    fn params_carrying(payload: usize) -> OptCcParams {
+        OptCcParams {
+            vdata: vec![vec![0u8; payload]],
+            ..OptCcParams::one_of_one(EVAL_RESERVE_OUTPUT, Destination::PubKeyHash(RECIPIENT))
+        }
+    }
+
+    /// A payload over 255 bytes takes `OP_PUSHDATA2` with a little-endian
+    /// length. An identity with any content lands here immediately, and the
+    /// daemon writes `4d 0a01` for the 266-byte case.
+    #[test]
+    fn a_payload_over_255_bytes_uses_pushdata2() {
+        let chunk = params_carrying(300).to_chunk().unwrap();
+        // …[4-byte header push][20-byte destination push] then the payload push.
+        let payload_push = &chunk[5 + 21..];
+        assert_eq!(payload_push[0], OP_PUSHDATA2);
+        assert_eq!(&payload_push[1..3], &300u16.to_le_bytes());
+        assert_eq!(payload_push.len(), 3 + 300);
+    }
+
+    #[test]
+    fn a_payload_of_255_bytes_still_uses_pushdata1() {
+        let chunk = params_carrying(255).to_chunk().unwrap();
+        let payload_push = &chunk[5 + 21..];
+        assert_eq!(payload_push[0], OP_PUSHDATA1);
+        assert_eq!(payload_push[1], 255);
+    }
+
+    /// `OP_PUSHDATA4` is not emitted: nothing this crate builds reaches it, and
+    /// an untested encoding is worse than a refusal.
     #[test]
     fn refuses_an_oversized_payload() {
-        let params = OptCcParams {
-            version: 3,
-            eval_code: EVAL_RESERVE_OUTPUT,
-            m: 1,
-            n: 1,
-            destinations: vec![Destination::PubKeyHash(RECIPIENT)],
-            vdata: vec![vec![0u8; 300]],
-        };
         assert!(matches!(
-            params.to_chunk(),
-            Err(TxError::CcPayloadTooLarge(300))
+            params_carrying(70_000).to_chunk(),
+            Err(TxError::CcPayloadTooLarge(70_000))
         ));
     }
 }
