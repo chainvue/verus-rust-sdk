@@ -182,6 +182,13 @@ pub fn build_token_send(
                         identity: hex::encode(identity),
                     })
                 }
+                OutputKind::IdentityPrimary { .. } => {
+                    return Err(TxError::UnsupportedFundingEval {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                        eval_code: crate::identity::EVAL_IDENTITY_PRIMARY,
+                    })
+                }
                 OutputKind::UnsupportedCryptoCondition { eval_code } => {
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),

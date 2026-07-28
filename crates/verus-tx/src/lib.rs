@@ -45,6 +45,7 @@ pub mod cc;
 pub mod decode;
 mod error;
 pub mod fee;
+pub mod identity;
 mod send;
 mod token;
 mod txid;
@@ -53,6 +54,7 @@ pub use cc::{identity_payment_script, Destination};
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};
+pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
 pub use send::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };

@@ -42,6 +42,10 @@ pub enum TxError {
         vout: u32,
     },
 
+    /// An identity object that could not be read.
+    #[error("malformed identity: {0}")]
+    MalformedIdentity(String),
+
     /// A funding UTXO held by a VerusID rather than by a key.
     ///
     /// Spending it needs the identity's authority — its primary addresses and

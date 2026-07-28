@@ -173,7 +173,7 @@ crate here ever opens a socket.
 |---|---|
 | `verus-wire` | v4 transaction serialization, ZIP-243 sighashes. No keys, no network. |
 | `verus-keys` | WIF, base58check, `R`/`i` addresses, P2PKH scripts, ECDSA |
-| `verus-tx` | transparent transactions: coin selection, fees, change, signing |
+| `verus-tx` | transparent transactions, tokens, and reading VerusIDs |
 | `verus-sapling` | shielded: note scanning, ZIP-32 derivation, and t→z / z→z / z→t building behind `prover` |
 | `verus-sdk` | the facade you actually depend on |
 
@@ -198,6 +198,7 @@ first and stops.
 | `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
 | `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
 | `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
+| `verus-tx` — read a VerusID | ✅ 16 live identities decode field-for-field vs `getidentity` |
 | `verus-tx` — pay a VerusID | ✅ **accepted on chain** (VRSCTEST 5e19de6d…) |
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |

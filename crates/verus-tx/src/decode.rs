@@ -14,6 +14,9 @@
 
 use crate::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
 use crate::error::TxError;
+use crate::identity::{
+    Identity, EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
+};
 
 /// `OP_CHECKCRYPTOCONDITION`.
 const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;
@@ -45,6 +48,12 @@ pub enum OutputKind {
     IdentityPayment {
         /// The identity's 20-byte hash — its `i` address.
         identity: [u8; 20],
+    },
+    /// An output holding a VerusID itself — its authority, its content, its
+    /// revocation and recovery authorities.
+    IdentityPrimary {
+        /// The identity as the chain stores it.
+        identity: Box<Identity>,
     },
     /// A CryptoCondition output whose eval code this crate does not decode yet
     /// — an identity, a reserve transfer, a currency definition.
@@ -222,6 +231,35 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
                 "an EVAL_NONE condition that is not a plain identity payment",
             )),
         };
+    }
+
+    if eval_code == EVAL_IDENTITY_PRIMARY {
+        let payload = params.take_push()?;
+        // The identity is followed by two more vdata entries, each itself a
+        // compiled OptCCParams: the revoke and recover conditions that give
+        // those authorities the right to spend this output. They are what makes
+        // revocation possible at all, so their absence is a malformed identity
+        // output rather than a detail to skip past.
+        let mut auxiliary = Vec::new();
+        while !params.done() {
+            let chunk = params.take_push()?;
+            let mut inner = ScriptReader::new(chunk);
+            let header = inner.take_push()?;
+            if header.len() != 4 || header[0] != OPT_CC_PARAMS_VERSION {
+                return Err(malformed(
+                    "an identity's trailing vdata is not a v3 OptCCParams chunk",
+                ));
+            }
+            auxiliary.push(header[1]);
+        }
+        if auxiliary != [EVAL_IDENTITY_REVOKE, EVAL_IDENTITY_RECOVER] {
+            return Err(malformed(&format!(
+                "expected revoke ({EVAL_IDENTITY_REVOKE}) and recover                  ({EVAL_IDENTITY_RECOVER}) conditions, found {auxiliary:?}"
+            )));
+        }
+        return Ok(OutputKind::IdentityPrimary {
+            identity: Box::new(Identity::from_bytes(payload)?),
+        });
     }
 
     if eval_code != EVAL_RESERVE_OUTPUT {
