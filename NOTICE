@@ -1,0 +1,62 @@
+verus-rust-sdk
+Copyright (c) 2026 Robert Lech
+
+Licensed under the Apache License, Version 2.0.
+
+An offline SDK for Verus (VRSC) transactions, in Rust: transparent transactions,
+and shielded transactions via the stock Zcash Sapling protocol (unmodified
+circuit, byte-identical MPC parameters, stock consensus branch id 0x76b809bb).
+
+No VerusCoin source is bundled. The only Verus-specific value in the consensus
+path is that branch id, injected into the ZIP-243 sighash.
+
+--------------------------------------------------------------------------------
+Third-party dependencies
+--------------------------------------------------------------------------------
+
+Transparent path:
+
+  * k256, ecdsa, elliptic-curve  (Apache-2.0 OR MIT) — RustCrypto: secp256k1
+                                 arithmetic and RFC6979 deterministic ECDSA.
+  * sha2, ripemd                 (Apache-2.0 OR MIT) — RustCrypto hashes.
+  * bs58                         (Apache-2.0 OR MIT) — base58check.
+  * blake2b_simd                 (MIT) — BLAKE2b with personalization, required
+                                 by the ZIP-243 sighash.
+  * zeroize                      (Apache-2.0 OR MIT) — wiping key material.
+  * indexmap, thiserror          (Apache-2.0 OR MIT)
+
+Shielded path (added with the ported Sapling implementation):
+
+  Zcash Sapling protocol implementation — Electric Coin Company:
+  * sapling-crypto               (MIT OR Apache-2.0) — Sapling circuit, Groth16
+                                 prover, RedJubjub signatures, note encryption.
+  * zcash_note_encryption        (MIT OR Apache-2.0) — ZIP-212 note encryption.
+  * zip32                        (MIT OR Apache-2.0) — shielded key derivation.
+  * bellman                      (MIT OR Apache-2.0) — Groth16 proving system.
+                                 Copyright (c) Sean Bowe and the bellman
+                                 contributors.
+
+  zkcrypto pairing / elliptic-curve libraries — Sean Bowe and the zkcrypto
+  contributors (all MIT OR Apache-2.0): bls12_381, jubjub, group, ff, pairing.
+
+  RedDSA / RedJubjub — Henry de Valence and the Zcash Foundation
+  (MIT OR Apache-2.0): reddsa, redjubjub.
+
+--------------------------------------------------------------------------------
+Test fixtures
+--------------------------------------------------------------------------------
+
+fixtures/daemon/ contains raw transactions produced by a Verus testnet daemon
+(VRSCTEST) and their decodes. They are consensus ground truth, used to verify
+that this implementation reproduces bytes the network already accepted.
+
+--------------------------------------------------------------------------------
+Proving parameters
+--------------------------------------------------------------------------------
+
+The Sapling proving parameters (~50 MB) are NOT distributed with this software.
+They are the canonical Zcash Sapling MPC parameters, byte-identical for Verus,
+and consumers supply them at runtime:
+
+  sapling-spend.params   sha256 8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13
+  sapling-output.params  sha256 2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4

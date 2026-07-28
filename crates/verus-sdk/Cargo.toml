@@ -1,0 +1,25 @@
+[package]
+name = "verus-sdk"
+description = "Offline Verus transaction SDK: transparent and shielded, in one API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["transparent"]
+transparent = ["dep:verus-tx"]
+# Off by default: pulls in the Groth16 prover and expects ~50 MB of Sapling
+# parameters at runtime. A wallet that only sends VRSC should not pay for it.
+shielded = ["dep:verus-sapling"]
+
+[dependencies]
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+verus-tx = { path = "../verus-tx", optional = true }
+verus-sapling = { path = "../verus-sapling", optional = true }

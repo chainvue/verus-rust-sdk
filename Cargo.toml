@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/verus-wire",
+    "crates/verus-keys",
+    "crates/verus-tx",
+    "crates/verus-sapling",
+    "crates/verus-sdk",
+]
+
+# Nothing is published yet: the API has not settled, and a crates.io name is a
+# promise about stability. Revisit once the transparent path is proven against
+# the daemon and the facade crate has an API worth committing to.
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/chainvue/verus-rust-sdk"
+publish = false
+
+[workspace.dependencies]
+# Shared across member crates so versions cannot drift apart.
+blake2b_simd = "1"
+hex = "0.4"
+thiserror = "2"
+
+# Transparent path. Deliberately pure Rust: an FFI libsecp256k1 build would add
+# a C toolchain to every consumer and to the wasm story later. k256's
+# `sign_prehash` is RFC6979 + low-S by default, which is what makes byte-equal
+# signatures with the TypeScript SDK (@noble/curves) achievable.
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+sha2 = "0.10"
+ripemd = "0.1"
+bs58 = { version = "0.5", features = ["check"] }
+zeroize = { version = "1", features = ["derive"] }
+indexmap = "2"
+
+# Shielded path (feature-gated; this is where bellman/Groth16 enters).
+sapling-crypto = { version = "0.7", default-features = false }
+zcash_note_encryption = "0.4"
+zip32 = "0.2"
+rand = "0.8"
+rand_core = "0.6"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Money and consensus bytes: an unchecked conversion here is a fund-loss bug,
+# not a style problem.
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"

@@ -1,0 +1,20 @@
+[package]
+name = "verus-sapling"
+description = "Verus shielded (Sapling) transactions: proving, note scanning, ZIP-32"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Heavy dependencies (sapling-crypto/bellman/Groth16) arrive in Phase 4 with the
+# ported code, so Phase 0..3 builds stay fast and a transparent-only consumer
+# never compiles a zk-SNARK prover.
+[dependencies]
+
+[dev-dependencies]
+hex = { workspace = true }

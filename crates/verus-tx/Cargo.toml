@@ -1,0 +1,21 @@
+[package]
+name = "verus-tx"
+description = "Build and sign transparent Verus transactions offline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }

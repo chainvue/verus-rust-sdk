@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+# Sapling proving parameters (~50 MB) are fetched, never committed.
+*.params
+.DS_Store
+.env
+*.key
+*.pem

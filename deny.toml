@@ -1,0 +1,30 @@
+# cargo-deny — the dependency tree of a wallet core is key-access code.
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Permissive only. A copyleft dependency would decide the license of every
+# consumer, including closed-source wallets, and that is not a choice this crate
+# gets to make for them.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# The Sapling side may need VerusCoin forks in Phase 4; add them here explicitly
+# when that happens rather than loosening the policy.
+allow-git = []

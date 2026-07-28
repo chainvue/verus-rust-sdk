@@ -1,0 +1,79 @@
+# CI — the gate for every PR.
+#
+# The toolchain is PINNED (1.95.0, matching rust-toolchain.toml) rather than
+# `stable`: this repo will eventually build a committed wasm artifact, and that
+# is only reproducible against a fixed compiler. dtolnay/rust-toolchain takes its
+# version from this file's `toolchain:` input, NOT from rust-toolchain.toml, so
+# the two must be changed together.
+#
+# Actions are SHA-pinned (tag-hijack defense).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      # Proves the feature gates actually hold: a stray `use verus_sapling::…`
+      # in shared code would silently drag the Groth16 prover into a build that
+      # is meant to ship without it.
+      - name: Build without default features
+        run: cargo check -p verus-sdk --no-default-features
+
+      - name: Docs (warnings are errors)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: '1.95.0'
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # A wallet core's dependency tree is key-access code. cargo-deny checks
+      # advisories, licenses, and duplicate/banned crates in one pass.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.16.4 --locked
+
+      - name: cargo-deny
+        run: cargo deny check

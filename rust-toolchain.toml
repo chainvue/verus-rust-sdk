@@ -1,0 +1,7 @@
+# Pinned, not "stable", for the same reason verus-sapling pins: the committed
+# wasm artifact there is only reproducible against a fixed toolchain, and this
+# repo will eventually build that artifact. 1.95.0 is the toolchain that built
+# the current crate/pkg.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
