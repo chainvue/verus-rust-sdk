@@ -22,11 +22,18 @@ auditable place instead of three.
 
 ## Design
 
-**Correctness is proven against the network, not against itself.** Every layer is
-checked with real transactions a Verus daemon produced and accepted
-(`fixtures/daemon/`), and the transparent path is additionally diffed byte for
-byte against the daemon-proven TypeScript SDK. A green test suite that only
-agrees with itself would prove nothing about consensus.
+**Correctness is proven against the network, not against itself.** Three
+independent checks, none of which is self-referential:
+
+1. Real transactions a Verus daemon produced and accepted (`fixtures/daemon/`)
+   re-serialize byte for byte — and the daemon's *own* signature on one of them
+   verifies against a sighash this crate recomputes.
+2. The transparent path is diffed byte for byte against the daemon-proven
+   TypeScript SDK, which signs deterministically and so is an exact oracle.
+3. A live daemon decodes what we build and computes the same transaction id
+   (opt-in: `VERUS_LIVE_DECODE=1`).
+
+A green suite that only agrees with itself would prove nothing about consensus.
 
 **Money is integers.** Satoshis are `u64`/`i128` end to end, parsed from decimal
 strings. There is no float in the value path.
