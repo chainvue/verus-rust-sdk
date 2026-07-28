@@ -130,6 +130,19 @@ impl PrivateKey {
             .map_err(|_| KeyError::InvalidPrivateKey)
     }
 
+    /// Sign a hash and return the compact 64-byte `r || s`.
+    ///
+    /// This is what a CryptoCondition fulfillment carries, where a P2PKH
+    /// scriptSig would carry DER. Note there is no recovery byte and no trailing
+    /// hash type: the fulfillment states the hash type once, for all of its
+    /// signatures.
+    pub fn sign_prehash_compact(&self, hash: &[u8; 32]) -> Result<[u8; 64], KeyError> {
+        let signature = self.sign_prehash(hash)?;
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&signature.to_bytes());
+        Ok(out)
+    }
+
     /// Sign a hash and return the DER encoding with `hash_type` appended — the
     /// exact bytes that go into a scriptSig.
     pub fn sign_prehash_der(&self, hash: &[u8; 32], hash_type: u8) -> Result<Vec<u8>, KeyError> {
