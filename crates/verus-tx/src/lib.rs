@@ -42,11 +42,13 @@
 #![doc(html_no_source)]
 
 pub mod cc;
+pub mod decode;
 mod error;
 pub mod fee;
 mod send;
 mod txid;
 
+pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};
 pub use send::{build_transparent_send, Recipient, SendParams, SignedTransaction};

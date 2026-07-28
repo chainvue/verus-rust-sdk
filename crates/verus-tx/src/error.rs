@@ -87,6 +87,18 @@ pub enum TxError {
     #[error("CryptoCondition payload of {0} bytes exceeds the supported push encoding")]
     CcPayloadTooLarge(usize),
 
+    /// A CryptoCondition script that could not be parsed.
+    ///
+    /// Deliberately an error rather than a fallback to "native value only":
+    /// treating an unreadable smart output as plain satoshis under-counts what a
+    /// transaction spends, which is how token value gets burned.
+    #[error("malformed CryptoCondition output: {0}")]
+    MalformedCryptoCondition(String),
+
+    /// A script this crate has no opinion about.
+    #[error("unrecognised output script: {0}")]
+    UnsupportedScript(String),
+
     /// A hex string that is not valid hex, or not the expected length.
     #[error("invalid transaction id: {0}")]
     InvalidTxid(String),

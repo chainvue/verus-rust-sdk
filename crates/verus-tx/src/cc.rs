@@ -40,6 +40,9 @@ const OP_DROP: u8 = 0x75;
 /// `OP_PUSHDATA1`.
 const OP_PUSHDATA1: u8 = 0x4c;
 
+/// The `OptCCParams` serialization version Verus uses.
+pub const OPT_CC_PARAMS_VERSION: u8 = 3;
+
 /// The `TokenOutput` version that carries exactly one currency amount.
 ///
 /// Bit 1 of the version selects the "multivalue" encoding, which prefixes the
@@ -138,7 +141,7 @@ pub fn reserve_output_script(
     amount: u64,
 ) -> Result<Vec<u8>, TxError> {
     let master = OptCcParams {
-        version: 3,
+        version: OPT_CC_PARAMS_VERSION,
         eval_code: EVAL_NONE,
         m: 1,
         n: 1,
@@ -146,7 +149,7 @@ pub fn reserve_output_script(
         vdata: Vec::new(),
     };
     let params = OptCcParams {
-        version: 3,
+        version: OPT_CC_PARAMS_VERSION,
         eval_code: EVAL_RESERVE_OUTPUT,
         m: 1,
         n: 1,
