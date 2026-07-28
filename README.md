@@ -63,9 +63,9 @@ that.
 | | |
 |---|---|
 | Workspace, CI, fixtures | ✅ |
-| `verus-wire` — serializer + sighashes | 🚧 |
-| `verus-keys` — WIF, addresses, ECDSA | ⬜ |
-| `verus-tx` — native VRSC send | ⬜ |
+| `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
+| `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
+| `verus-tx` — native VRSC send | ✅ byte-identical on 6 differential vectors |
 | `verus-sapling` — port the proven prover | ⬜ |
 | Tokens, VerusID, wasm bindings | ⬜ later |
 

@@ -25,14 +25,25 @@ Note the JSON decodes display 32-byte fields (`cv`, `cmu`, `ephemeralKey`,
 `encCiphertext`, `outCiphertext` and proofs are raw. Reverse the former when
 reconstructing wire bytes.
 
-## `transparent/` — differential vectors (added in Phase 3)
+## `transparent/` — differential vectors
 
 Generated from the TypeScript SDK (`@chainvue/verus-sdk`), which is
 daemon-proven and deterministic: RFC6979 signing means the same inputs always
 produce the same bytes. Each vector carries the inputs plus the expected signed
-hex, txid, fee and change, so this crate's output can be compared byte for byte
-against an implementation that is already known to work.
+hex, txid, fee and change, so this crate's output is compared byte for byte
+against an implementation already known to work.
 
-These are exported by a script in that repo and committed here. If the TypeScript
-side ever changes what it produces, the vectors are regenerated deliberately —
-they are not fetched at build or test time.
+Six cases, each covering a branch that can move the bytes:
+
+| Vector | What it pins |
+|---|---|
+| `single_utxo_single_output` | the baseline; change above dust |
+| `multi_utxo_selection` | the accumulation loop and its fee re-estimate |
+| `multi_output` | output count feeding the fee, and therefore the change |
+| `descending_selection_order` | largest-first ordering regardless of input order |
+| `above_the_2_32_satoshi_blind_spot` | values where the JS fork's own fee guard truncates and goes blind |
+| `nonzero_expiry_height` | the expiry is committed to by the sighash |
+
+Regenerate with `fixtures/tools/export-vectors.cjs` — only when a rule genuinely
+changes on the TypeScript side, and review the byte diff rather than
+rubber-stamping it. Nothing is fetched at build or test time.

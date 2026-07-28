@@ -1,0 +1,326 @@
+//! Building and signing a transparent send.
+
+use verus_keys::{Address, AddressKind, PrivateKey};
+use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
+use verus_wire::hash::txid_display;
+use verus_wire::{TxIn, TxOut, TxV4};
+
+use crate::error::TxError;
+use crate::fee::{select_utxos, DEFAULT_FEE_PER_KB};
+use crate::{Txid, Utxo};
+
+/// Verus rejects an expiry height at or above this. `0` means "never expires".
+const EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
+
+/// Where value is going.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recipient {
+    /// The `R` address being paid.
+    pub address: Address,
+    /// Amount in satoshis.
+    pub satoshis: u64,
+}
+
+/// What to build.
+#[derive(Clone, Debug)]
+pub struct SendParams<'a> {
+    /// UTXOs available to spend. All must be plain P2PKH controlled by `key`.
+    pub utxos: &'a [Utxo],
+    /// Where the value is going.
+    pub recipients: &'a [Recipient],
+    /// Where change goes.
+    pub change_address: Address,
+    /// Block height after which the transaction expires; `0` never expires.
+    ///
+    /// Deliberately not defaulted — an expiry is a policy decision, and a
+    /// silently-chosen one is how transactions go missing.
+    pub expiry_height: u32,
+    /// Fee rate in satoshis per kilobyte.
+    pub fee_per_kb: u64,
+}
+
+impl<'a> SendParams<'a> {
+    /// Parameters with the default fee rate.
+    pub fn new(
+        utxos: &'a [Utxo],
+        recipients: &'a [Recipient],
+        change_address: Address,
+        expiry_height: u32,
+    ) -> Self {
+        Self {
+            utxos,
+            recipients,
+            change_address,
+            expiry_height,
+            fee_per_kb: DEFAULT_FEE_PER_KB,
+        }
+    }
+}
+
+/// A signed transaction, ready for the caller to broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedTransaction {
+    /// Raw transaction hex.
+    pub hex: String,
+    /// Transaction id in display order.
+    pub txid: String,
+    /// Fee paid, in satoshis, including any dust folded into it.
+    pub fee: u64,
+    /// Change returned, or zero if it would have been dust.
+    pub change: u64,
+    /// The outpoints spent, in input order.
+    pub inputs_used: Vec<(Txid, u32)>,
+}
+
+/// Build and sign a transparent send.
+///
+/// # Scope
+///
+/// Plain native transfers only: every funding UTXO must be P2PKH and every
+/// recipient an `R` address. Token transfers, conversions, VerusID operations
+/// and identity-held funds all need CryptoCondition outputs, which are not
+/// ported yet — and this refuses them rather than producing a transaction whose
+/// value it cannot account for.
+///
+/// # Determinism
+///
+/// No randomness is involved: coin selection is ordered and signing is RFC6979.
+/// The same inputs always produce the same bytes, which is what allows this to
+/// be tested byte-for-byte against the TypeScript SDK.
+pub fn build_transparent_send(
+    key: &PrivateKey,
+    params: &SendParams<'_>,
+) -> Result<SignedTransaction, TxError> {
+    if params.recipients.is_empty() {
+        return Err(TxError::NoOutputs);
+    }
+    if params.expiry_height >= EXPIRY_HEIGHT_THRESHOLD {
+        return Err(TxError::ExpiryHeightTooLarge(params.expiry_height));
+    }
+
+    // Refuse anything outside the supported shape BEFORE selecting coins, so a
+    // rejection cannot depend on which UTXOs happened to be chosen.
+    for utxo in params.utxos {
+        if Address::from_p2pkh_script_pubkey(&utxo.script_pubkey).is_none() {
+            return Err(TxError::UnsupportedFundingScript {
+                txid: utxo.txid.to_display_hex(),
+                vout: utxo.vout,
+            });
+        }
+    }
+    let mut required_native: u64 = 0;
+    for (index, recipient) in params.recipients.iter().enumerate() {
+        if recipient.address.kind() != AddressKind::PubKeyHash {
+            return Err(TxError::UnsupportedRecipient);
+        }
+        if recipient.satoshis == 0 {
+            return Err(TxError::ZeroValueOutput { index });
+        }
+        required_native += recipient.satoshis;
+    }
+
+    let selection = select_utxos(
+        params.utxos,
+        required_native,
+        params.recipients.len() as u64,
+        params.fee_per_kb,
+    )?;
+
+    // Declared outputs first, then change — the order the TypeScript SDK emits,
+    // and therefore part of the bytes being matched.
+    let mut outputs = Vec::with_capacity(params.recipients.len() + 1);
+    for recipient in params.recipients {
+        outputs.push(TxOut {
+            value: recipient.satoshis,
+            script_pubkey: recipient.address.p2pkh_script_pubkey()?,
+        });
+    }
+    if selection.change > 0 {
+        outputs.push(TxOut {
+            value: selection.change,
+            script_pubkey: params.change_address.p2pkh_script_pubkey()?,
+        });
+    }
+
+    let mut tx = TxV4 {
+        inputs: selection
+            .selected
+            .iter()
+            .map(|utxo| TxIn::unsigned(utxo.txid.to_internal(), utxo.vout, 0xffff_ffff))
+            .collect(),
+        outputs,
+        lock_time: 0,
+        expiry_height: params.expiry_height,
+        ..TxV4::default()
+    };
+
+    // Exact-integer conservation, checked before signing. This is the real
+    // backstop: the JavaScript fork's equivalent truncates input values modulo
+    // 2^32 and is blind above ~42.9 coins.
+    let inputs_total: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
+    let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    let actual = i128::from(inputs_total) - i128::from(outputs_total);
+    if actual != i128::from(selection.fee) {
+        return Err(TxError::ValueNotConserved {
+            inputs: inputs_total,
+            outputs: outputs_total,
+            actual,
+            expected: selection.fee,
+        });
+    }
+
+    // Sign each input over its own sighash, which commits to that input's
+    // prevout script and value.
+    let pubkey = key.public_key().to_bytes();
+    for index in 0..tx.inputs.len() {
+        let utxo = &selection.selected[index];
+        let sighash = tx.transparent_sighash(
+            VERUS_BRANCH_ID,
+            index,
+            &utxo.script_pubkey,
+            utxo.satoshis,
+            SIGHASH_ALL,
+        )?;
+        let signature = key.sign_prehash_der(&sighash, 1)?;
+
+        // scriptSig = PUSH(signature || hashtype) PUSH(pubkey). Both are far
+        // below the 76-byte direct-push limit, so no OP_PUSHDATA is involved.
+        let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
+        script_sig.push(u8::try_from(signature.len()).expect("DER signature is under 76 bytes"));
+        script_sig.extend_from_slice(&signature);
+        script_sig.push(u8::try_from(pubkey.len()).expect("public key is 33 or 65 bytes"));
+        script_sig.extend_from_slice(&pubkey);
+        tx.inputs[index].script_sig = script_sig;
+    }
+
+    let raw = tx.serialize()?;
+    Ok(SignedTransaction {
+        hex: hex::encode(&raw),
+        txid: txid_display(&tx.txid()?),
+        fee: selection.fee,
+        change: selection.change,
+        inputs_used: selection
+            .selected
+            .iter()
+            .map(|utxo| (utxo.txid, utxo.vout))
+            .collect(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
+    const TEST_ADDRESS: &str = "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX";
+    const TEST_ADDRESS_B: &str = "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu";
+
+    fn key() -> PrivateKey {
+        PrivateKey::from_wif(TEST_WIF).unwrap()
+    }
+
+    fn address(text: &str) -> Address {
+        text.parse().unwrap()
+    }
+
+    fn funding(byte: u8, satoshis: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([byte; 32]),
+            vout: 0,
+            satoshis,
+            script_pubkey: address(TEST_ADDRESS).p2pkh_script_pubkey().unwrap(),
+        }
+    }
+
+    fn recipients(satoshis: u64) -> Vec<Recipient> {
+        vec![Recipient {
+            address: address(TEST_ADDRESS_B),
+            satoshis,
+        }]
+    }
+
+    #[test]
+    fn refuses_a_non_p2pkh_funding_utxo() {
+        let mut utxo = funding(0xaa, 100_000_000);
+        utxo.script_pubkey = vec![0x51]; // OP_TRUE — not something we can spend
+        let to = recipients(1_000_000);
+        let utxos = [utxo];
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        assert!(matches!(
+            build_transparent_send(&key(), &params),
+            Err(TxError::UnsupportedFundingScript { .. })
+        ));
+    }
+
+    #[test]
+    fn refuses_an_identity_recipient() {
+        // Paying a VerusID needs a CryptoCondition output, not P2PKH.
+        let to = vec![Recipient {
+            address: Address::new(AddressKind::Identity, [0x11; 20]),
+            satoshis: 1_000_000,
+        }];
+        let utxos = [funding(0xaa, 100_000_000)];
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        assert!(matches!(
+            build_transparent_send(&key(), &params),
+            Err(TxError::UnsupportedRecipient)
+        ));
+    }
+
+    #[test]
+    fn refuses_an_out_of_range_expiry_height() {
+        let utxos = [funding(0xaa, 100_000_000)];
+        let to = recipients(1_000_000);
+        let mut params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 500_000_000);
+        assert!(matches!(
+            build_transparent_send(&key(), &params),
+            Err(TxError::ExpiryHeightTooLarge(500_000_000))
+        ));
+        // One below the threshold is fine.
+        params.expiry_height = 499_999_999;
+        assert!(build_transparent_send(&key(), &params).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_zero_value_output() {
+        let utxos = [funding(0xaa, 100_000_000)];
+        let to = recipients(0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        assert!(matches!(
+            build_transparent_send(&key(), &params),
+            Err(TxError::ZeroValueOutput { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn refuses_to_build_with_no_outputs() {
+        let utxos = [funding(0xaa, 100_000_000)];
+        let params = SendParams::new(&utxos, &[], address(TEST_ADDRESS), 0);
+        assert!(matches!(
+            build_transparent_send(&key(), &params),
+            Err(TxError::NoOutputs)
+        ));
+    }
+
+    #[test]
+    fn value_is_conserved_across_a_range_of_amounts() {
+        for amount in [1_000u64, 546, 50_000_000, 99_000_000] {
+            let utxos = [funding(0xaa, 100_000_000)];
+            let to = recipients(amount);
+            let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+            let signed = build_transparent_send(&key(), &params).unwrap();
+            assert_eq!(100_000_000, amount + signed.fee + signed.change);
+        }
+    }
+
+    #[test]
+    fn is_deterministic() {
+        let utxos = [funding(0xaa, 100_000_000), funding(0xbb, 20_000_000)];
+        let to = recipients(50_000_000);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        assert_eq!(
+            build_transparent_send(&key(), &params).unwrap(),
+            build_transparent_send(&key(), &params).unwrap()
+        );
+    }
+}
