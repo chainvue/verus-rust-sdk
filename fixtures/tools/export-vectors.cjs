@@ -34,9 +34,39 @@ function p2pkh(address) {
 }
 const SCRIPT = p2pkh(TEST_ADDRESS);
 
-function utxo(txidPattern, satoshis, vout = 0) {
+
+// A reserve (token-bearing) output script, built from the layout documented in
+// crates/verus-tx/src/cc.rs. Used to synthesise a token-carrying UTXO to spend.
+function varInt(value) {
+  const out = [];
+  let n = BigInt(value);
+  let first = true;
+  for (;;) {
+    out.push(Number(n & 0x7fn) | (first ? 0 : 0x80));
+    if (n <= 0x7fn) break;
+    n = (n >> 7n) - 1n;
+    first = false;
+  }
+  return Buffer.from(out.reverse());
+}
+function push(buf) {
+  return Buffer.concat([Buffer.from([buf.length]), buf]);
+}
+function reserveOutputScript(destHash, currencyHash, amount) {
+  const master = Buffer.concat([push(Buffer.from([3, 0, 1, 1])), push(destHash)]);
+  const tokenOutput = Buffer.concat([varInt(1), currencyHash, varInt(amount)]);
+  const params = Buffer.concat([
+    push(Buffer.from([3, 9, 1, 1])), push(destHash), push(tokenOutput),
+  ]);
+  return Buffer.concat([push(master), Buffer.from([0xcc]), push(params), Buffer.from([0x75])]).toString("hex");
+}
+function hash160Of(address) {
+  return Buffer.from(require("bs58check").decode(address).slice(1));
+}
+
+function utxo(txidPattern, satoshis, vout = 0, script = SCRIPT) {
   const txid = txidPattern.repeat(Math.ceil(64 / txidPattern.length)).slice(0, 64);
-  return { txid, outputIndex: vout, satoshis, script: SCRIPT };
+  return { txid, outputIndex: vout, satoshis, script };
 }
 
 // Each case exercises a distinct branch of the fee/selection/change logic.
@@ -88,13 +118,26 @@ const CASES = [
   },
 ];
 
+
+const TOKEN = VerusSDK.deriveIdentityAddress("goldsendtoken", VRSCTEST_SYSTEM_ID);
+const TOKEN_HASH = hash160Of(TOKEN);
+const TOKEN_UTXO_SCRIPT = reserveOutputScript(hash160Of(TEST_ADDRESS), TOKEN_HASH, 100000000n);
+
+CASES.push({
+  name: "token_transfer_with_token_and_native_change",
+  why: "two-phase selection: a token-bearing UTXO for the token, a native one for the fee; both token and native change",
+  utxos: [utxo("cc", 0n, 0, TOKEN_UTXO_SCRIPT), utxo("aa", 100_000_000n)],
+  outputs: [{ address: TEST_ADDRESS_B, satoshis: 40_000_000n, currency: TOKEN }],
+  expiryHeight: 0,
+});
+
 const vectors = CASES.map((c) => {
   const result = VerusSDK.prototype.sendCurrency.call(
     { network: NETWORK },
     {
       wif: TEST_WIF,
       outputs: c.outputs.map((o) => ({
-        currency: VRSCTEST_SYSTEM_ID,
+        currency: o.currency || VRSCTEST_SYSTEM_ID,
         satoshis: o.satoshis,
         address: o.address,
         addressType: "PKH",
@@ -116,7 +159,7 @@ const vectors = CASES.map((c) => {
       satoshis: Number(u.satoshis),
       script_pubkey: u.script,
     })),
-    outputs: c.outputs.map((o) => ({ address: o.address, satoshis: Number(o.satoshis) })),
+    outputs: c.outputs.map((o) => ({ address: o.address, satoshis: Number(o.satoshis), currency: o.currency || null })),
     expected_signed_hex: result.signedTx,
     expected_txid: result.txid,
     expected_fee: Number(result.fee),

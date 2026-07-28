@@ -46,12 +46,14 @@ pub mod decode;
 mod error;
 pub mod fee;
 mod send;
+mod token;
 mod txid;
 
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};
 pub use send::{build_transparent_send, Recipient, SendParams, SignedTransaction};
+pub use token::{build_token_send, CurrencyId, TokenRecipient, TokenSendParams};
 pub use txid::Txid;
 
 /// An unspent output available to spend.

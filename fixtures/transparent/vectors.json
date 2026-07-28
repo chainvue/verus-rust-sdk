@@ -20,7 +20,8 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 50000000
+          "satoshis": 50000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8901aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006b483045022100c16ce93bb2b1f240f16dea645ccafb48f535c1d64c97b01b2b48dcefa894863902202974624a51172e062d6cf7ce60ccabc6a20e977c57d1de34fb7cb0cafb3712020121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff0280f0fa02000000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988ac70c9fa02000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
@@ -58,7 +59,8 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 45000000
+          "satoshis": 45000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8902aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006a4730440220324cad743bb7cc1e243725fed7e0d796b4eec80a84fa9ee6641262d6c21c0258022026beae912b0e38c2263cff697df5ec55169ec4f974d360eb606bd7ae0b2c0cbb0121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffffbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb000000006b483045022100816afbbda3f5ac111b915d11e8d198b0b430fa755c7d4a2164887f70b46a5ebe02203a494ccf099db0d505bc9b6fbe07183f0960ffd064af1ec8c8b2e85cbcd620a30121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff0240a5ae02000000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988acb0bae400000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
@@ -84,11 +86,13 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 20000000
+          "satoshis": 20000000,
+          "currency": null
         },
         {
           "address": "RSS3Qz5hzEVSV6hziLXaD2xPbw9UVpJoXs",
-          "satoshis": 30000000
+          "satoshis": 30000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8901aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006a47304402202859b2dafacf193da00cf30be7032d233c367c8def750d700075ed5ada580a46022007f0533e0ba720bcaabc79181ba17eb28cfbe1c5bf047d353ef701dc5a522d160121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff03002d3101000000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988ac80c3c901000000001976a914bc26a63ca0f6c259b2ad8d17c17d29c4d16e94f888ac70c9fa02000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
@@ -126,7 +130,8 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 60000000
+          "satoshis": 60000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8901bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb000000006b483045022100f5adc8c9da2db01f55df6508b2543721357ed2c347473a61efae9379913f825e022046674c9b17089fd0d17e0991e9b1d7f549189b4c7d0318c058e0c9ac8105db490121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff0200879303000000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988acf0326202000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
@@ -152,7 +157,8 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 40000000000
+          "satoshis": 40000000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8901aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006b483045022100b9720ae90995f48611a0cd44c9b00f009dd71065e030bfe4509bbfd23cdf34cb02205ab8fe653c34f757204ff5d76ab93b166392c253ade5f9f587aadbab0e1354c80121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff0200902f50090000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988acf0bc0b54020000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
@@ -178,7 +184,8 @@
       "outputs": [
         {
           "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
-          "satoshis": 50000000
+          "satoshis": 50000000,
+          "currency": null
         }
       ],
       "expected_signed_hex": "0400008085202f8901aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006a473044022060d87958f372e1954dbd79909811a17bae9878dbebfa07f69ee3839d1f5f89e602201ce40851b601a6577b28025c69bacb3ac849f2f3552ae9605bd369f039babbd10121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff0280f0fa02000000001976a914a00a0a30a020a4f4708ee28aeb62f14eefc304d988ac70c9fa02000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac0000000087d612000000000000000000000000",
@@ -186,6 +193,39 @@
       "expected_fee": 10000,
       "expected_change": 49990000,
       "expected_inputs_used": 1
+    },
+    {
+      "name": "token_transfer_with_token_and_native_change",
+      "why": "two-phase selection: a token-bearing UTXO for the token, a native one for the fee; both token and native change",
+      "wif": "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc",
+      "change_address": "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+      "expiry_height": 0,
+      "utxos": [
+        {
+          "txid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vout": 0,
+          "satoshis": 0,
+          "script_pubkey": "1a040300010114aabfb6281561808fe200ab7e186f0e3e0e82b381cc34040309010114aabfb6281561808fe200ab7e186f0e3e0e82b3811901f3ec553634ef174231a14c0a28ef4e72c9ba5fdaaed6c10075"
+        },
+        {
+          "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vout": 0,
+          "satoshis": 100000000,
+          "script_pubkey": "76a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac"
+        }
+      ],
+      "outputs": [
+        {
+          "address": "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu",
+          "satoshis": 40000000,
+          "currency": "iRiGkPN72zgU85Ve3CqmS3YwAbtgScZE15"
+        }
+      ],
+      "expected_signed_hex": "0400008085202f8902cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000694c670101010121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57bea40b1e236f6903377b506226f052af638e1df27751fd475eddf2d4011d482f934b3774a7ef2672aec41a54e8f539ace2a6658a1437fee2dfab4194e42250623226bffffffffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006b483045022100c7aa7e5d35ccbb65a9d9005ca994a611bb75acdda8ff2f245ebeef5ae82ab3bd022062c34f81315dedb87e9e717c83be76bd05d645f9ab85ac484248e9b3aca761940121026449e0864fc9eef8a9fc0badbfef45c7ebb03e6cb650db83412cb7ddcee57beaffffffff030000000000000000521a040300010114a00a0a30a020a4f4708ee28aeb62f14eefc304d9cc34040309010114a00a0a30a020a4f4708ee28aeb62f14eefc304d91901f3ec553634ef174231a14c0a28ef4e72c9ba5fda9288b300750000000000000000521a040300010114aabfb6281561808fe200ab7e186f0e3e0e82b381cc34040309010114aabfb6281561808fe200ab7e186f0e3e0e82b3811901f3ec553634ef174231a14c0a28ef4e72c9ba5fda9bcd8d007528b9f505000000001976a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac00000000000000000000000000000000000000",
+      "expected_txid": "6291250c150af6a571b085404d992ba00cbdb00b345587f2e94fdd76c0af88c1",
+      "expected_fee": 10200,
+      "expected_change": 99989800,
+      "expected_inputs_used": 2
     }
   ]
 }

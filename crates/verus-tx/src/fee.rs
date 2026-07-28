@@ -17,6 +17,12 @@ pub const TX_OVERHEAD: u64 = 60;
 pub const INPUT_SIZE: u64 = 180;
 /// Assumed size of a P2PKH output. (`P2PKH_OUTPUT_SIZE`)
 pub const P2PKH_OUTPUT_SIZE: u64 = 34;
+/// Assumed size of a CryptoCondition output. (`SMART_OUTPUT_SIZE`)
+///
+/// Applied to EVERY output once any output is a smart one, exactly as the
+/// TypeScript does — not per-output. That is why a token transfer's fee lands
+/// above the floor while a native one sits on it.
+pub const SMART_OUTPUT_SIZE: u64 = 200;
 /// Default fee rate in satoshis per kilobyte. (`DEFAULT_FEE_PER_KB`)
 pub const DEFAULT_FEE_PER_KB: u64 = 10_000;
 /// Floor on the fee, regardless of size. (`MIN_FEE`)
@@ -32,10 +38,18 @@ pub const DUST_THRESHOLD: u64 = 546;
 /// input and cannot overflow on the way, and the differential vectors would
 /// catch it if that were ever untrue. The floor is applied with a **strict** `>`
 /// exactly as the TypeScript does, so the two cannot drift.
-pub fn estimate_fee(num_inputs: u64, num_outputs: u64, fee_per_kb: u64) -> u64 {
-    // Milestone 1 is P2PKH-only, so the smart-output size and `extraBytes` do
-    // not apply; both arrive with CryptoCondition outputs in a later phase.
-    let tx_size = TX_OVERHEAD + num_inputs * INPUT_SIZE + num_outputs * P2PKH_OUTPUT_SIZE;
+pub fn estimate_fee(
+    num_inputs: u64,
+    num_outputs: u64,
+    fee_per_kb: u64,
+    has_smart_outputs: bool,
+) -> u64 {
+    let output_size = if has_smart_outputs {
+        SMART_OUTPUT_SIZE
+    } else {
+        P2PKH_OUTPUT_SIZE
+    };
+    let tx_size = TX_OVERHEAD + num_inputs * INPUT_SIZE + num_outputs * output_size;
     let fee = (tx_size * fee_per_kb).div_ceil(1000);
     if fee > MIN_FEE {
         fee
@@ -96,7 +110,7 @@ pub fn select_utxos(
     // Signed: the remainder goes negative once enough value is selected, and the
     // loop condition depends on that.
     let mut remaining_native = i128::from(required_native);
-    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb);
+    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, false);
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
@@ -108,7 +122,7 @@ pub fn select_utxos(
         };
         remaining_native -= i128::from(next.satoshis);
         selected.push(next);
-        fee = estimate_fee(selected.len() as u64, num_outputs + 1, fee_per_kb);
+        fee = estimate_fee(selected.len() as u64, num_outputs + 1, fee_per_kb, false);
     }
 
     let total_in: u64 = selected.iter().map(|u| u.satoshis).sum();
@@ -150,13 +164,21 @@ mod tests {
         // 1 input, 1 declared output (+1 for change) = 308 bytes → 3_080 sats,
         // which is below the floor, so the fee is MIN_FEE. This is the value in
         // the TypeScript SDK's golden snapshot.
-        assert_eq!(estimate_fee(1, 2, DEFAULT_FEE_PER_KB), 10_000);
+        assert_eq!(estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false), 10_000);
+    }
+
+    #[test]
+    fn smart_outputs_push_the_fee_above_the_floor() {
+        // The token differential vector: 2 inputs, 1 declared output + native
+        // change + token change = 3, all sized as smart outputs.
+        // 60 + 2*180 + 3*200 = 1020 bytes -> 10_200 satoshis.
+        assert_eq!(estimate_fee(2, 3, DEFAULT_FEE_PER_KB, true), 10_200);
     }
 
     #[test]
     fn the_fee_floor_is_a_floor_not_a_default() {
         // A transaction large enough to exceed the floor must pay by size.
-        let fee = estimate_fee(20, 20, DEFAULT_FEE_PER_KB);
+        let fee = estimate_fee(20, 20, DEFAULT_FEE_PER_KB, false);
         let size = TX_OVERHEAD + 20 * INPUT_SIZE + 20 * P2PKH_OUTPUT_SIZE;
         assert_eq!(fee, (size * DEFAULT_FEE_PER_KB).div_ceil(1000));
         assert!(fee > MIN_FEE);
@@ -191,7 +213,7 @@ mod tests {
     fn dust_change_becomes_fee_rather_than_an_output() {
         // Leave exactly DUST_THRESHOLD over: strictly-greater means it folds.
         let required = 1_000_000;
-        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB);
+        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD)];
         let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB).unwrap();
         assert_eq!(selection.change, 0);
@@ -201,7 +223,7 @@ mod tests {
     #[test]
     fn one_satoshi_above_dust_is_kept_as_change() {
         let required = 1_000_000;
-        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB);
+        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD + 1)];
         let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB).unwrap();
         assert_eq!(selection.change, DUST_THRESHOLD + 1);

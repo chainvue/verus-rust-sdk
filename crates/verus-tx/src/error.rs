@@ -87,6 +87,29 @@ pub enum TxError {
     #[error("CryptoCondition payload of {0} bytes exceeds the supported push encoding")]
     CcPayloadTooLarge(usize),
 
+    /// Not enough of a token to cover the requested transfer.
+    #[error("insufficient token balance for currency {currency}: short by {missing}")]
+    InsufficientTokens {
+        /// Currency id, hex.
+        currency: String,
+        /// How much more is needed.
+        missing: u64,
+    },
+
+    /// A funding UTXO carrying a CryptoCondition this crate cannot account for.
+    ///
+    /// Spending it would move value the builder cannot see — an identity, a
+    /// reserve transfer — so it is refused rather than treated as native.
+    #[error("funding UTXO {txid}:{vout} is a CryptoCondition with eval code {eval_code}, which is not supported")]
+    UnsupportedFundingEval {
+        /// Transaction id, display order.
+        txid: String,
+        /// Output index.
+        vout: u32,
+        /// The eval code found.
+        eval_code: u8,
+    },
+
     /// A CryptoCondition script that could not be parsed.
     ///
     /// Deliberately an error rather than a fallback to "native value only":

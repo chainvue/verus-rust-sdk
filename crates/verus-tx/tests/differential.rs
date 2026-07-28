@@ -26,7 +26,17 @@ fn load_vectors() -> Vec<Value> {
     parsed["vectors"]
         .as_array()
         .expect("vectors is an array")
-        .clone()
+        .iter()
+        // Native sends only. Token vectors exercise `build_token_send`, which is
+        // a different builder with its own differential test; feeding one here
+        // would (correctly) be refused for its CryptoCondition funding script.
+        .filter(|v| {
+            v["outputs"]
+                .as_array()
+                .is_some_and(|outs| outs.iter().all(|o| o["currency"].is_null()))
+        })
+        .cloned()
+        .collect()
 }
 
 fn u64_at(value: &Value, key: &str) -> u64 {
@@ -38,7 +48,12 @@ fn u64_at(value: &Value, key: &str) -> u64 {
 #[test]
 fn reproduces_every_typescript_vector_byte_for_byte() {
     let vectors = load_vectors();
-    assert!(!vectors.is_empty(), "no vectors loaded");
+    // A filter that silently matched nothing would make this test vacuous.
+    assert!(
+        vectors.len() >= 6,
+        "expected at least 6 native vectors, found {}",
+        vectors.len()
+    );
 
     // Collected so a failure reports every divergence at once rather than
     // stopping at the first — when bytes drift, the pattern across cases is what

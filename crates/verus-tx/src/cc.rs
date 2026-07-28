@@ -165,6 +165,45 @@ pub fn reserve_output_script(
     Ok(script)
 }
 
+/// Build the scriptSig that SPENDS a CryptoCondition output.
+///
+/// A CC output is not unlocked by a P2PKH scriptSig. It takes a
+/// `SmartTransactionSignatures` fulfillment:
+///
+/// ```text
+/// PUSH( version(1) || hash_type(1) || count(varint)
+///       || [ sig_type(1) || varslice(pubkey) || varslice(signature) ]... )
+/// ```
+///
+/// Two details bite here. The signature is the **64-byte compact `r || s`**, not
+/// DER — the encoding every other Verus signature uses. And the hash type lives
+/// *inside* the fulfillment rather than trailing the signature.
+///
+/// Layout confirmed against `SmartTransactionSignatures::toBuffer` and
+/// `SmartTransactionSignature::toBuffer` in the `@bitgo/utxo-lib` fork.
+pub fn fulfillment_script_sig(
+    pubkey: &[u8],
+    signature: &[u8; 64],
+    hash_type: u8,
+) -> Result<Vec<u8>, TxError> {
+    /// `SmartTransactionSignatures` serialization version.
+    const FULFILLMENT_VERSION: u8 = 1;
+    /// A single-signature entry.
+    const SIGNATURE_TYPE: u8 = 1;
+
+    let mut fulfillment = vec![FULFILLMENT_VERSION, hash_type, 1 /* one signature */];
+    fulfillment.push(SIGNATURE_TYPE);
+    fulfillment
+        .push(u8::try_from(pubkey.len()).map_err(|_| TxError::CcPayloadTooLarge(pubkey.len()))?);
+    fulfillment.extend_from_slice(pubkey);
+    fulfillment.push(64);
+    fulfillment.extend_from_slice(signature);
+
+    let mut script_sig = Vec::new();
+    push_data(&mut script_sig, &fulfillment)?;
+    Ok(script_sig)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
