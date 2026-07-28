@@ -11,6 +11,8 @@
 //! * [`scan`] — find your own notes by trial-decrypting compact blocks, with no
 //!   full node and no `z_listunspent`. Needs only a viewing key.
 //! * [`mod@derive`] — ZIP-32 shielded key derivation, `m/32'/coin'/account'`.
+//! * [`build`] — t→z, z→z and z→t transaction building. Needs `prover`.
+//! * [`params`] — loading the Groth16 proving parameters. Needs `prover`.
 //!
 //! # Features
 //!
@@ -27,8 +29,21 @@
 
 #![doc(html_no_source)]
 
+#[cfg(feature = "prover")]
+pub mod build;
 pub mod derive;
 mod error;
+#[cfg(feature = "prover")]
+pub mod params;
 pub mod scan;
 
 pub use error::SaplingError;
+
+/// The note-plaintext encoding Verus uses — **always** [`Zip212Enforcement::Off`](sapling_crypto::note_encryption::Zip212Enforcement::Off).
+///
+/// ZIP-212 enforcement is gated on the Canopy network upgrade. Verus consensus
+/// is frozen at Sapling (branch id `0x76b809bb`) on both mainnet and testnet:
+/// Canopy is not merely inactive, it is not defined in Verus's network-upgrade
+/// enum at all. Passing `On` here produces notes a Verus wallet cannot decrypt.
+pub const VERUS_ZIP212: sapling_crypto::note_encryption::Zip212Enforcement =
+    sapling_crypto::note_encryption::Zip212Enforcement::Off;

@@ -896,6 +896,7 @@ checksum = "89b0ac1bc6bb3696d2c6f52cff8fba57238b81da8c0214ee6cd146eb8fde364e"
 dependencies = [
  "rand_core",
  "reddsa",
+ "serde",
  "thiserror 1.0.69",
  "zeroize",
 ]
@@ -1243,9 +1244,14 @@ dependencies = [
 name = "verus-sapling"
 version = "0.0.0"
 dependencies = [
+ "bellman",
+ "bls12_381",
+ "group",
  "hex",
+ "jubjub",
  "rand",
  "rand_core",
+ "redjubjub",
  "sapling-crypto",
  "serde_json",
  "thiserror 2.0.19",

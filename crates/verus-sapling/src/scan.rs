@@ -70,7 +70,7 @@ pub struct DetectedNote {
     pub nullifier: [u8; 32],
 }
 
-fn node(bytes: [u8; 32]) -> Result<Node, SaplingError> {
+pub(crate) fn node(bytes: [u8; 32]) -> Result<Node, SaplingError> {
     Option::<Node>::from(Node::from_bytes(bytes))
         .ok_or_else(|| SaplingError::InvalidTreeState("bad tree node bytes".into()))
 }
@@ -85,6 +85,20 @@ pub struct TreeStateBefore {
     pub right: Option<[u8; 32]>,
     /// Ancestors along the frontier, root-ward; `None` marks an empty slot.
     pub parents: Vec<Option<[u8; 32]>>,
+}
+
+/// Rebuild the note-commitment tree a daemon reported, so both the scanner (for
+/// absolute positions) and the spend builder (for witnesses) read it the same way.
+pub(crate) fn commitment_tree(state: &TreeStateBefore) -> Result<CommitmentTree, SaplingError> {
+    let left = state.left.map(node).transpose()?;
+    let right = state.right.map(node).transpose()?;
+    let parents = state
+        .parents
+        .iter()
+        .map(|p| p.map(node).transpose())
+        .collect::<Result<Vec<Option<Node>>, SaplingError>>()?;
+    CommitmentTree::from_parts(left, right, parents)
+        .map_err(|_| SaplingError::InvalidTreeState("tree parents too deep".into()))
 }
 
 /// Trial-decrypt `outputs` (in global chain order, contiguous from the block
@@ -104,15 +118,7 @@ pub fn detect_notes(
     let prepared_ivk = PreparedIncomingViewingKey::new(&ivk);
     let nk = &dfvk.fvk().vk.nk;
 
-    let left = tree_before.left.map(node).transpose()?;
-    let right = tree_before.right.map(node).transpose()?;
-    let parents = tree_before
-        .parents
-        .iter()
-        .map(|p| p.map(node).transpose())
-        .collect::<Result<Vec<Option<Node>>, SaplingError>>()?;
-    let tree = CommitmentTree::from_parts(left, right, parents)
-        .map_err(|_| SaplingError::InvalidTreeState("tree parents too deep".into()))?;
+    let tree = commitment_tree(tree_before)?;
     let base_position = tree.size() as u64;
 
     let mut found = Vec::new();

@@ -33,3 +33,15 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
+# Only the `prove_and_verify` example needs these: it runs the same verifier a
+# consensus node runs over the proofs we just produced. Versions track
+# sapling-crypto 0.7's own graph so no type appears twice.
+bellman = "0.14"
+bls12_381 = "0.8"
+jubjub = "0.10"
+redjubjub = "0.8"
+group = "0.13"
+
+[[example]]
+name = "prove_and_verify"
+required-features = ["prover"]

@@ -49,8 +49,21 @@ signature. The daemon only held the coins and accepted the result. The txid this
 SDK computed before broadcasting is the one the chain recorded, so the
 serialization is byte-identical to the daemon's.
 
-This proves the **transparent P2PKH** path. Tokens, VerusID and shielded spends
-are each a separate claim and none of them are covered by it.
+This proves the **transparent P2PKH** path. Tokens and shielded spends are each a
+separate claim: both are built and verified here, neither has been broadcast.
+
+For the shielded side the closest thing to that proof runs offline:
+
+```sh
+cargo run --release -p verus-sapling --features prover,multicore --example prove_and_verify
+```
+
+It shields to an address it derives, spends the very note that created, and then
+checks every Groth16 proof, spend-auth signature and binding signature with
+`SaplingVerificationContext` — the verifier a consensus node runs — against the
+sighash this SDK computed. That sighash is separately pinned to three real
+daemon-produced transactions, so the chain is closed at both ends. What it still
+does not prove is chain validity: the anchor roots a tree no chain ever had.
 
 **Money is integers.** Satoshis are `u64`/`i128` end to end, parsed from decimal
 strings. There is no float in the value path.
@@ -69,18 +82,21 @@ crate here ever opens a socket.
 | `verus-wire` | v4 transaction serialization, ZIP-243 sighashes. No keys, no network. |
 | `verus-keys` | WIF, base58check, `R`/`i` addresses, P2PKH scripts, ECDSA |
 | `verus-tx` | transparent transactions: coin selection, fees, change, signing |
-| `verus-sapling` | shielded: note scanning and ZIP-32 today; Groth16 proving behind `prover` |
+| `verus-sapling` | shielded: note scanning, ZIP-32 derivation, and t→z / z→z / z→t building behind `prover` |
 | `verus-sdk` | the facade you actually depend on |
 
 ```toml
 [dependencies]
-verus-sdk = { git = "https://github.com/chainvue/verus-rust-sdk" }              # transparent
-verus-sdk = { git = "…", features = ["shielded"] }                             # + shielded
+verus-sdk = { git = "https://github.com/chainvue/verus-rust-sdk" }   # transparent
+verus-sdk = { git = "…", features = ["shielded"] }                  # + find notes, derive keys
+verus-sdk = { git = "…", features = ["prover"] }                    # + build shielded transactions
 ```
 
-Shielded is off by default: it pulls in a zk-SNARK prover and needs ~50 MB of
-Sapling parameters at runtime. A wallet that only sends VRSC should not pay for
-that.
+The shielded half is priced in two steps, because seeing your notes and spending
+them cost very different things. `shielded` is trial decryption and ZIP-32 —
+milliseconds, no bellman in the dependency graph. `prover` adds Groth16 and
+expects ~50 MB of Sapling parameters at runtime. A balance-only wallet takes the
+first and stops.
 
 ## Status
 
@@ -90,9 +106,10 @@ that.
 | `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
 | `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
 | `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
+| `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
-| `verus-sapling` — proving (t→z, z→z, z→t) | 🚧 next |
-| Tokens, VerusID, wasm bindings | ⬜ later |
+| `verus-sapling` — building t→z, z→z, z→t | ✅ ported; every proof and signature verifies offline |
+| VerusID, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
 promise about stability.

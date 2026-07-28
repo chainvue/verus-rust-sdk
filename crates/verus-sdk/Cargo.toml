@@ -14,9 +14,15 @@ workspace = true
 [features]
 default = ["transparent"]
 transparent = ["dep:verus-tx"]
-# Off by default: pulls in the Groth16 prover and expects ~50 MB of Sapling
-# parameters at runtime. A wallet that only sends VRSC should not pay for it.
+# Seeing shielded funds and building shielded transactions are separately
+# priced, because the second costs a Groth16 prover and ~50 MB of parameters:
+#   shielded  — trial-decrypt notes, derive ZIP-32 keys. Milliseconds, no bellman.
+#   prover    — additionally BUILD t→z / z→z / z→t. Needs the Sapling parameters.
+# A balance-only wallet takes the first and stops.
 shielded = ["dep:verus-sapling"]
+prover = ["shielded", "verus-sapling/prover"]
+# bellman's rayon backend: a large speedup natively, and unavailable on wasm32.
+multicore = ["shielded", "verus-sapling/multicore"]
 
 [dependencies]
 verus-wire = { path = "../verus-wire" }

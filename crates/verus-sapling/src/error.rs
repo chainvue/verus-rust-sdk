@@ -41,6 +41,31 @@ pub enum SaplingError {
     #[error("proving failed: {0}")]
     Proving(String),
 
+    /// The Groth16 proving parameters could not be read.
+    #[error("cannot load Sapling parameters: {0}")]
+    Params(String),
+
+    /// A t→z build with nothing to shield — the shielded output is the point.
+    #[error("a shield requires at least one shielded output")]
+    NoShieldedOutput,
+
+    /// The note being spent does not equal what the transaction pays out. The
+    /// daemon accepts an overshoot and hands the difference to a miner, so this
+    /// is caught here or not at all.
+    #[error("value conservation failed: note {note} != outputs {outputs} + fee {fee}")]
+    Conservation {
+        /// Value of the note being spent, in zatoshi.
+        note: u64,
+        /// Sum of every output, in zatoshi.
+        outputs: u64,
+        /// The declared miner fee, in zatoshi.
+        fee: u64,
+    },
+
+    /// Summing output values overflowed — refused rather than wrapped.
+    #[error("output values overflow")]
+    ValueOverflow,
+
     /// Wire encoding failed.
     #[error(transparent)]
     Wire(#[from] WireError),

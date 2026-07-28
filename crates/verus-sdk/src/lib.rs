@@ -5,9 +5,15 @@
 //! It builds and signs bytes; broadcasting is the consumer's job.
 //!
 //! ```text
-//! default features = transparent      send VRSC, no prover, no parameters
-//! shielded                            + t→z / z→z / z→t, needs Sapling params
+//! default = transparent    send VRSC and tokens; no prover, no parameters
+//! shielded                + find your notes and derive ZIP-32 keys
+//! prover                  + BUILD t→z / z→z / z→t; needs the Sapling parameters
+//! multicore               native-only speedup for the prover
 //! ```
+//!
+//! `shielded` on its own deliberately cannot build a shielded transaction — it
+//! is the light half a balance-only wallet wants, with no bellman in the
+//! dependency graph. Ask for `prover` when you need to spend.
 
 #![doc(html_no_source)]
 
