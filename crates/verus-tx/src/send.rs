@@ -5,6 +5,7 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
+use crate::cc::identity_payment_script;
 use crate::error::TxError;
 use crate::fee::{select_utxos, DEFAULT_FEE_PER_KB};
 use crate::{Txid, Utxo};
@@ -160,9 +161,16 @@ pub fn build_transparent_send(
         }
     }
     let mut required_native: u64 = 0;
+    // Paying a VerusID uses a CryptoCondition output, which the fee heuristic
+    // sizes at 200 bytes rather than 34 — and it sizes EVERY output that way
+    // once any one of them is smart, which is why this is decided up front for
+    // the whole transaction rather than per output.
+    let mut has_smart_outputs = false;
     for (index, recipient) in params.recipients.iter().enumerate() {
-        if recipient.address.kind() != AddressKind::PubKeyHash {
-            return Err(TxError::UnsupportedRecipient);
+        match recipient.address.kind() {
+            AddressKind::PubKeyHash => {}
+            AddressKind::Identity => has_smart_outputs = true,
+            _ => return Err(TxError::UnsupportedRecipient),
         }
         if recipient.satoshis == 0 {
             return Err(TxError::ZeroValueOutput { index });
@@ -175,15 +183,20 @@ pub fn build_transparent_send(
         required_native,
         params.recipients.len() as u64,
         params.fee_per_kb,
+        has_smart_outputs,
     )?;
 
     // Declared outputs first, then change — the order the TypeScript SDK emits,
     // and therefore part of the bytes being matched.
     let mut outputs = Vec::with_capacity(params.recipients.len() + 1);
     for recipient in params.recipients {
+        let script_pubkey = match recipient.address.kind() {
+            AddressKind::Identity => identity_payment_script(recipient.address.hash())?,
+            _ => recipient.address.p2pkh_script_pubkey()?,
+        };
         outputs.push(TxOut {
             value: recipient.satoshis,
-            script_pubkey: recipient.address.p2pkh_script_pubkey()?,
+            script_pubkey,
         });
     }
     if selection.change > 0 {
@@ -333,11 +346,82 @@ mod tests {
         ));
     }
 
+    /// Paying a VerusID emits a CryptoCondition output, not P2PKH — and the
+    /// fee heuristic charges for it, because every output is sized at 200 bytes
+    /// once any one of them is smart.
     #[test]
-    fn refuses_an_identity_recipient() {
-        // Paying a VerusID needs a CryptoCondition output, not P2PKH.
+    fn pays_an_identity_with_a_cryptocondition_output() {
+        let identity = Address::new(AddressKind::Identity, [0x11; 20]);
         let to = vec![Recipient {
-            address: Address::new(AddressKind::Identity, [0x11; 20]),
+            address: identity,
+            satoshis: 1_000_000,
+        }];
+        let utxos = [funding(0xaa, 100_000_000)];
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let signed = build_transparent_send(&key(), &params).expect("build");
+
+        let expected = crate::cc::identity_payment_script([0x11; 20]).unwrap();
+        assert!(
+            signed.hex.contains(&hex::encode(&expected)),
+            "the identity payment script is not in the transaction"
+        );
+
+        // At this size both land on the 10 000 floor, so the fee alone proves
+        // nothing here — see the next test for where it bites.
+        assert_eq!(signed.fee, 10_000);
+    }
+
+    /// The smart-output flag has to actually reach the fee estimate. One small
+    /// output hides that, because the 10 000 floor swallows the difference —
+    /// so this uses enough outputs to clear the floor, where 200 bytes per
+    /// output instead of 34 is visible.
+    #[test]
+    fn identity_outputs_are_charged_at_the_smart_output_size() {
+        let utxos = [funding(0xaa, 500_000_000)];
+        let to_identities: Vec<Recipient> = (0..20)
+            .map(|i| Recipient {
+                address: Address::new(AddressKind::Identity, [i; 20]),
+                satoshis: 1_000_000,
+            })
+            .collect();
+        let to_addresses: Vec<Recipient> = (0..20)
+            .map(|_| Recipient {
+                address: address(TEST_ADDRESS_B),
+                satoshis: 1_000_000,
+            })
+            .collect();
+
+        let smart = build_transparent_send(
+            &key(),
+            &SendParams::new(&utxos, &to_identities, address(TEST_ADDRESS), 0),
+        )
+        .expect("build");
+        let native = build_transparent_send(
+            &key(),
+            &SendParams::new(&utxos, &to_addresses, address(TEST_ADDRESS), 0),
+        )
+        .expect("build");
+
+        assert!(
+            smart.fee > native.fee,
+            "CryptoCondition outputs must cost more than P2PKH ones ({} vs {})",
+            smart.fee,
+            native.fee
+        );
+        // The exact numbers, because "bigger" would pass even if the flag were
+        // reaching the estimate by accident. One input, 21 outputs (20 plus
+        // change), 10 000 satoshis per 1000 bytes:
+        //   native  60 + 180 + 21*34  =  954 bytes -> 9 540, raised to the
+        //                                            10 000 floor
+        //   smart   60 + 180 + 21*200 = 4440 bytes -> 44 400, well clear of it
+        assert_eq!(native.fee, 10_000);
+        assert_eq!(smart.fee, 44_400);
+    }
+
+    #[test]
+    fn still_refuses_a_script_hash_recipient() {
+        let to = vec![Recipient {
+            address: Address::new(AddressKind::ScriptHash, [0x11; 20]),
             satoshis: 1_000_000,
         }];
         let utxos = [funding(0xaa, 100_000_000)];

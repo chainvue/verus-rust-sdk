@@ -172,6 +172,16 @@ pub fn build_token_send(
             let (tokens, is_cryptocondition) = match decode_output_script(&utxo.script_pubkey)? {
                 OutputKind::PubKeyHash { .. } => (Vec::new(), false),
                 OutputKind::ReserveOutput { tokens, .. } => (tokens, true),
+                // Identity-held funds are spendable only with the identity's
+                // authority, not this key's. Building a spend would produce a
+                // transaction nobody can satisfy.
+                OutputKind::IdentityPayment { identity } => {
+                    return Err(TxError::IdentityHeldFunding {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                        identity: hex::encode(identity),
+                    })
+                }
                 OutputKind::UnsupportedCryptoCondition { eval_code } => {
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),

@@ -85,6 +85,7 @@ pub fn select_utxos(
     required_native: u64,
     num_outputs: u64,
     fee_per_kb: u64,
+    has_smart_outputs: bool,
 ) -> Result<Selection, TxError> {
     // An outpoint can only be spent once. Unchecked, a repeat double-counts the
     // funds and surfaces much later as an opaque builder failure.
@@ -110,7 +111,7 @@ pub fn select_utxos(
     // Signed: the remainder goes negative once enough value is selected, and the
     // loop condition depends on that.
     let mut remaining_native = i128::from(required_native);
-    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, false);
+    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, has_smart_outputs);
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
@@ -122,7 +123,12 @@ pub fn select_utxos(
         };
         remaining_native -= i128::from(next.satoshis);
         selected.push(next);
-        fee = estimate_fee(selected.len() as u64, num_outputs + 1, fee_per_kb, false);
+        fee = estimate_fee(
+            selected.len() as u64,
+            num_outputs + 1,
+            fee_per_kb,
+            has_smart_outputs,
+        );
     }
 
     let total_in: u64 = selected.iter().map(|u| u.satoshis).sum();
@@ -191,7 +197,7 @@ mod tests {
             utxo(2, 100_000_000),
             utxo(3, 50_000_000),
         ];
-        let selection = select_utxos(&utxos, 40_000_000, 1, DEFAULT_FEE_PER_KB).unwrap();
+        let selection = select_utxos(&utxos, 40_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.selected.len(), 1);
         assert_eq!(selection.selected[0].satoshis, 100_000_000);
     }
@@ -203,7 +209,7 @@ mod tests {
             utxo(2, 30_000_000),
             utxo(3, 30_000_000),
         ];
-        let selection = select_utxos(&utxos, 65_000_000, 1, DEFAULT_FEE_PER_KB).unwrap();
+        let selection = select_utxos(&utxos, 65_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.selected.len(), 3);
         let total: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
         assert_eq!(total, 65_000_000 + selection.fee + selection.change);
@@ -215,7 +221,7 @@ mod tests {
         let required = 1_000_000;
         let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD)];
-        let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB).unwrap();
+        let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.change, 0);
         assert_eq!(selection.fee, fee + DUST_THRESHOLD);
     }
@@ -225,7 +231,7 @@ mod tests {
         let required = 1_000_000;
         let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD + 1)];
-        let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB).unwrap();
+        let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.change, DUST_THRESHOLD + 1);
         assert_eq!(selection.fee, fee);
     }
@@ -234,7 +240,7 @@ mod tests {
     fn conservation_holds_for_every_selection() {
         for required in [1u64, 546, 10_000, 1_000_000, 99_000_000] {
             let utxos = [utxo(1, 100_000_000), utxo(2, 20_000_000)];
-            let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB).unwrap();
+            let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
             let total_in: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
             assert_eq!(total_in, required + selection.fee + selection.change);
         }
@@ -245,8 +251,8 @@ mod tests {
         let a = [utxo(1, 10_000_000), utxo(2, 100_000_000)];
         let b = [utxo(2, 100_000_000), utxo(1, 10_000_000)];
         assert_eq!(
-            select_utxos(&a, 40_000_000, 1, DEFAULT_FEE_PER_KB).unwrap(),
-            select_utxos(&b, 40_000_000, 1, DEFAULT_FEE_PER_KB).unwrap()
+            select_utxos(&a, 40_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap(),
+            select_utxos(&b, 40_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap()
         );
     }
 
@@ -254,7 +260,7 @@ mod tests {
     fn refuses_duplicate_outpoints() {
         let utxos = [utxo(1, 100_000_000), utxo(1, 100_000_000)];
         assert!(matches!(
-            select_utxos(&utxos, 1_000, 1, DEFAULT_FEE_PER_KB),
+            select_utxos(&utxos, 1_000, 1, DEFAULT_FEE_PER_KB, false),
             Err(TxError::DuplicateUtxo { .. })
         ));
     }
@@ -262,7 +268,7 @@ mod tests {
     #[test]
     fn reports_insufficient_funds_with_both_numbers() {
         let utxos = [utxo(1, 1_000_000)];
-        let err = select_utxos(&utxos, 5_000_000, 1, DEFAULT_FEE_PER_KB).unwrap_err();
+        let err = select_utxos(&utxos, 5_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap_err();
         match err {
             TxError::InsufficientFunds {
                 required,

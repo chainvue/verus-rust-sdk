@@ -1,0 +1,29 @@
+{
+  "_comment": "Pay-to-identity outputs taken from live VRSCTEST UTXOs. These are what the chain itself produces when paying a VerusID, so they pin the encoding independently of any implementation.",
+  "vectors": [
+    {
+      "name": "VRSCTEST@",
+      "identity_address": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+      "script": "050403000000cc1b04030001011504a6ef9ea235635e328124ff3429db9f9e91b64e2d75",
+      "satoshis": 599970000,
+      "txid": "3ae3c63a64e42cecdfd18698bee825be0a7e6f1dc50939408d6961afe3c2a390",
+      "vout": 1
+    },
+    {
+      "name": "bob.VRSCTEST@",
+      "identity_address": "i3bCS2hfQXktHXHmXEAxKPeby5cb6Px6Le",
+      "script": "050403000000cc1b0403000101150401430cf819f4f3890c186526e3bb501e2373f72e75",
+      "satoshis": 2000000000,
+      "txid": "c7649f00a752cb9a8e26cd770eb18bd7c677c06727013d5b983d1458954e4a47",
+      "vout": 1
+    },
+    {
+      "name": "test.VRSCTEST@",
+      "identity_address": "i8jHXEEYEQ7KEoYe6eKXBib8cUBZ6vjWSd",
+      "script": "050403000000cc1b0403000101150439a34181d4d91a55d7bd8100580e5eca59265ca475",
+      "satoshis": 499950000,
+      "txid": "4b46dc008acc066759991e9ce0cf162ce24ecd8f132c8463accbfb91bf5481b6",
+      "vout": 0
+    }
+  ]
+}

@@ -12,7 +12,7 @@
 //! value gets burned. Only scripts that are genuinely not CryptoCondition
 //! outputs take the native path.
 
-use crate::cc::{EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
+use crate::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
 use crate::error::TxError;
 
 /// `OP_CHECKCRYPTOCONDITION`.
@@ -36,6 +36,15 @@ pub enum OutputKind {
         destination: [u8; 20],
         /// `(currency id, amount)` pairs the output carries.
         tokens: Vec<([u8; 20], u64)>,
+    },
+    /// A pay-to-identity output: native value held for a VerusID.
+    ///
+    /// Carries no eval code — an identity payment is expressed purely by the
+    /// destination kind, which is why it cannot be recognised without decoding
+    /// destinations properly.
+    IdentityPayment {
+        /// The identity's 20-byte hash — its `i` address.
+        identity: [u8; 20],
     },
     /// A CryptoCondition output whose eval code this crate does not decode yet
     /// — an identity, a reserve transfer, a currency definition.
@@ -195,11 +204,24 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
 
     let mut destinations = Vec::new();
     for _ in 0..n {
-        let destination: [u8; 20] = params
-            .take_push()?
-            .try_into()
-            .map_err(|_| malformed("destination is not a 20-byte hash"))?;
-        destinations.push(destination);
+        destinations.push(Destination::from_push(params.take_push()?)?);
+    }
+
+    // An identity payment has no eval code at all: it is an EVAL_NONE condition
+    // whose single destination happens to be an identity. Checking the eval code
+    // alone would classify it as "native, nothing special" and lose the fact
+    // that only the identity can spend it.
+    if eval_code == EVAL_NONE {
+        return match destinations.first() {
+            Some(Destination::Identity(identity)) if params.done() => {
+                Ok(OutputKind::IdentityPayment {
+                    identity: *identity,
+                })
+            }
+            _ => Err(malformed(
+                "an EVAL_NONE condition that is not a plain identity payment",
+            )),
+        };
     }
 
     if eval_code != EVAL_RESERVE_OUTPUT {
@@ -210,9 +232,15 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
     while !params.done() {
         tokens.push(parse_token_output(params.take_push()?)?);
     }
-    let destination = *destinations
-        .first()
-        .ok_or_else(|| malformed("reserve output has no destination"))?;
+    let destination = match destinations.first() {
+        Some(Destination::PubKeyHash(hash)) => *hash,
+        Some(other) => {
+            return Err(malformed(&format!(
+                "a reserve output paying {other:?} is not decoded yet"
+            )))
+        }
+        None => return Err(malformed("reserve output has no destination")),
+    };
     Ok(OutputKind::ReserveOutput {
         destination,
         tokens,

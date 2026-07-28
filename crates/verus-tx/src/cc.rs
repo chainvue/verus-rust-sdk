@@ -90,6 +90,85 @@ pub fn var_int(mut value: u64) -> Vec<u8> {
     out
 }
 
+/// Who a CryptoCondition output pays.
+///
+/// # The encoding trap
+///
+/// These are **not** all serialized the same way. A key hash and a public key go
+/// in bare — their length alone identifies them — while every other kind carries
+/// a leading type byte:
+///
+/// ```text
+/// PubKeyHash   PUSH(20 bytes)                 no tag
+/// PubKey       PUSH(33 bytes)                 no tag
+/// ScriptHash   PUSH(0x03 || 20 bytes)         tagged
+/// Identity     PUSH(0x04 || 20 bytes)         tagged
+/// ```
+///
+/// Writing an identity as a bare 20-byte hash produces a script that pays a
+/// *transparent address* which happens to share the identity's hash — spendable
+/// by nobody. Confirmed against `TxDestination::toBuffer` in
+/// `verus-typescript-primitives` and against live pay-to-identity outputs on
+/// VRSCTEST (`fixtures/daemon/identity_outputs.json`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination {
+    /// A transparent `R` address.
+    PubKeyHash([u8; 20]),
+    /// A raw public key, 33 bytes compressed or 65 uncompressed.
+    PubKey(Vec<u8>),
+    /// A script hash.
+    ScriptHash([u8; 20]),
+    /// A VerusID — an `i` address.
+    Identity([u8; 20]),
+}
+
+/// `TYPE_SH` from `TxDestination`.
+const DEST_TYPE_SCRIPT_HASH: u8 = 3;
+/// `TYPE_ID` from `TxDestination`.
+const DEST_TYPE_IDENTITY: u8 = 4;
+
+impl Destination {
+    /// The bytes that get pushed into an `OptCCParams` chunk.
+    pub fn to_push(&self) -> Vec<u8> {
+        match self {
+            Destination::PubKeyHash(hash) => hash.to_vec(),
+            Destination::PubKey(key) => key.clone(),
+            Destination::ScriptHash(hash) => tagged(DEST_TYPE_SCRIPT_HASH, hash),
+            Destination::Identity(hash) => tagged(DEST_TYPE_IDENTITY, hash),
+        }
+    }
+
+    /// Read a destination back from one push.
+    pub fn from_push(bytes: &[u8]) -> Result<Self, TxError> {
+        match bytes.len() {
+            20 => Ok(Destination::PubKeyHash(
+                bytes.try_into().expect("checked length"),
+            )),
+            33 | 65 => Ok(Destination::PubKey(bytes.to_vec())),
+            21 => {
+                let hash: [u8; 20] = bytes[1..].try_into().expect("checked length");
+                match bytes[0] {
+                    DEST_TYPE_SCRIPT_HASH => Ok(Destination::ScriptHash(hash)),
+                    DEST_TYPE_IDENTITY => Ok(Destination::Identity(hash)),
+                    other => Err(TxError::MalformedCryptoCondition(format!(
+                        "destination type {other} is not one this crate decodes"
+                    ))),
+                }
+            }
+            other => Err(TxError::MalformedCryptoCondition(format!(
+                "a destination of {other} bytes matches no known kind"
+            ))),
+        }
+    }
+}
+
+fn tagged(kind: u8, hash: &[u8; 20]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(21);
+    out.push(kind);
+    out.extend_from_slice(hash);
+    out
+}
+
 /// One `OptCCParams` section of a CryptoCondition script.
 #[derive(Clone, Debug)]
 pub struct OptCcParams {
@@ -101,8 +180,8 @@ pub struct OptCcParams {
     pub m: u8,
     /// Destinations provided.
     pub n: u8,
-    /// Destination hashes (20 bytes each).
-    pub destinations: Vec<[u8; 20]>,
+    /// Who the output pays.
+    pub destinations: Vec<Destination>,
     /// Serialized payload objects.
     pub vdata: Vec<Vec<u8>>,
 }
@@ -113,13 +192,49 @@ impl OptCcParams {
         let mut chunk = Vec::new();
         push_data(&mut chunk, &[self.version, self.eval_code, self.m, self.n])?;
         for destination in &self.destinations {
-            push_data(&mut chunk, destination)?;
+            push_data(&mut chunk, &destination.to_push())?;
         }
         for data in &self.vdata {
             push_data(&mut chunk, data)?;
         }
         Ok(chunk)
     }
+}
+
+/// Build the standard pay-to-identity output script.
+///
+/// This is what the chain itself emits when paying a VerusID: a CryptoCondition
+/// with **no** eval code — the identity is expressed entirely by the
+/// destination, not by a special output type.
+///
+/// Note the master params carry `m = 0, n = 0` and no destinations, unlike a
+/// token output's `1-of-1`. That asymmetry is not cosmetic: it is what the
+/// daemon's `MakeMofNCCScript` produces for an `EVAL_NONE` condition, and the
+/// 36 bytes below are byte-identical to live outputs on VRSCTEST.
+pub fn identity_payment_script(identity: [u8; 20]) -> Result<Vec<u8>, TxError> {
+    let master = OptCcParams {
+        version: OPT_CC_PARAMS_VERSION,
+        eval_code: EVAL_NONE,
+        m: 0,
+        n: 0,
+        destinations: Vec::new(),
+        vdata: Vec::new(),
+    };
+    let params = OptCcParams {
+        version: OPT_CC_PARAMS_VERSION,
+        eval_code: EVAL_NONE,
+        m: 1,
+        n: 1,
+        destinations: vec![Destination::Identity(identity)],
+        vdata: Vec::new(),
+    };
+
+    let mut script = Vec::new();
+    push_data(&mut script, &master.to_chunk()?)?;
+    script.push(OP_CHECKCRYPTOCONDITION);
+    push_data(&mut script, &params.to_chunk()?)?;
+    script.push(OP_DROP);
+    Ok(script)
 }
 
 /// Serialize a single-currency `TokenOutput`: the payload that says *which*
@@ -145,7 +260,7 @@ pub fn reserve_output_script(
         eval_code: EVAL_NONE,
         m: 1,
         n: 1,
-        destinations: vec![destination],
+        destinations: vec![Destination::PubKeyHash(destination)],
         vdata: Vec::new(),
     };
     let params = OptCcParams {
@@ -153,7 +268,7 @@ pub fn reserve_output_script(
         eval_code: EVAL_RESERVE_OUTPUT,
         m: 1,
         n: 1,
-        destinations: vec![destination],
+        destinations: vec![Destination::PubKeyHash(destination)],
         vdata: vec![token_output(currency, amount)],
     };
 
@@ -260,7 +375,7 @@ mod tests {
             eval_code: EVAL_RESERVE_OUTPUT,
             m: 1,
             n: 1,
-            destinations: vec![RECIPIENT],
+            destinations: vec![Destination::PubKeyHash(RECIPIENT)],
             vdata: vec![vec![0u8; 300]],
         };
         assert!(matches!(

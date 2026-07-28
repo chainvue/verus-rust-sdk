@@ -49,6 +49,27 @@ signature. The daemon only held the coins and accepted the result. The txid this
 SDK computed before broadcasting is the one the chain recorded, so the
 serialization is byte-identical to the daemon's.
 
+#### Paying a VerusID
+
+VRSCTEST txid
+[`5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e`](https://testex.verus.io/tx/5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e),
+mined at height 1 166 385. The daemon reports that output as type
+`cryptocondition` paying `i8jHXEEYEQ7KEoYe6eKXBib8cUBZ6vjWSd` — an identity, not
+an address.
+
+Paying a VerusID is not a P2PKH output with a different hash in it. It is a
+CryptoCondition with **no eval code**, where the identity is expressed purely by
+the destination's *kind*. And destinations are not uniformly encoded: a key hash
+and a public key go in bare, identified by length alone, while an identity
+carries a leading `0x04` type byte. Writing one as a bare 20-byte hash produces a
+script that pays a transparent address which merely shares the identity's hash —
+spendable by nobody.
+
+So the encoding was taken from consensus rather than inferred: the tests build
+pay-to-identity scripts for three live VRSCTEST identities and require them to
+equal the bytes already on chain, and a separate test asserts that dropping the
+type byte yields a different script.
+
 #### A shield, end to end
 
 VRSCTEST txid
@@ -177,12 +198,13 @@ first and stops.
 | `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
 | `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
 | `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
+| `verus-tx` — pay a VerusID | ✅ **accepted on chain** (VRSCTEST 5e19de6d…) |
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
 | `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
 | `verus-sapling` — z→t spend | ✅ **accepted on chain** (VRSCTEST 4c16d1e7…) |
 | `verus-sapling` — z→z | ✅ **accepted on chain** (VRSCTEST 9478fe9b…) |
-| VerusID, currency launch, wasm bindings | ⬜ later |
+| VerusID registration, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
 promise about stability.

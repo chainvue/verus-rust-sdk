@@ -42,6 +42,23 @@ pub enum TxError {
         vout: u32,
     },
 
+    /// A funding UTXO held by a VerusID rather than by a key.
+    ///
+    /// Spending it needs the identity's authority — its primary addresses and
+    /// signature threshold — which is a different operation from signing with a
+    /// private key, and is not implemented.
+    #[error(
+        "{txid}:{vout} is held by identity {identity}, which cannot be spent with a key alone"
+    )]
+    IdentityHeldFunding {
+        /// Transaction id, in display order.
+        txid: String,
+        /// Output index.
+        vout: u32,
+        /// The identity's 20-byte hash, hex encoded.
+        identity: String,
+    },
+
     /// Signing was asked to cover a different number of inputs than prevouts.
     ///
     /// The sighash commits to each prevout's script and value, so pairing them
