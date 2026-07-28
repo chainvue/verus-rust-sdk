@@ -10,7 +10,7 @@
 //!
 //! * [`scan`] — find your own notes by trial-decrypting compact blocks, with no
 //!   full node and no `z_listunspent`. Needs only a viewing key.
-//! * [`derive`] — ZIP-32 shielded key derivation, `m/32'/coin'/account'`.
+//! * [`mod@derive`] — ZIP-32 shielded key derivation, `m/32'/coin'/account'`.
 //!
 //! # Features
 //!
