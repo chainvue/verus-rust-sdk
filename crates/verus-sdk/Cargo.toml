@@ -23,3 +23,7 @@ verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 verus-tx = { path = "../verus-tx", optional = true }
 verus-sapling = { path = "../verus-sapling", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+hex = { workspace = true }
