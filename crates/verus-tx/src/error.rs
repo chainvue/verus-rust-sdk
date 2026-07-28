@@ -82,6 +82,11 @@ pub enum TxError {
         expected: u64,
     },
 
+    /// A CryptoCondition payload too large for the push encodings this crate
+    /// emits. Refusing beats writing an encoding no test covers.
+    #[error("CryptoCondition payload of {0} bytes exceeds the supported push encoding")]
+    CcPayloadTooLarge(usize),
+
     /// A hex string that is not valid hex, or not the expected length.
     #[error("invalid transaction id: {0}")]
     InvalidTxid(String),

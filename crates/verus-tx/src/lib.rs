@@ -26,9 +26,10 @@
 //!
 //! # Scope
 //!
-//! Native VRSC transfers between `R` addresses. Tokens, conversions, VerusID
-//! operations and identity-held funds need CryptoCondition outputs, which are
-//! not ported yet — those inputs are **refused**, never approximated.
+//! Native VRSC transfers between `R` addresses are complete and proven on chain.
+//! Token outputs are being built up in [`cc`]; conversions, VerusID operations
+//! and identity-held funds are not ported yet, and those inputs are **refused**,
+//! never approximated.
 //!
 //! # Why the fee logic looks the way it does
 //!
@@ -40,6 +41,7 @@
 
 #![doc(html_no_source)]
 
+pub mod cc;
 mod error;
 pub mod fee;
 mod send;
