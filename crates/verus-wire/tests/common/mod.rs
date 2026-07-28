@@ -7,7 +7,7 @@
 //! reconstructed transaction matches what the daemon actually hashed and signed.
 
 use serde_json::Value;
-use verus_wire::{TxIn, TxOut, TxV4};
+use verus_wire::{ShieldedSpend, TxIn, TxOut, TxV4};
 
 /// Load `fixtures/daemon/<name>.json` and `<name>.hex`.
 ///
@@ -92,40 +92,27 @@ pub struct Spend {
 }
 
 impl Spend {
-    /// The form hashed into the sighash: no spend-auth signature (320 bytes).
-    pub fn sighash_description(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&self.cv);
-        out.extend_from_slice(&self.anchor);
-        out.extend_from_slice(&self.nullifier);
-        out.extend_from_slice(&self.rk);
-        out.extend_from_slice(&self.proof);
-        out
-    }
-
-    /// The form serialized into the transaction: with the signature (384 bytes).
-    pub fn wire_description(&self) -> Vec<u8> {
-        let mut out = self.sighash_description();
-        out.extend_from_slice(&self.auth_sig);
-        out
+    /// The wire form: a 320-byte body plus the spend-auth signature that
+    /// `TxV4` appends only when serializing.
+    pub fn description(&self) -> ShieldedSpend {
+        let mut body = Vec::with_capacity(320);
+        body.extend_from_slice(&self.cv);
+        body.extend_from_slice(&self.anchor);
+        body.extend_from_slice(&self.nullifier);
+        body.extend_from_slice(&self.rk);
+        body.extend_from_slice(&self.proof);
+        ShieldedSpend {
+            body,
+            spend_auth_sig: Some(self.auth_sig),
+        }
     }
 }
 
-/// A decoded daemon transaction plus the pieces the sighash needs.
+/// A decoded daemon transaction.
 pub struct Decoded {
-    /// The transaction, with shielded spends in their *wire* form.
+    /// The transaction. `TxV4` keeps the sighash and wire forms of a shielded
+    /// spend apart on its own, so nothing needs to be held back here.
     pub tx: TxV4,
-    /// Spends, kept separately because the sighash needs a different encoding.
-    pub spends: Vec<Spend>,
-}
-
-impl Decoded {
-    /// The transaction with spends re-encoded for hashing rather than serializing.
-    pub fn for_sighash(&self) -> TxV4 {
-        let mut tx = self.tx.clone();
-        tx.shielded_spends = self.spends.iter().map(Spend::sighash_description).collect();
-        tx
-    }
 }
 
 /// Parse a `decoderawtransaction` decode into a transaction we can serialize.
@@ -213,10 +200,9 @@ pub fn decode(decoded: &Value) -> Decoded {
                 .map_or(0, |v| u32::try_from(v).expect("locktime exceeds u32")),
             expiry_height: u32_at(decoded, "expiryheight"),
             value_balance: coins_to_sats(decoded["valueBalance"].as_f64().expect("valueBalance")),
-            shielded_spends: spends.iter().map(Spend::wire_description).collect(),
+            shielded_spends: spends.iter().map(Spend::description).collect(),
             shielded_outputs,
             binding_sig,
         },
-        spends,
     }
 }

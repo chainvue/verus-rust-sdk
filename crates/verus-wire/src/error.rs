@@ -15,6 +15,13 @@ pub enum WireError {
     #[error("transaction has shielded parts but no binding signature")]
     MissingBindingSignature,
 
+    /// A shielded spend was serialized without its spend-auth signature.
+    ///
+    /// Same reasoning as the binding signature: an unsigned spend is not a
+    /// transaction the network will take, and zeros would only hide that.
+    #[error("shielded spend {0} has no spend-auth signature")]
+    MissingSpendAuthSignature(usize),
+
     /// The requested input index does not exist.
     #[error("input index {index} out of range ({len} inputs)")]
     InputIndexOutOfRange {

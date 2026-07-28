@@ -44,4 +44,4 @@ pub mod hash;
 mod tx;
 
 pub use error::WireError;
-pub use tx::{TxIn, TxOut, TxV4};
+pub use tx::{ShieldedSpend, TxIn, TxOut, TxV4};

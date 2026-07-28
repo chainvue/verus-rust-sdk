@@ -49,13 +49,37 @@ pub struct TxOut {
     pub script_pubkey: Vec<u8>,
 }
 
+/// A shielded spend description.
+///
+/// The signature is a separate field rather than part of `body` because a v4
+/// spend description is serialized into the transaction WITH its 64-byte
+/// spend-auth signature but hashed into the sighash WITHOUT it — a signature
+/// cannot commit to itself. Holding one blob for both contexts means whoever
+/// assembles it has to remember which form they are holding, and getting that
+/// wrong yields a transaction that verifies nowhere. Here it is impossible to
+/// get wrong: [`TxV4::serialize`] appends the signature, the sighash does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShieldedSpend {
+    /// `cv || anchor || nullifier || rk || zkproof` — 320 bytes.
+    pub body: Vec<u8>,
+    /// The 64-byte spend-auth signature. `None` before signing.
+    pub spend_auth_sig: Option<[u8; 64]>,
+}
+
+impl ShieldedSpend {
+    /// An unsigned spend description — the form the sighash covers.
+    pub fn unsigned(body: Vec<u8>) -> Self {
+        Self {
+            body,
+            spend_auth_sig: None,
+        }
+    }
+}
+
 /// A Verus v4 (Sapling) transaction.
 ///
-/// Shielded spends and outputs are held as already-serialized descriptions,
-/// because the two contexts need different bytes: a v4 spend description carries
-/// its 64-byte spend-auth signature when serialized into the transaction, but
-/// *not* when hashed into the sighash. The caller supplies the right form for
-/// the right call.
+/// Shielded outputs are held as already-serialized 948-byte descriptions; they
+/// are identical in both contexts. Spends are not — see [`ShieldedSpend`].
 #[derive(Clone, Debug, Default)]
 pub struct TxV4 {
     /// Transparent inputs.
@@ -69,8 +93,8 @@ pub struct TxV4 {
     /// Net value moved out of the shielded pool, in satoshis. Zero when there
     /// are no shielded parts; negative when value enters the pool (t→z).
     pub value_balance: i64,
-    /// Serialized shielded spend descriptions.
-    pub shielded_spends: Vec<Vec<u8>>,
+    /// Shielded spend descriptions.
+    pub shielded_spends: Vec<ShieldedSpend>,
     /// Serialized shielded output descriptions (948 bytes each).
     pub shielded_outputs: Vec<Vec<u8>>,
     /// Sapling binding signature. Required if any shielded part is present.
@@ -115,8 +139,12 @@ impl TxV4 {
         tx.extend_from_slice(&self.value_balance.to_le_bytes());
 
         write_compact_size(&mut tx, self.shielded_spends.len() as u64);
-        for spend in &self.shielded_spends {
-            tx.extend_from_slice(spend);
+        for (index, spend) in self.shielded_spends.iter().enumerate() {
+            let sig = spend
+                .spend_auth_sig
+                .ok_or(WireError::MissingSpendAuthSignature(index))?;
+            tx.extend_from_slice(&spend.body);
+            tx.extend_from_slice(&sig);
         }
         write_compact_size(&mut tx, self.shielded_outputs.len() as u64);
         for output in &self.shielded_outputs {
@@ -219,10 +247,20 @@ impl TxV4 {
         };
         // No JoinSplits on Verus: all-zero per ZIP-243.
         let hash_joinsplits = [0u8; 32];
-        let hash_shielded_spends =
-            hash_descriptions(SHIELDED_SPENDS_PERSONAL, &self.shielded_spends);
+        // Bodies only: the spend-auth signature is never hashed.
+        let spend_bodies: Vec<&[u8]> = self
+            .shielded_spends
+            .iter()
+            .map(|spend| spend.body.as_slice())
+            .collect();
+        let hash_shielded_spends = hash_descriptions(SHIELDED_SPENDS_PERSONAL, &spend_bodies);
+        let output_descriptions: Vec<&[u8]> = self
+            .shielded_outputs
+            .iter()
+            .map(|output| output.as_slice())
+            .collect();
         let hash_shielded_outputs =
-            hash_descriptions(SHIELDED_OUTPUTS_PERSONAL, &self.shielded_outputs);
+            hash_descriptions(SHIELDED_OUTPUTS_PERSONAL, &output_descriptions);
 
         let mut preimage = Vec::with_capacity(256);
         preimage.extend_from_slice(&V4_HEADER.to_le_bytes());
@@ -242,7 +280,7 @@ impl TxV4 {
 
 /// Hash a set of shielded descriptions, or all-zero when there are none
 /// (ZIP-243 specifies the zero hash for an empty set, not the hash of nothing).
-fn hash_descriptions(personal: &[u8; 16], descriptions: &[Vec<u8>]) -> [u8; 32] {
+fn hash_descriptions(personal: &[u8; 16], descriptions: &[&[u8]]) -> [u8; 32] {
     if descriptions.is_empty() {
         return [0u8; 32];
     }
@@ -332,6 +370,65 @@ mod tests {
             tx.serialize().unwrap_err(),
             WireError::MissingBindingSignature
         );
+    }
+
+    #[test]
+    fn refuses_to_serialize_a_spend_without_its_spend_auth_signature() {
+        let tx = TxV4 {
+            shielded_spends: vec![ShieldedSpend::unsigned(vec![0u8; 320])],
+            binding_sig: Some([0u8; 64]),
+            ..TxV4::default()
+        };
+        assert_eq!(
+            tx.serialize().unwrap_err(),
+            WireError::MissingSpendAuthSignature(0)
+        );
+    }
+
+    /// The reason [`ShieldedSpend`] splits the signature out. Signing changes
+    /// what gets serialized but must NOT change what was signed — if adding the
+    /// signature moved the sighash, no spend could ever be signed at all.
+    #[test]
+    fn the_spend_auth_signature_does_not_change_the_sighash() {
+        let mut tx = TxV4 {
+            shielded_spends: vec![ShieldedSpend::unsigned(vec![0xab; 320])],
+            ..TxV4::default()
+        };
+        let before = tx.shielded_sighash(VERUS_BRANCH_ID);
+        tx.shielded_spends[0].spend_auth_sig = Some([0xcd; 64]);
+        assert_eq!(tx.shielded_sighash(VERUS_BRANCH_ID), before);
+    }
+
+    /// …while the body it signs over of course does.
+    #[test]
+    fn the_spend_body_does_change_the_sighash() {
+        let tx = TxV4 {
+            shielded_spends: vec![ShieldedSpend::unsigned(vec![0xab; 320])],
+            ..TxV4::default()
+        };
+        let other = TxV4 {
+            shielded_spends: vec![ShieldedSpend::unsigned(vec![0xac; 320])],
+            ..TxV4::default()
+        };
+        assert_ne!(
+            tx.shielded_sighash(VERUS_BRANCH_ID),
+            other.shielded_sighash(VERUS_BRANCH_ID)
+        );
+    }
+
+    #[test]
+    fn a_signed_spend_serializes_to_384_bytes() {
+        let tx = TxV4 {
+            shielded_spends: vec![ShieldedSpend {
+                body: vec![0xab; 320],
+                spend_auth_sig: Some([0xcd; 64]),
+            }],
+            binding_sig: Some([0u8; 64]),
+            ..TxV4::default()
+        };
+        // 4 header + 4 group + 1 vin + 1 vout + 4 lock + 4 expiry + 8 balance
+        // + 1 nSpends + 384 spend + 1 nOutputs + 1 nJoinSplit + 64 binding.
+        assert_eq!(tx.serialize().unwrap().len(), 477);
     }
 
     #[test]

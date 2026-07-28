@@ -65,9 +65,7 @@ fn shielded_sighashes_match_the_cryptographically_confirmed_values() {
     ];
     for (flow, want) in expected {
         let (json, _) = load_fixture(flow);
-        let sighash = decode(&json)
-            .for_sighash()
-            .shielded_sighash(VERUS_BRANCH_ID);
+        let sighash = decode(&json).tx.shielded_sighash(VERUS_BRANCH_ID);
         assert_eq!(
             hex::encode(sighash),
             want,
@@ -85,9 +83,9 @@ fn shielded_sighashes_match_the_cryptographically_confirmed_values() {
 fn shielded_sighash_ignores_scriptsigs() {
     let (json, _) = load_fixture("t2z");
     let decoded = decode(&json);
-    let baseline = decoded.for_sighash().shielded_sighash(VERUS_BRANCH_ID);
+    let baseline = decoded.tx.shielded_sighash(VERUS_BRANCH_ID);
 
-    let mut mutated = decoded.for_sighash();
+    let mut mutated = decoded.tx.clone();
     mutated.inputs[0].script_sig = vec![0xff; 42];
     assert_eq!(
         mutated.shielded_sighash(VERUS_BRANCH_ID),
