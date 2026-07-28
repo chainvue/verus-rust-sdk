@@ -72,8 +72,12 @@ jobs:
 
       # A wallet core's dependency tree is key-access code. cargo-deny checks
       # advisories, licenses, and duplicate/banned crates in one pass.
+      # Pinned, but not forever: 0.16.4's bundled `rustsec` cannot parse a CVSS
+      # 4.0 score, so it started failing to LOAD the advisory database when
+      # RUSTSEC-2026-0109 landed — an audit that errors out is an audit that is
+      # not running. Bump this when that happens again.
       - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.16.4 --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
 
       - name: cargo-deny
         run: cargo deny check

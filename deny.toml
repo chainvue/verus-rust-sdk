@@ -20,7 +20,13 @@ confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
+# A wildcard on a crates.io dependency means an unreviewed upgrade can arrive on
+# its own, which for key-handling code is not acceptable.
 wildcards = "deny"
+# Path dependencies inside this workspace are the exception: the crates version
+# together and there is no registry resolution to pin. Without this every
+# `verus-* = { path = … }` line reads as a wildcard.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
