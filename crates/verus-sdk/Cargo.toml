@@ -33,3 +33,14 @@ verus-sapling = { path = "../verus-sapling", optional = true }
 [dev-dependencies]
 serde_json = "1"
 hex = { workspace = true }
+[[example]]
+name = "shield"
+required-features = ["prover"]
+
+[[example]]
+name = "keygen_shielded"
+required-features = ["shielded"]
+
+[[example]]
+name = "read_notes"
+required-features = ["shielded"]

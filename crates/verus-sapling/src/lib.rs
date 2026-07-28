@@ -11,6 +11,8 @@
 //! * [`scan`] — find your own notes by trial-decrypting compact blocks, with no
 //!   full node and no `z_listunspent`. Needs only a viewing key.
 //! * [`mod@derive`] — ZIP-32 shielded key derivation, `m/32'/coin'/account'`.
+//! * [`zaddr`] — `zs…` address encoding, the boundary between raw bytes and
+//!   what a user pastes.
 //! * [`build`] — t→z, z→z and z→t transaction building. Needs `prover`.
 //! * [`params`] — loading the Groth16 proving parameters. Needs `prover`.
 //!
@@ -36,6 +38,7 @@ mod error;
 #[cfg(feature = "prover")]
 pub mod params;
 pub mod scan;
+pub mod zaddr;
 
 pub use error::SaplingError;
 

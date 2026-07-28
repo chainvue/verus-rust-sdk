@@ -1244,6 +1244,7 @@ dependencies = [
 name = "verus-sapling"
 version = "0.0.0"
 dependencies = [
+ "bech32",
  "bellman",
  "bls12_381",
  "group",

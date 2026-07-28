@@ -11,6 +11,11 @@ pub enum SaplingError {
     #[error("invalid shielded key: {0}")]
     InvalidKey(String),
 
+    /// A `zs…` address that could not be decoded, or a raw address that could
+    /// not be encoded.
+    #[error("invalid Sapling address: {0}")]
+    Address(String),
+
     /// A payment address that is not 43 bytes of valid diversifier and pk_d.
     #[error("invalid Sapling payment address")]
     InvalidPaymentAddress,

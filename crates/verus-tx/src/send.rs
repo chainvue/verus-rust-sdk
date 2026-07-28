@@ -12,6 +12,57 @@ use crate::{Txid, Utxo};
 /// Verus rejects an expiry height at or above this. `0` means "never expires".
 const EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
 
+/// Sign every transparent input of `tx` as P2PKH, in order.
+///
+/// `prevouts[i]` must be the output `tx.inputs[i]` spends: the sighash commits
+/// to that output's script AND its value, so a mismatch produces a signature
+/// that verifies nowhere.
+///
+/// Exposed because a shielded transaction needs this too. A t→z is proven and
+/// binding-signed by `verus-sapling` with empty `scriptSig`s, then signed here —
+/// safe in either order, because the shielded sighash has no transparent-input
+/// section and `scriptSig` bytes never reach `hashPrevouts`, `hashSequence` or
+/// `hashOutputs`.
+pub fn sign_p2pkh_inputs(
+    tx: &mut TxV4,
+    key: &PrivateKey,
+    prevouts: &[Utxo],
+) -> Result<(), TxError> {
+    if prevouts.len() != tx.inputs.len() {
+        return Err(TxError::PrevoutCountMismatch {
+            inputs: tx.inputs.len(),
+            prevouts: prevouts.len(),
+        });
+    }
+    let pubkey = key.public_key().to_bytes();
+    for (index, utxo) in prevouts.iter().enumerate() {
+        if Address::from_p2pkh_script_pubkey(&utxo.script_pubkey).is_none() {
+            return Err(TxError::UnsupportedFundingScript {
+                txid: utxo.txid.to_display_hex(),
+                vout: utxo.vout,
+            });
+        }
+        let sighash = tx.transparent_sighash(
+            VERUS_BRANCH_ID,
+            index,
+            &utxo.script_pubkey,
+            utxo.satoshis,
+            SIGHASH_ALL,
+        )?;
+        let signature = key.sign_prehash_der(&sighash, 1)?;
+
+        // scriptSig = PUSH(signature || hashtype) PUSH(pubkey). Both are far
+        // below the 76-byte direct-push limit, so no OP_PUSHDATA is involved.
+        let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
+        script_sig.push(u8::try_from(signature.len()).expect("DER signature is under 76 bytes"));
+        script_sig.extend_from_slice(&signature);
+        script_sig.push(u8::try_from(pubkey.len()).expect("public key is 33 or 65 bytes"));
+        script_sig.extend_from_slice(&pubkey);
+        tx.inputs[index].script_sig = script_sig;
+    }
+    Ok(())
+}
+
 /// Where value is going.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipient {
@@ -169,29 +220,7 @@ pub fn build_transparent_send(
         });
     }
 
-    // Sign each input over its own sighash, which commits to that input's
-    // prevout script and value.
-    let pubkey = key.public_key().to_bytes();
-    for index in 0..tx.inputs.len() {
-        let utxo = &selection.selected[index];
-        let sighash = tx.transparent_sighash(
-            VERUS_BRANCH_ID,
-            index,
-            &utxo.script_pubkey,
-            utxo.satoshis,
-            SIGHASH_ALL,
-        )?;
-        let signature = key.sign_prehash_der(&sighash, 1)?;
-
-        // scriptSig = PUSH(signature || hashtype) PUSH(pubkey). Both are far
-        // below the 76-byte direct-push limit, so no OP_PUSHDATA is involved.
-        let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
-        script_sig.push(u8::try_from(signature.len()).expect("DER signature is under 76 bytes"));
-        script_sig.extend_from_slice(&signature);
-        script_sig.push(u8::try_from(pubkey.len()).expect("public key is 33 or 65 bytes"));
-        script_sig.extend_from_slice(&pubkey);
-        tx.inputs[index].script_sig = script_sig;
-    }
+    sign_p2pkh_inputs(&mut tx, key, &selection.selected)?;
 
     let raw = tx.serialize()?;
     Ok(SignedTransaction {
@@ -248,6 +277,58 @@ mod tests {
         let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
         assert!(matches!(
             build_transparent_send(&key(), &params),
+            Err(TxError::UnsupportedFundingScript { .. })
+        ));
+    }
+
+    /// The prevout supplies the script and value the sighash commits to, so
+    /// pairing the wrong one with an input signs a commitment nobody asked for.
+    /// A shielded caller assembles its own `TxV4`, which is exactly where the
+    /// two lists can drift apart.
+    #[test]
+    fn signing_refuses_a_prevout_list_that_does_not_line_up() {
+        let mut tx = TxV4 {
+            inputs: vec![
+                TxIn::unsigned([0xaa; 32], 0, 0xffff_ffff),
+                TxIn::unsigned([0xbb; 32], 0, 0xffff_ffff),
+            ],
+            ..TxV4::default()
+        };
+        let prevouts = [funding(0xaa, 100_000_000)];
+        assert!(matches!(
+            sign_p2pkh_inputs(&mut tx, &key(), &prevouts),
+            Err(TxError::PrevoutCountMismatch {
+                inputs: 2,
+                prevouts: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn signing_commits_to_the_prevout_value() {
+        // Two transactions identical but for the value being signed over must
+        // get different signatures — the Overwinter-era fix this relies on.
+        let make = |satoshis| {
+            let mut tx = TxV4 {
+                inputs: vec![TxIn::unsigned([0xaa; 32], 0, 0xffff_ffff)],
+                ..TxV4::default()
+            };
+            sign_p2pkh_inputs(&mut tx, &key(), &[funding(0xaa, satoshis)]).unwrap();
+            tx.inputs[0].script_sig.clone()
+        };
+        assert_ne!(make(100_000_000), make(100_000_001));
+    }
+
+    #[test]
+    fn signing_refuses_a_non_p2pkh_prevout() {
+        let mut tx = TxV4 {
+            inputs: vec![TxIn::unsigned([0xaa; 32], 0, 0xffff_ffff)],
+            ..TxV4::default()
+        };
+        let mut utxo = funding(0xaa, 100_000_000);
+        utxo.script_pubkey = vec![0x51];
+        assert!(matches!(
+            sign_p2pkh_inputs(&mut tx, &key(), &[utxo]),
             Err(TxError::UnsupportedFundingScript { .. })
         ));
     }

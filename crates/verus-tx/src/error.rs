@@ -42,6 +42,18 @@ pub enum TxError {
         vout: u32,
     },
 
+    /// Signing was asked to cover a different number of inputs than prevouts.
+    ///
+    /// The sighash commits to each prevout's script and value, so pairing them
+    /// up wrongly signs a commitment the caller did not intend.
+    #[error("{inputs} inputs but {prevouts} prevouts supplied")]
+    PrevoutCountMismatch {
+        /// How many inputs the transaction has.
+        inputs: usize,
+        /// How many prevouts were supplied.
+        prevouts: usize,
+    },
+
     /// A recipient that is not a plain `R` address.
     #[error("unsupported recipient address kind: only R-addresses are supported so far")]
     UnsupportedRecipient,

@@ -25,7 +25,8 @@ use sapling_crypto::note::ExtractedNoteCommitment;
 use sapling_crypto::note_encryption::{
     try_sapling_compact_note_decryption, CompactOutputDescription, Zip212Enforcement,
 };
-use sapling_crypto::zip32::{DiversifiableFullViewingKey, ExtendedSpendingKey};
+pub use sapling_crypto::zip32::DiversifiableFullViewingKey;
+use sapling_crypto::zip32::ExtendedSpendingKey;
 use sapling_crypto::{CommitmentTree, Node};
 use zcash_note_encryption::{EphemeralKeyBytes, COMPACT_NOTE_SIZE};
 
@@ -220,6 +221,13 @@ pub fn read_note(
             },
         ),
     )
+}
+
+/// Parse a 128-byte `DiversifiableFullViewingKey` — what a watch-only wallet
+/// holds. It can find and read notes but cannot spend them.
+pub fn dfvk_from_bytes(bytes: &[u8; 128]) -> Result<DiversifiableFullViewingKey, SaplingError> {
+    DiversifiableFullViewingKey::from_bytes(bytes)
+        .ok_or_else(|| SaplingError::InvalidKey("diversifiable full viewing key".into()))
 }
 
 /// Derive a `DiversifiableFullViewingKey` from a 169-byte `ExtendedSpendingKey`

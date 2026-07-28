@@ -49,21 +49,39 @@ signature. The daemon only held the coins and accepted the result. The txid this
 SDK computed before broadcasting is the one the chain recorded, so the
 serialization is byte-identical to the daemon's.
 
-This proves the **transparent P2PKH** path. Tokens and shielded spends are each a
-separate claim: both are built and verified here, neither has been broadcast.
+#### A shield, end to end
 
-For the shielded side the closest thing to that proof runs offline:
+VRSCTEST txid
+[`35eccaca9518b2d105bd791c74dc1bd25c3377d2a18a115e5ca67f1d86c9aa79`](https://testex.verus.io/tx/35eccaca9518b2d105bd791c74dc1bd25c3377d2a18a115e5ca67f1d86c9aa79),
+mined at height 1 166 308: 0.0996 VRSC moved into the shielded pool.
+
+This one is signed by **two crates in sequence**. `verus-sapling` proved the
+Sapling bundle and applied the binding signature over the ZIP-243 shielded
+sighash; `verus-tx` then signed the transparent input. That works because the
+shielded sighash has no transparent-input section and `scriptSig` bytes never
+reach `hashPrevouts`, `hashSequence` or `hashOutputs` — so neither signature
+invalidates the other.
+
+Then the loop was closed from the other end: the transaction was fetched back
+off the chain and the note recovered from it with a **viewing key alone** —
+9 960 000 zatoshi, the right address, memo intact.
+
+```sh
+cargo run -p verus-sdk --features shielded --example read_notes < spec.json
+```
+
+So the shielded path is proven for t→z. **z→z and z→t are not yet broadcast**;
+for those, the offline gate is the closest thing so far:
 
 ```sh
 cargo run --release -p verus-sapling --features prover,multicore --example prove_and_verify
 ```
 
-It shields to an address it derives, spends the very note that created, and then
-checks every Groth16 proof, spend-auth signature and binding signature with
-`SaplingVerificationContext` — the verifier a consensus node runs — against the
-sighash this SDK computed. That sighash is separately pinned to three real
-daemon-produced transactions, so the chain is closed at both ends. What it still
-does not prove is chain validity: the anchor roots a tree no chain ever had.
+It shields, spends the very note that created, and checks every proof and
+signature with `SaplingVerificationContext` — the verifier a consensus node runs.
+What it does not prove is chain validity: its anchor roots a tree no chain ever
+had. Tokens are in the same position — byte-identical to the TypeScript SDK,
+never broadcast.
 
 **Money is integers.** Satoshis are `u64`/`i128` end to end, parsed from decimal
 strings. There is no float in the value path.
@@ -108,7 +126,8 @@ first and stops.
 | `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
-| `verus-sapling` — building t→z, z→z, z→t | ✅ ported; every proof and signature verifies offline |
+| `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
+| `verus-sapling` — z→z and z→t | ✅ ported; proofs verify offline, not yet broadcast |
 | VerusID, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
