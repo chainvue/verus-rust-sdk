@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+# The golden-signature test needs a sighash to sign; wire does not depend on
+# keys, so this edge only exists for tests.
+verus-wire = { path = "../verus-wire" }

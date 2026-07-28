@@ -511,6 +511,7 @@ dependencies = [
  "ripemd",
  "sha2",
  "thiserror",
+ "verus-wire",
  "zeroize",
 ]
 
