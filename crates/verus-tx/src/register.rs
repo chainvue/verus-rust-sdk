@@ -26,6 +26,34 @@
 //!
 //! Keep the salt after step 1. It is not recoverable from the chain and without
 //! it the commitment cannot be redeemed — the fee is simply lost.
+//!
+//! # Handing a commitment to the daemon's `registeridentity`
+//!
+//! If you make the commitment here and complete it with the RPC instead of with
+//! [`build_identity_registration`], the `namereservation` object **must carry
+//! both `version` and `parent`**. The daemon decides which layout to hash from
+//! the presence of those two fields, and nothing else:
+//!
+//! ```cpp
+//! // VerusCoin src/rpc/pbaasrpc.cpp, registeridentity
+//! if (!find_value(nameResUni, "version").isNull() && !find_value(nameResUni, "parent").isNull())
+//!     advReservation = CAdvancedNameReservation(nameResUni);
+//! else
+//!     reservation = CNameReservation(nameResUni, ...);
+//! ```
+//!
+//! Omit either and it silently falls back to the legacy `CNameReservation`,
+//! hashes the old layout, and reports a mismatch against the commitment it
+//! wrote itself — `registernamecommitment` output pasted back in verbatim fails
+//! this way, because it prints `version` and `parent` but they are easy to drop.
+//! The salt goes in exactly as that RPC printed it: display order, reversed from
+//! [`NameReservation::salt`].
+//!
+//! Its other error, `"Invalid commitment hash"`, is not about hashes at all —
+//! it is raised when the daemon's own wallet does not control the commitment's
+//! destination, which is the normal case for a commitment this crate made.
+//! There is no way to complete such a commitment through that RPC; use
+//! [`build_identity_registration`].
 
 use verus_keys::{hash160, Address, AddressKind, PrivateKey};
 use verus_wire::hash::sha256d;
