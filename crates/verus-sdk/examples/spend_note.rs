@@ -65,7 +65,7 @@ use verus_sdk::verus_sapling::build::{
     build_shielded_spend, NoteToSpend, ShieldedOutput, SpendSpec, MEMO_SIZE,
 };
 use verus_sdk::verus_sapling::params::SaplingParams;
-use verus_sdk::verus_sapling::scan::{FullOutput, TreeStateBefore};
+use verus_sdk::verus_sapling::scan::{witness_anchor, FullOutput, TreeStateBefore};
 use verus_sdk::verus_sapling::{zaddr, VERUS_ZIP212};
 use verus_sdk::verus_wire::consensus::VERUS_BRANCH_ID;
 use verus_sdk::verus_wire::hash::txid_display;
@@ -160,6 +160,27 @@ fn main() -> Result<(), Error> {
         })
         .transpose()?
         .unwrap_or_default();
+
+    // Check the anchor BEFORE proving. This is the whole reason `witness_anchor`
+    // exists without the prover: a frontier from the wrong height fails nowhere
+    // else, and finding out from the daemon costs a 30-second proof first.
+    let anchor = witness_anchor(&tree, &block_cmus, my_cmu_index)?;
+    eprintln!("anchor  : {}", hex::encode(anchor));
+    if let Some(expected) = spec["expected_anchor"].as_str() {
+        // Block headers display finalsaplingroot reversed, like a txid.
+        let mut want = hex::decode(expected)?;
+        want.reverse();
+        if want != anchor {
+            return Err(format!(
+                "witness roots to {} but the chain's anchor is {expected} — \
+                 the frontier is from the wrong height; the daemon would reject this \
+                 with `bad-txns-shielded-requirements-not-met` after proving",
+                hex::encode(anchor)
+            )
+            .into());
+        }
+        eprintln!("anchor matches the chain");
+    }
 
     let dir = spec["params_dir"].as_str().ok_or("spec.params_dir")?;
     eprintln!("loading Sapling parameters from {dir} …");

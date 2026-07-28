@@ -70,36 +70,48 @@ off the chain and the note recovered from it with a **viewing key alone** —
 cargo run -p verus-sdk --features shielded --example read_notes < spec.json
 ```
 
-So the shielded path is proven for t→z. **Spending a note is built but not yet
-broadcast**, and the reason is worth stating precisely, because it is not a gap
-in the code.
+#### And spending it back out
 
-The witness proving a note is in the commitment tree needs the tree's frontier
-as it stood immediately *before* the note's block. A signing host cannot derive
-that — a frontier only moves forward, so a later tree says nothing about an
-earlier one — and the public VRSCTEST endpoint does not serve it: it blocks
-`z_gettreestate`, and `getsaplingtree` ignores its height argument and only ever
-returns the tip. Everything else runs: `spend_note` parsed a real frontier,
-decrypted the note, built the witness, proved the spend and serialized a
-2 407-byte transaction. Handed the tip frontier deliberately, the daemon replied
-`18: bad-txns-shielded-requirements-not-met` — the anchor check, exactly the
-expected symptom and nothing else.
+VRSCTEST txid
+[`4c16d1e73c3c9579575ae171169aee01261bdd1f35c488f972fe07c6dc20deba`](https://testex.verus.io/tx/4c16d1e73c3c9579575ae171169aee01261bdd1f35c488f972fe07c6dc20deba),
+mined at height 1 166 356: that same note spent back to a transparent address.
+The nullifier is published, the 0.0993 VRSC arrived, **t → z → t is closed on
+chain with real value.**
 
-Unblocking it needs either a node with `z_gettreestate`, or capturing
-`getsaplingtree` *before* broadcasting the transaction that creates the note,
-which is what a light wallet does anyway.
+The hard part of a shielded spend is not the proof — it is the witness. Proving
+a note is in the commitment tree needs the tree's frontier as it stood
+immediately *before* the note's block, and that is the one input a signing host
+cannot compute for itself. Worse, it cannot generally be recovered afterwards: a
+frontier only moves forward, and once further notes are added the earlier state
+cascades away for good.
 
-The offline gate is the closest thing meanwhile:
+`getsaplingtree` returns only the tip, and this endpoint blocks
+`z_gettreestate`. What made this spend possible is that a Sapling frontier keeps
+its last two leaves in `left`/`right` — so while a note is still the
+second-to-last commitment on the chain, clearing those two recovers exactly the
+tree that preceded it. `scan.rs` pins that against real chain data: the
+reconstructed witness roots to the `finalsaplingroot` in the block header. It is
+a narrow trick, not a general answer; for anything older, capture the frontier
+before broadcasting, or ask a node.
+
+Which is why [`witness_anchor`] exists and needs no proving parameters. A
+frontier from the wrong height fails *nowhere* else — the note decrypts, the
+witness builds, the proof generates, the transaction serializes — and the daemon
+then rejects it with `18: bad-txns-shielded-requirements-not-met`. Confirmed the
+hard way. Check the anchor first; it costs microseconds instead of a 30-second
+proof.
+
+[`witness_anchor`]: crates/verus-sapling/src/scan.rs
+
+The offline gate covers what the chain has not:
 
 ```sh
 cargo run --release -p verus-sapling --features prover,multicore --example prove_and_verify
 ```
 
 It shields, spends the very note that created, and checks every proof and
-signature with `SaplingVerificationContext` — the verifier a consensus node runs.
-What it does not prove is chain validity: its anchor roots a tree no chain ever
-had. Tokens are in the same position — byte-identical to the TypeScript SDK,
-never broadcast.
+signature with `SaplingVerificationContext` — the verifier a consensus node
+runs. Tokens remain byte-identical to the TypeScript SDK and never broadcast.
 
 **Money is integers.** Satoshis are `u64`/`i128` end to end, parsed from decimal
 strings. There is no float in the value path.
@@ -145,7 +157,8 @@ first and stops.
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
 | `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
-| `verus-sapling` — z→z and z→t | ✅ built and proven offline; broadcast needs a node that serves tree state |
+| `verus-sapling` — z→t spend | ✅ **accepted on chain** (VRSCTEST 4c16d1e7…) |
+| `verus-sapling` — z→z | ✅ built; proofs verify offline, not yet broadcast |
 | VerusID, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a

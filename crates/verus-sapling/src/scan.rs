@@ -445,3 +445,161 @@ mod tree_tests {
         ));
     }
 }
+
+/// Build the Merkle witness for a note, returning the anchor it roots to and
+/// the path itself.
+///
+/// The frontier before the note's block fixes everything earlier; appending the
+/// block's commitments up to and including the note positions it, and appending
+/// the rest of the block advances the witness to the end of that block.
+///
+/// `block_cmus` must be EVERY Sapling commitment in the note's block, in order —
+/// not only the caller's. A missing one shifts every later position and silently
+/// produces a witness for the wrong leaf.
+pub(crate) fn build_witness(
+    tree_before_block: &TreeStateBefore,
+    block_cmus: &[[u8; 32]],
+    my_cmu_index: usize,
+) -> Result<(sapling_crypto::Node, sapling_crypto::MerklePath), SaplingError> {
+    if my_cmu_index >= block_cmus.len() {
+        return Err(SaplingError::Witness(format!(
+            "my_cmu_index {my_cmu_index} is out of range for {} commitments in the block",
+            block_cmus.len()
+        )));
+    }
+    let mut tree = commitment_tree(tree_before_block)?;
+    for cmu in block_cmus.iter().take(my_cmu_index + 1) {
+        tree.append(node(*cmu)?)
+            .map_err(|_| SaplingError::Witness("commitment tree is full".into()))?;
+    }
+    let mut incremental = sapling_crypto::IncrementalWitness::from_tree(tree)
+        .ok_or_else(|| SaplingError::Witness("no note commitment to witness".into()))?;
+    for cmu in block_cmus.iter().skip(my_cmu_index + 1) {
+        incremental
+            .append(node(*cmu)?)
+            .map_err(|_| SaplingError::Witness("witness is full".into()))?;
+    }
+    let root = incremental.root();
+    let path = incremental
+        .path()
+        .ok_or_else(|| SaplingError::Witness("witness has no path".into()))?;
+    Ok((root, path))
+}
+
+/// The anchor a note's witness roots to — **without** running the prover.
+///
+/// Check this against a `finalsaplingroot` the chain actually has before
+/// spending 30 seconds on a Groth16 proof. A frontier taken from the wrong
+/// height fails nowhere else: the note decrypts, the witness builds, the proof
+/// generates, and only the daemon objects, with
+/// `18: bad-txns-shielded-requirements-not-met`.
+///
+/// Needs no proving parameters, so a watch-only wallet can verify its own
+/// witness data.
+pub fn witness_anchor(
+    tree_before_block: &TreeStateBefore,
+    block_cmus: &[[u8; 32]],
+    my_cmu_index: usize,
+) -> Result<[u8; 32], SaplingError> {
+    Ok(build_witness(tree_before_block, block_cmus, my_cmu_index)?
+        .0
+        .to_bytes())
+}
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+
+    fn fixture() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/daemon/sapling_tree.json"
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+    }
+
+    fn wire_cmus(fixture: &serde_json::Value) -> Vec<[u8; 32]> {
+        fixture["block_1166308_cmus_display_order"]
+            .as_array()
+            .expect("cmus")
+            .iter()
+            .map(|c| {
+                let mut bytes: [u8; 32] = hex::decode(c.as_str().expect("hex"))
+                    .expect("hex")
+                    .try_into()
+                    .expect("32 bytes");
+                bytes.reverse(); // the daemon displays commitments reversed
+                bytes
+            })
+            .collect()
+    }
+
+    /// The witness for a real note on VRSCTEST must root to the anchor the chain
+    /// actually has — the `finalsaplingroot` in the block header.
+    ///
+    /// This is the whole game for spending offline. It also pins the derivation
+    /// the frontier came from: a Sapling frontier holds its last two leaves in
+    /// `left`/`right`, so while a note is still the second-to-last commitment on
+    /// the chain, clearing those two recovers the tree as it stood before the
+    /// note's block. That does NOT generalise — once anything else is shielded,
+    /// the pair cascades into `parents` and the earlier state is gone for good.
+    #[test]
+    fn a_real_notes_witness_roots_to_the_chains_own_anchor() {
+        let fixture = fixture();
+        let before = TreeStateBefore::from_hex(
+            fixture["frontier_before_block_1166308_hex"]
+                .as_str()
+                .expect("frontier"),
+        )
+        .expect("parse");
+        assert_eq!(before.size().expect("size"), 3162);
+
+        let cmus = wire_cmus(&fixture);
+        let index = usize::try_from(fixture["my_cmu_index"].as_u64().expect("index")).unwrap();
+        let anchor = witness_anchor(&before, &cmus, index).expect("anchor");
+
+        let mut expected = hex::decode(
+            fixture["finalsaplingroot"]
+                .as_str()
+                .expect("finalsaplingroot"),
+        )
+        .unwrap();
+        expected.reverse();
+        assert_eq!(anchor.to_vec(), expected);
+    }
+
+    /// Dropping a commitment that is not ours still breaks the witness: every
+    /// later position shifts, so the path is built for the wrong leaf.
+    #[test]
+    fn omitting_another_partys_commitment_changes_the_anchor() {
+        let fixture = fixture();
+        let before = TreeStateBefore::from_hex(
+            fixture["frontier_before_block_1166308_hex"]
+                .as_str()
+                .expect("frontier"),
+        )
+        .unwrap();
+        let cmus = wire_cmus(&fixture);
+        let full = witness_anchor(&before, &cmus, 0).unwrap();
+        let partial = witness_anchor(&before, &cmus[..1], 0).unwrap();
+        assert_ne!(full, partial);
+    }
+
+    #[test]
+    fn a_frontier_from_the_wrong_height_changes_the_anchor() {
+        let fixture = fixture();
+        let correct = TreeStateBefore::from_hex(
+            fixture["frontier_before_block_1166308_hex"]
+                .as_str()
+                .expect("frontier"),
+        )
+        .unwrap();
+        // The tip frontier: parses fine, right size class, wrong height.
+        let tip = TreeStateBefore::from_hex(fixture["tree_hex"].as_str().unwrap()).unwrap();
+        let cmus = wire_cmus(&fixture);
+        assert_ne!(
+            witness_anchor(&correct, &cmus, 0).unwrap(),
+            witness_anchor(&tip, &cmus, 0).unwrap()
+        );
+    }
+}

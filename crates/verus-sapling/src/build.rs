@@ -41,13 +41,13 @@ use sapling_crypto::note::ExtractedNoteCommitment;
 use sapling_crypto::note_encryption::{try_sapling_note_decryption, Zip212Enforcement};
 use sapling_crypto::value::{NoteValue, ValueCommitment};
 use sapling_crypto::zip32::ExtendedSpendingKey;
-use sapling_crypto::{Anchor, IncrementalWitness, MerklePath, Note, PaymentAddress};
+use sapling_crypto::{Anchor, MerklePath, Note, PaymentAddress};
 use verus_wire::{ShieldedSpend, TxIn, TxOut, TxV4};
 use zcash_note_encryption::EphemeralKeyBytes;
 
 use crate::error::SaplingError;
 use crate::params::SaplingParams;
-use crate::scan::{commitment_tree, node, FullOutput, TreeStateBefore};
+use crate::scan::{build_witness, FullOutput, TreeStateBefore};
 
 /// Size of a Sapling memo field (ZIP-302), in bytes.
 pub const MEMO_SIZE: usize = 512;
@@ -380,30 +380,8 @@ fn check_conservation(
 /// block's commitments up to and including ours positions the note, and
 /// appending the rest of the block advances the witness to the block's end.
 fn witness(note: &NoteToSpend<'_>) -> Result<(Anchor, MerklePath), SaplingError> {
-    if note.my_cmu_index >= note.block_cmus.len() {
-        return Err(SaplingError::Witness(format!(
-            "my_cmu_index {} is out of range for {} commitments in the block",
-            note.my_cmu_index,
-            note.block_cmus.len()
-        )));
-    }
-    let mut tree = commitment_tree(note.tree_before_block)?;
-    for cmu in note.block_cmus.iter().take(note.my_cmu_index + 1) {
-        tree.append(node(*cmu)?)
-            .map_err(|_| SaplingError::Witness("commitment tree is full".into()))?;
-    }
-    let mut incremental = IncrementalWitness::from_tree(tree)
-        .ok_or_else(|| SaplingError::Witness("no note commitment to witness".into()))?;
-    for cmu in note.block_cmus.iter().skip(note.my_cmu_index + 1) {
-        incremental
-            .append(node(*cmu)?)
-            .map_err(|_| SaplingError::Witness("witness is full".into()))?;
-    }
-    let anchor = Anchor::from(incremental.root());
-    let path = incremental
-        .path()
-        .ok_or_else(|| SaplingError::Witness("witness has no path".into()))?;
-    Ok((anchor, path))
+    let (root, path) = build_witness(note.tree_before_block, note.block_cmus, note.my_cmu_index)?;
+    Ok((Anchor::from(root), path))
 }
 
 /// Copy a slice into a fixed-size array, erroring rather than panicking on a
