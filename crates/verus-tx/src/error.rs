@@ -115,6 +115,65 @@ pub enum TxError {
         expected: u64,
     },
 
+    /// An identity name outside the conservative set this crate will commit to.
+    ///
+    /// Narrower than consensus on purpose: a name that differs only in case,
+    /// whitespace or a dot derives a *different* identity, and the mistake is
+    /// only visible once the commitment fee has been spent.
+    #[error("identity name {0:?} must be 1-64 characters of a-z, 0-9, underscore or hyphen")]
+    InvalidIdentityName(String),
+
+    /// A signing threshold that cannot be met.
+    #[error("min_sigs {min_sigs} cannot be met by {primaries} primary address(es)")]
+    InvalidMinSigs {
+        /// Signatures the identity would require.
+        min_sigs: u32,
+        /// Addresses available to sign.
+        primaries: usize,
+    },
+
+    /// The name-commitment output is not the one this key committed to.
+    ///
+    /// Either the reservation (name, referral or salt) differs from step 1, or
+    /// the commitment was locked to another key. Both produce a transaction the
+    /// daemon rejects *after* the commitment has been spent, so it is refused
+    /// before signing.
+    #[error("the commitment output does not match this reservation and signing key")]
+    CommitmentMismatch,
+
+    /// A leading CryptoCondition input carrying native value.
+    ///
+    /// The registration accounting assumes leading inputs contribute nothing; a
+    /// funded one would silently pay part of the registration fee and leave the
+    /// conservation check reporting a fee that was never paid.
+    #[error(
+        "leading input {txid}:{vout} carries {satoshis} satoshis; expected a valueless output"
+    )]
+    LeadingInputCarriesValue {
+        /// Transaction that created it, in display order.
+        txid: String,
+        /// Index within that transaction.
+        vout: u32,
+        /// The value it carries.
+        satoshis: u64,
+    },
+
+    /// The signing key is not one of the identity's primary addresses.
+    ///
+    /// The identity output's condition can only be satisfied by a key the
+    /// identity itself lists. Signing with any other key builds cleanly and is
+    /// then rejected at script verification, which reports only that a script
+    /// finished false.
+    #[error("{address} is not one of the identity's primary addresses")]
+    NotAPrimaryAddress {
+        /// The address derived from the signing key.
+        address: String,
+    },
+
+    /// The output being spent does not hold the identity being updated.
+    #[error("the output being spent does not hold this identity")]
+    IdentityOutputMismatch,
+
     /// A CryptoCondition payload too large for the push encodings this crate
     /// emits. Refusing beats writing an encoding no test covers.
     #[error("CryptoCondition payload of {0} bytes exceeds the supported push encoding")]

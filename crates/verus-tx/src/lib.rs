@@ -41,25 +41,33 @@
 
 #![doc(html_no_source)]
 
+mod assemble;
 pub mod cc;
 pub mod decode;
 mod error;
 pub mod fee;
 pub mod identity;
+pub mod register;
 mod send;
 mod token;
 mod txid;
+pub mod update;
 
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};
 pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
+pub use register::{
+    build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
+    NameReservation, RegistrationParams, SignedRegistration,
+};
 pub use send::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 pub use token::{build_token_send, CurrencyId, TokenRecipient, TokenSendParams};
 pub use txid::Txid;
+pub use update::{build_identity_update, UpdateParams};
 
 /// An unspent output available to spend.
 #[derive(Clone, Debug, PartialEq, Eq)]

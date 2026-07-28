@@ -50,18 +50,28 @@ pub fn sign_p2pkh_inputs(
             utxo.satoshis,
             SIGHASH_ALL,
         )?;
-        let signature = key.sign_prehash_der(&sighash, 1)?;
-
-        // scriptSig = PUSH(signature || hashtype) PUSH(pubkey). Both are far
-        // below the 76-byte direct-push limit, so no OP_PUSHDATA is involved.
-        let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
-        script_sig.push(u8::try_from(signature.len()).expect("DER signature is under 76 bytes"));
-        script_sig.extend_from_slice(&signature);
-        script_sig.push(u8::try_from(pubkey.len()).expect("public key is 33 or 65 bytes"));
-        script_sig.extend_from_slice(&pubkey);
-        tx.inputs[index].script_sig = script_sig;
+        tx.inputs[index].script_sig = p2pkh_script_sig(key, &sighash, &pubkey)?;
     }
     Ok(())
+}
+
+/// `PUSH(signature || hashtype) PUSH(pubkey)` — the scriptSig unlocking a P2PKH
+/// output.
+///
+/// Both pushes are far below the 76-byte direct-push limit, so no `OP_PUSHDATA`
+/// is involved.
+pub(crate) fn p2pkh_script_sig(
+    key: &PrivateKey,
+    sighash: &[u8; 32],
+    pubkey: &[u8],
+) -> Result<Vec<u8>, TxError> {
+    let signature = key.sign_prehash_der(sighash, 1)?;
+    let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
+    script_sig.push(u8::try_from(signature.len()).expect("DER signature is under 76 bytes"));
+    script_sig.extend_from_slice(&signature);
+    script_sig.push(u8::try_from(pubkey.len()).expect("public key is 33 or 65 bytes"));
+    script_sig.extend_from_slice(pubkey);
+    Ok(script_sig)
 }
 
 /// Where value is going.
