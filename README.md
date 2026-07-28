@@ -70,8 +70,26 @@ off the chain and the note recovered from it with a **viewing key alone** —
 cargo run -p verus-sdk --features shielded --example read_notes < spec.json
 ```
 
-So the shielded path is proven for t→z. **z→z and z→t are not yet broadcast**;
-for those, the offline gate is the closest thing so far:
+So the shielded path is proven for t→z. **Spending a note is built but not yet
+broadcast**, and the reason is worth stating precisely, because it is not a gap
+in the code.
+
+The witness proving a note is in the commitment tree needs the tree's frontier
+as it stood immediately *before* the note's block. A signing host cannot derive
+that — a frontier only moves forward, so a later tree says nothing about an
+earlier one — and the public VRSCTEST endpoint does not serve it: it blocks
+`z_gettreestate`, and `getsaplingtree` ignores its height argument and only ever
+returns the tip. Everything else runs: `spend_note` parsed a real frontier,
+decrypted the note, built the witness, proved the spend and serialized a
+2 407-byte transaction. Handed the tip frontier deliberately, the daemon replied
+`18: bad-txns-shielded-requirements-not-met` — the anchor check, exactly the
+expected symptom and nothing else.
+
+Unblocking it needs either a node with `z_gettreestate`, or capturing
+`getsaplingtree` *before* broadcasting the transaction that creates the note,
+which is what a light wallet does anyway.
+
+The offline gate is the closest thing meanwhile:
 
 ```sh
 cargo run --release -p verus-sapling --features prover,multicore --example prove_and_verify
@@ -127,7 +145,7 @@ first and stops.
 | `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
 | `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
 | `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
-| `verus-sapling` — z→z and z→t | ✅ ported; proofs verify offline, not yet broadcast |
+| `verus-sapling` — z→z and z→t | ✅ built and proven offline; broadcast needs a node that serves tree state |
 | VerusID, currency launch, wasm bindings | ⬜ later |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a

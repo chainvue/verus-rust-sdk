@@ -88,6 +88,124 @@ pub struct TreeStateBefore {
     pub parents: Vec<Option<[u8; 32]>>,
 }
 
+impl TreeStateBefore {
+    /// Parse the serialized commitment tree a daemon returns.
+    ///
+    /// Both `z_gettreestate` (as `sapling.commitments.finalState`) and
+    /// `getsaplingtree` (as `tree`) hand back this encoding:
+    ///
+    /// ```text
+    /// left:    00 | 01 <32 bytes>
+    /// right:   00 | 01 <32 bytes>
+    /// parents: <CompactSize count> then that many of the same optional node
+    /// ```
+    ///
+    /// Getting this frontier is the hard part of spending a note offline. It is
+    /// the one input a signing host cannot compute for itself: the path to a
+    /// note depends on every commitment added before it, and a frontier cannot
+    /// be walked backwards — a later tree tells you nothing about an earlier
+    /// one. So capture it BEFORE the transaction that creates the note is mined,
+    /// or be able to ask a node for it at that height afterwards.
+    pub fn from_serialized(bytes: &[u8]) -> Result<Self, SaplingError> {
+        let mut reader = TreeReader { bytes, offset: 0 };
+        let left = reader.optional_node()?;
+        let right = reader.optional_node()?;
+        let count = reader.compact_size()?;
+        // A Sapling tree is 32 levels deep, so more parents than that is a
+        // corrupt blob rather than a very large tree.
+        if count > 32 {
+            return Err(SaplingError::InvalidTreeState(format!(
+                "{count} parents, but a Sapling tree has at most 32 levels"
+            )));
+        }
+        let mut parents = Vec::with_capacity(count);
+        for _ in 0..count {
+            parents.push(reader.optional_node()?);
+        }
+        if reader.offset != bytes.len() {
+            return Err(SaplingError::InvalidTreeState(format!(
+                "{} trailing bytes after the commitment tree",
+                bytes.len() - reader.offset
+            )));
+        }
+        Ok(Self {
+            left,
+            right,
+            parents,
+        })
+    }
+
+    /// Parse the hex form, as it appears in a JSON-RPC reply.
+    pub fn from_hex(hex_str: &str) -> Result<Self, SaplingError> {
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| SaplingError::InvalidTreeState(format!("tree is not hex: {e}")))?;
+        Self::from_serialized(&bytes)
+    }
+
+    /// How many notes the tree holds — the absolute position the next appended
+    /// commitment will take.
+    pub fn size(&self) -> Result<u64, SaplingError> {
+        Ok(commitment_tree(self)?.size() as u64)
+    }
+
+    /// The Merkle root of this tree, in wire order.
+    ///
+    /// Worth checking against the `finalsaplingroot` of the block the tree was
+    /// taken at: it is the one end-to-end confirmation that the frontier was
+    /// parsed correctly, and a wrong frontier produces a witness that roots to
+    /// an anchor no node has ever seen.
+    pub fn root(&self) -> Result<[u8; 32], SaplingError> {
+        Ok(commitment_tree(self)?.root().to_bytes())
+    }
+}
+
+struct TreeReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl TreeReader<'_> {
+    fn byte(&mut self) -> Result<u8, SaplingError> {
+        let byte = *self
+            .bytes
+            .get(self.offset)
+            .ok_or_else(|| SaplingError::InvalidTreeState("tree ended early".into()))?;
+        self.offset += 1;
+        Ok(byte)
+    }
+
+    fn optional_node(&mut self) -> Result<Option<[u8; 32]>, SaplingError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => {
+                let end = self.offset + 32;
+                let node: [u8; 32] = self
+                    .bytes
+                    .get(self.offset..end)
+                    .ok_or_else(|| SaplingError::InvalidTreeState("node ended early".into()))?
+                    .try_into()
+                    .expect("slice is 32 bytes");
+                self.offset = end;
+                Ok(Some(node))
+            }
+            other => Err(SaplingError::InvalidTreeState(format!(
+                "expected an optional-node tag of 0 or 1, found {other}"
+            ))),
+        }
+    }
+
+    /// CompactSize. Only the single-byte form can occur here — the count is a
+    /// tree depth — so anything larger is refused rather than decoded.
+    fn compact_size(&mut self) -> Result<usize, SaplingError> {
+        match self.byte()? {
+            n if n < 0xfd => Ok(usize::from(n)),
+            other => Err(SaplingError::InvalidTreeState(format!(
+                "parent count uses the multi-byte CompactSize form ({other:#04x})"
+            ))),
+        }
+    }
+}
+
 /// Rebuild the note-commitment tree a daemon reported, so both the scanner (for
 /// absolute positions) and the spend builder (for witnesses) read it the same way.
 pub(crate) fn commitment_tree(state: &TreeStateBefore) -> Result<CommitmentTree, SaplingError> {
@@ -237,4 +355,93 @@ pub fn dfvk_from_extsk(extsk_bytes: &[u8]) -> Result<DiversifiableFullViewingKey
     let extsk = ExtendedSpendingKey::from_bytes(extsk_bytes)
         .map_err(|e| SaplingError::InvalidKey(format!("extended spending key: {e:?}")))?;
     Ok(extsk.to_diversifiable_full_viewing_key())
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    /// A real commitment tree a VRSCTEST daemon returned from `getsaplingtree`
+    /// at height 1 166 329, together with that block's `finalsaplingroot`.
+    fn fixture() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/daemon/sapling_tree.json"
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+    }
+
+    /// The end-to-end check: our parse of the daemon's frontier must produce the
+    /// root the daemon itself put in the block header. A frontier parsed wrongly
+    /// yields a witness rooted at an anchor no node has seen — and nothing else
+    /// in an offline signer would catch it.
+    #[test]
+    fn the_parsed_tree_reproduces_the_block_header_root() {
+        let fixture = fixture();
+        let tree =
+            TreeStateBefore::from_hex(fixture["tree_hex"].as_str().expect("tree_hex")).unwrap();
+
+        // `finalsaplingroot` is displayed byte-reversed, like a txid.
+        let mut expected = hex::decode(
+            fixture["finalsaplingroot"]
+                .as_str()
+                .expect("finalsaplingroot"),
+        )
+        .unwrap();
+        expected.reverse();
+
+        assert_eq!(tree.root().unwrap().to_vec(), expected);
+    }
+
+    #[test]
+    fn the_parsed_tree_holds_every_commitment_on_the_chain() {
+        let tree =
+            TreeStateBefore::from_hex(fixture()["tree_hex"].as_str().expect("tree_hex")).unwrap();
+        // Sapling outputs mined on VRSCTEST as of the fixture height.
+        assert_eq!(tree.size().unwrap(), 3164);
+    }
+
+    #[test]
+    fn an_empty_tree_round_trips() {
+        let tree = TreeStateBefore::from_serialized(&[0x00, 0x00, 0x00]).unwrap();
+        assert!(tree.left.is_none() && tree.right.is_none() && tree.parents.is_empty());
+        assert_eq!(tree.size().unwrap(), 0);
+    }
+
+    #[test]
+    fn refuses_a_truncated_tree() {
+        let full = hex::decode(fixture()["tree_hex"].as_str().expect("tree_hex")).unwrap();
+        for cut in [1, 20, 40, full.len() - 1] {
+            assert!(
+                TreeStateBefore::from_serialized(&full[..cut]).is_err(),
+                "truncating to {cut} bytes parsed instead of failing"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_trailing_bytes() {
+        let mut extended = hex::decode(fixture()["tree_hex"].as_str().expect("tree_hex")).unwrap();
+        extended.push(0x00);
+        assert!(matches!(
+            TreeStateBefore::from_serialized(&extended),
+            Err(SaplingError::InvalidTreeState(_))
+        ));
+    }
+
+    #[test]
+    fn refuses_an_invalid_optional_node_tag() {
+        assert!(matches!(
+            TreeStateBefore::from_serialized(&[0x02]),
+            Err(SaplingError::InvalidTreeState(_))
+        ));
+    }
+
+    #[test]
+    fn refuses_more_parents_than_a_sapling_tree_has_levels() {
+        assert!(matches!(
+            TreeStateBefore::from_serialized(&[0x00, 0x00, 0x40]),
+            Err(SaplingError::InvalidTreeState(_))
+        ));
+    }
 }
