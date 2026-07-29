@@ -710,6 +710,7 @@ pub fn build_identity_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amount::Amount;
     use crate::Txid;
 
     /// `VRSCTEST`, the system id every testnet registration parents to.
@@ -886,7 +887,7 @@ mod tests {
         let commitment = Utxo {
             txid: Txid::from_internal([0xaa; 32]),
             vout: 0,
-            satoshis: 0,
+            satoshis: Amount::from_sat(0),
             script_pubkey: commitment_script(
                 &reservation.commitment_hash().unwrap(),
                 key.address().hash(),
@@ -896,7 +897,7 @@ mod tests {
         let funding = [Utxo {
             txid: Txid::from_internal([0xbb; 32]),
             vout: 0,
-            satoshis: 100_000_000,
+            satoshis: Amount::from_sat(100_000_000),
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }];
         let primaries = [key.address()];
@@ -940,7 +941,7 @@ mod tests {
         let commitment = Utxo {
             txid: Txid::from_internal([0xaa; 32]),
             vout: 0,
-            satoshis: 0,
+            satoshis: Amount::from_sat(0),
             // Locked to a different control hash than the signing key's.
             script_pubkey: commitment_script(&reservation.commitment_hash().unwrap(), [0x99; 20])
                 .unwrap(),
@@ -948,7 +949,7 @@ mod tests {
         let funding = [Utxo {
             txid: Txid::from_internal([0xbb; 32]),
             vout: 0,
-            satoshis: 200_00000000,
+            satoshis: Amount::from_sat(200_00000000),
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }];
         let primaries = [key.address()];

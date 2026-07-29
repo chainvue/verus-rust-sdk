@@ -46,7 +46,7 @@ use std::io::Read;
 use serde_json::{json, Value};
 use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::update::{build_identity_update, UpdateParams};
-use verus_sdk::verus_tx::{decode_output_script, Identity, OutputKind, Txid, Utxo};
+use verus_sdk::verus_tx::{decode_output_script, Amount, Identity, OutputKind, Txid, Utxo};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -127,8 +127,8 @@ fn main() -> Result<(), Error> {
         json!({
             "txid": signed.txid,
             "hex": signed.hex,
-            "fee": signed.fee,
-            "change": signed.change,
+            "fee": signed.fee.to_sat(),
+            "change": signed.change.to_sat(),
             "before": before,
             "after": summarize(&identity),
         })
@@ -155,7 +155,7 @@ fn read_utxo(value: &Value) -> Result<Utxo, Error> {
     Ok(Utxo {
         txid: Txid::from_display_hex(value["txid"].as_str().ok_or("utxo.txid")?)?,
         vout: u32::try_from(value["vout"].as_u64().ok_or("utxo.vout")?)?,
-        satoshis: value["satoshis"].as_u64().ok_or("utxo.satoshis")?,
+        satoshis: Amount::from_sat(value["satoshis"].as_u64().ok_or("utxo.satoshis")?),
         script_pubkey: hex::decode(
             value["script_pubkey"]
                 .as_str()

@@ -209,6 +209,7 @@ fn check_authority_unchanged(current: &Identity, proposed: &Identity) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amount::Amount;
     use crate::Txid;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
@@ -255,7 +256,7 @@ mod tests {
         Utxo {
             txid: Txid::from_internal([0xaa; 32]),
             vout: 0,
-            satoshis: 0,
+            satoshis: Amount::from_sat(0),
             script_pubkey: identity_primary_script(
                 identity_id(&identity.name, Some(identity.parent)),
                 identity.to_bytes().unwrap(),
@@ -270,7 +271,7 @@ mod tests {
         vec![Utxo {
             txid: Txid::from_internal([0xbb; 32]),
             vout: 0,
-            satoshis: 100_000_000,
+            satoshis: Amount::from_sat(100_000_000),
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }]
     }

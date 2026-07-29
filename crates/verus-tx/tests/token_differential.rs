@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 use verus_keys::{Address, PrivateKey};
-use verus_tx::{build_token_send, CurrencyId, TokenRecipient, TokenSendParams, Txid, Utxo};
+use verus_tx::{build_token_send, Amount, CurrencyId, TokenRecipient, TokenSendParams, Txid, Utxo};
 
 fn vector(name: &str) -> Value {
     let path = format!(
@@ -41,7 +41,7 @@ fn reproduces_the_typescript_token_transfer() {
         .map(|u| Utxo {
             txid: Txid::from_display_hex(u["txid"].as_str().expect("txid")).expect("txid"),
             vout: u32::try_from(u["vout"].as_u64().expect("vout")).expect("fits"),
-            satoshis: u["satoshis"].as_u64().expect("satoshis"),
+            satoshis: Amount::from_sat(u["satoshis"].as_u64().expect("satoshis")),
             script_pubkey: hex::decode(u["script_pubkey"].as_str().expect("script")).expect("hex"),
         })
         .collect();
@@ -57,7 +57,7 @@ fn reproduces_the_typescript_token_transfer() {
                 .parse()
                 .expect("addr"),
             currency: currency_of(o["currency"].as_str().expect("currency")),
-            amount: o["satoshis"].as_u64().expect("amount"),
+            amount: Amount::from_sat(o["satoshis"].as_u64().expect("amount")),
         })
         .collect();
 
@@ -80,9 +80,12 @@ fn reproduces_the_typescript_token_transfer() {
         "token transaction bytes differ from the TypeScript SDK's"
     );
     assert_eq!(signed.txid, v["expected_txid"].as_str().expect("txid"));
-    assert_eq!(signed.fee, v["expected_fee"].as_u64().expect("fee"));
     assert_eq!(
-        signed.change,
+        signed.fee.to_sat(),
+        v["expected_fee"].as_u64().expect("fee")
+    );
+    assert_eq!(
+        signed.change.to_sat(),
         v["expected_change"].as_u64().expect("change")
     );
     assert_eq!(

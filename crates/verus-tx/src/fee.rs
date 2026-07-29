@@ -31,6 +31,55 @@ pub const MIN_FEE: u64 = 10_000;
 /// (`DUST_THRESHOLD`)
 pub const DUST_THRESHOLD: u64 = 546;
 
+/// The largest miner fee this crate will sign.
+///
+/// One whole coin, against a floor of 10,000 satoshis — four orders of magnitude
+/// of headroom, so no ordinary transaction comes near it.
+///
+/// **This is a backstop, not a live guard.** With the current selection the
+/// derived fee is `estimate_fee` — a function of transaction size — plus at most
+/// [`DUST_THRESHOLD`] of folded change, so it cannot reach this ceiling however
+/// the caller funds the transaction. It is here so that a future change to the
+/// heuristic cannot quietly start signing large fees; `derived_fees_stay_far_below_the_ceiling`
+/// pins that reasoning. The reachable risk is the *declared* outlay, which is
+/// caller-supplied — see [`MAX_DECLARED_BURN`].
+pub const MAX_MINER_FEE: u64 = 100_000_000;
+
+/// The largest declared burn this crate will sign.
+///
+/// A burn is value the caller deliberately destroys: the 100-coin fee of a
+/// VerusID registration, which is chain policy this crate cannot look up and
+/// must be told. Being told means a typo is possible, and a typo here is the one
+/// with real consequences — exact conservation will certify `100_000` coins as
+/// happily as `100`, because it only checks that the arithmetic agrees with
+/// itself.
+///
+/// Ten times the largest legitimate value known today, so every real
+/// registration passes and an order-of-magnitude slip does not.
+pub const MAX_DECLARED_BURN: u64 = 100_000_000_000;
+
+/// Refuse a derived fee that is implausible on its face.
+pub(crate) fn check_fee_ceiling(fee: u64) -> Result<(), TxError> {
+    if fee > MAX_MINER_FEE {
+        return Err(TxError::FeeTooLarge {
+            fee,
+            ceiling: MAX_MINER_FEE,
+        });
+    }
+    Ok(())
+}
+
+/// Refuse a declared burn that is implausible on its face.
+pub(crate) fn check_burn_ceiling(burn: u64) -> Result<(), TxError> {
+    if burn > MAX_DECLARED_BURN {
+        return Err(TxError::FeeTooLarge {
+            fee: burn,
+            ceiling: MAX_DECLARED_BURN,
+        });
+    }
+    Ok(())
+}
+
 /// Estimate the fee for a transaction of this shape.
 ///
 /// The rounding is `ceil(size * fee_per_kb / 1000)`. The TypeScript writes it as
@@ -104,7 +153,7 @@ pub fn select_utxos(
     let mut candidates: Vec<Utxo> = utxos.to_vec();
     // Descending by value, stably — matching JavaScript's stable sort, so UTXOs
     // of equal value keep the caller's order and selection stays reproducible.
-    candidates.sort_by_key(|utxo| core::cmp::Reverse(utxo.satoshis));
+    candidates.sort_by_key(|utxo| core::cmp::Reverse(utxo.satoshis.to_sat()));
     let mut candidates = candidates.into_iter();
 
     let mut selected: Vec<Utxo> = Vec::new();
@@ -115,13 +164,13 @@ pub fn select_utxos(
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
-            let available: u64 = utxos.iter().map(|u| u.satoshis).sum();
+            let available: u64 = utxos.iter().map(|u| u.satoshis.to_sat()).sum();
             return Err(TxError::InsufficientFunds {
                 required: required_native.saturating_add(fee),
                 available,
             });
         };
-        remaining_native -= i128::from(next.satoshis);
+        remaining_native -= i128::from(next.satoshis.to_sat());
         selected.push(next);
         fee = estimate_fee(
             selected.len() as u64,
@@ -131,36 +180,43 @@ pub fn select_utxos(
         );
     }
 
-    let total_in: u64 = selected.iter().map(|u| u.satoshis).sum();
+    let total_in: u64 = selected.iter().map(|u| u.satoshis.to_sat()).sum();
     // Non-negative by construction: the loop only exits once the selected value
     // covers the requirement plus the fee.
     let actual_change = total_in - required_native - fee;
 
-    Ok(if actual_change > DUST_THRESHOLD {
+    let selection = if actual_change > DUST_THRESHOLD {
         Selection {
             selected,
             change: actual_change,
             fee,
         }
     } else {
+        // Dust folds into the fee rather than becoming an unspendable output.
         Selection {
             selected,
             change: 0,
             fee: fee + actual_change,
         }
-    })
+    };
+    // Checked after the dust fold, because that is the step that can inflate a
+    // fee: a caller who funds a transaction with one enormous UTXO and asks for
+    // an amount just below it turns the whole remainder into "fee".
+    check_fee_ceiling(selection.fee)?;
+    Ok(selection)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amount::Amount;
     use crate::Txid;
 
     fn utxo(byte: u8, satoshis: u64) -> Utxo {
         Utxo {
             txid: Txid::from_internal([byte; 32]),
             vout: 0,
-            satoshis,
+            satoshis: Amount::from_sat(satoshis),
             script_pubkey: vec![0x76, 0xa9, 0x14],
         }
     }
@@ -199,7 +255,10 @@ mod tests {
         ];
         let selection = select_utxos(&utxos, 40_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.selected.len(), 1);
-        assert_eq!(selection.selected[0].satoshis, 100_000_000);
+        assert_eq!(
+            selection.selected[0].satoshis,
+            Amount::from_sat(100_000_000)
+        );
     }
 
     #[test]
@@ -211,7 +270,7 @@ mod tests {
         ];
         let selection = select_utxos(&utxos, 65_000_000, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.selected.len(), 3);
-        let total: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
+        let total: u64 = selection.selected.iter().map(|u| u.satoshis.to_sat()).sum();
         assert_eq!(total, 65_000_000 + selection.fee + selection.change);
     }
 
@@ -236,12 +295,53 @@ mod tests {
         assert_eq!(selection.fee, fee);
     }
 
+    /// The claim [`MAX_MINER_FEE`] rests on: a derived fee is a function of
+    /// size plus at most one dust threshold, so no funding shape reaches the
+    /// ceiling. If this ever fails, the ceiling stopped being a backstop and
+    /// became a live guard — and the fee logic changed in a way worth reading.
+    #[test]
+    fn derived_fees_stay_far_below_the_ceiling() {
+        for utxo_value in [1_000u64, 100_000_000, 2_100_000_000_000_000] {
+            for required in [1u64, 546, 10_000] {
+                if utxo_value <= required + 10_000 {
+                    continue;
+                }
+                let utxos = [utxo(0xa1, utxo_value)];
+                let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false);
+                if let Ok(selection) = selection {
+                    assert!(
+                        selection.fee
+                            <= estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false) + DUST_THRESHOLD,
+                        "fee {} exceeded size estimate plus dust for a {utxo_value} input",
+                        selection.fee
+                    );
+                    assert!(selection.fee < MAX_MINER_FEE);
+                }
+            }
+        }
+    }
+
+    /// An order-of-magnitude slip on a registration fee is refused. Exact
+    /// conservation would certify it, because it only checks the arithmetic
+    /// agrees with itself.
+    #[test]
+    fn a_mistyped_burn_is_refused() {
+        assert!(
+            check_burn_ceiling(10_000_000_000).is_ok(),
+            "a real registration"
+        );
+        assert!(matches!(
+            check_burn_ceiling(10_000_000_000_000),
+            Err(TxError::FeeTooLarge { .. })
+        ));
+    }
+
     #[test]
     fn conservation_holds_for_every_selection() {
         for required in [1u64, 546, 10_000, 1_000_000, 99_000_000] {
             let utxos = [utxo(1, 100_000_000), utxo(2, 20_000_000)];
             let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
-            let total_in: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
+            let total_in: u64 = selection.selected.iter().map(|u| u.satoshis.to_sat()).sum();
             assert_eq!(total_in, required + selection.fee + selection.change);
         }
     }

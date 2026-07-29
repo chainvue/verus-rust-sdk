@@ -61,7 +61,7 @@ use verus_sdk::verus_tx::register::{
     build_identity_registration, build_name_commitment, CommitmentParams, NameReservation,
     ParentCurrencyFee, RegistrationParams,
 };
-use verus_sdk::verus_tx::{Txid, Utxo};
+use verus_sdk::verus_tx::{Amount, Txid, Utxo};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -113,8 +113,8 @@ fn main() -> Result<(), Error> {
                     "step": 1,
                     "txid": signed.txid,
                     "hex": signed.hex,
-                    "fee": signed.fee,
-                    "change": signed.change,
+                    "fee": signed.fee.to_sat(),
+                    "change": signed.change.to_sat(),
                     // KEEP THIS. Step 2 cannot be built without it.
                     "salt": hex::encode(reservation.salt),
                     "salt_daemon_display": hex::encode(reservation.salt_display()),
@@ -207,8 +207,8 @@ fn main() -> Result<(), Error> {
                     "step": 2,
                     "txid": registered.transaction.txid,
                     "hex": registered.transaction.hex,
-                    "fee_including_burn": registered.transaction.fee,
-                    "change": registered.transaction.change,
+                    "fee_including_burn": registered.transaction.fee.to_sat(),
+                    "change": registered.transaction.change.to_sat(),
                     "identity_address": registered.identity_address.to_string(),
                     "identity_name": registered.identity.name,
                     "min_sigs": registered.identity.min_sigs,
@@ -260,7 +260,7 @@ fn read_utxo(value: &Value) -> Result<Utxo, Error> {
     Ok(Utxo {
         txid: Txid::from_display_hex(value["txid"].as_str().ok_or("utxo.txid")?)?,
         vout: u32::try_from(value["vout"].as_u64().ok_or("utxo.vout")?)?,
-        satoshis: value["satoshis"].as_u64().ok_or("utxo.satoshis")?,
+        satoshis: Amount::from_sat(value["satoshis"].as_u64().ok_or("utxo.satoshis")?),
         script_pubkey: hex::decode(
             value["script_pubkey"]
                 .as_str()

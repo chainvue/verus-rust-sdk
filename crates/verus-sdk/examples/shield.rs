@@ -37,7 +37,7 @@ use verus_sdk::verus_sapling::build::{build_shield, ShieldSpec, ShieldedOutput, 
 use verus_sdk::verus_sapling::params::SaplingParams;
 use verus_sdk::verus_sapling::zaddr;
 use verus_sdk::verus_sapling::VERUS_ZIP212;
-use verus_sdk::verus_tx::{sign_p2pkh_inputs, Txid, Utxo};
+use verus_sdk::verus_tx::{sign_p2pkh_inputs, Amount, Txid, Utxo};
 use verus_sdk::verus_wire::consensus::VERUS_BRANCH_ID;
 use verus_sdk::verus_wire::hash::txid_display;
 use verus_sdk::verus_wire::{TxIn, TxOut};
@@ -61,7 +61,7 @@ fn main() -> Result<(), Error> {
             Ok(Utxo {
                 txid: Txid::from_display_hex(u["txid"].as_str().ok_or("utxo.txid")?)?,
                 vout: u32::try_from(u["vout"].as_u64().ok_or("utxo.vout")?)?,
-                satoshis: u["satoshis"].as_u64().ok_or("utxo.satoshis")?,
+                satoshis: Amount::from_sat(u["satoshis"].as_u64().ok_or("utxo.satoshis")?),
                 script_pubkey: hex::decode(
                     u["script_pubkey"].as_str().ok_or("utxo.script_pubkey")?,
                 )?,
@@ -95,7 +95,7 @@ fn main() -> Result<(), Error> {
     // Conservation, in exact integers, before anything is proven or signed:
     // inputs = shielded + transparent change + fee. The daemon accepts an
     // overshoot and hands the difference to a miner, so this is caught here.
-    let inputs_total: u64 = utxos.iter().map(|u| u.satoshis).sum();
+    let inputs_total: u64 = utxos.iter().map(|u| u.satoshis.to_sat()).sum();
     let shielded_total: u64 = shielded.iter().map(|o| o.value).sum();
     let spent = shielded_total
         .checked_add(fee)

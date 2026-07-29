@@ -5,16 +5,19 @@
 //!
 //! ```no_run
 //! use verus_keys::{Address, PrivateKey};
-//! use verus_tx::{build_transparent_send, Recipient, SendParams, Txid, Utxo};
+//! use verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
 //!
 //! let key = PrivateKey::from_wif("UusoQ…")?;
 //! let utxos = [Utxo {
 //!     txid: Txid::from_display_hex("aa…")?,
 //!     vout: 0,
-//!     satoshis: 100_000_000,
+//!     satoshis: Amount::from_sat(100_000_000),
 //!     script_pubkey: key.address().p2pkh_script_pubkey()?,
 //! }];
-//! let to = [Recipient { address: "RPsQ…".parse::<Address>()?, satoshis: 50_000_000 }];
+//! let to = [Recipient {
+//!     address: "RPsQ…".parse::<Address>()?,
+//!     satoshis: Amount::from_sat(50_000_000),
+//! }];
 //!
 //! let signed = build_transparent_send(
 //!     &key,
@@ -41,6 +44,7 @@
 
 #![doc(html_no_source)]
 
+mod amount;
 mod assemble;
 pub mod cc;
 pub mod decode;
@@ -54,6 +58,7 @@ mod token;
 mod txid;
 pub mod update;
 
+pub use amount::{Amount, SATS_PER_COIN};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
@@ -80,8 +85,8 @@ pub struct Utxo {
     pub txid: Txid,
     /// Index of the output within that transaction.
     pub vout: u32,
-    /// Value in satoshis.
-    pub satoshis: u64,
+    /// What it is worth.
+    pub satoshis: Amount,
     /// The scriptPubKey it pays to. Must be P2PKH for now.
     pub script_pubkey: Vec<u8>,
 }

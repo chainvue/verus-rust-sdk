@@ -268,6 +268,7 @@ fn republish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amount::Amount;
     use crate::cc::Destination;
     use crate::Txid;
 
@@ -305,7 +306,7 @@ mod tests {
         Utxo {
             txid: Txid::from_internal([0xaa; 32]),
             vout: 0,
-            satoshis: 0,
+            satoshis: Amount::from_sat(0),
             script_pubkey: identity_primary_script(
                 identity_id(&identity.name, Some(identity.parent)),
                 identity.to_bytes().unwrap(),
@@ -320,7 +321,7 @@ mod tests {
         vec![Utxo {
             txid: Txid::from_internal([0xbb; 32]),
             vout: 0,
-            satoshis: 100_000_000,
+            satoshis: Amount::from_sat(100_000_000),
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }]
     }

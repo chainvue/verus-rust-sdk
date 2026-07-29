@@ -38,7 +38,8 @@ use std::io::Read;
 use serde_json::{json, Value};
 use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::{
-    build_token_send, decode_output_script, OutputKind, TokenRecipient, TokenSendParams, Txid, Utxo,
+    build_token_send, decode_output_script, Amount, OutputKind, TokenRecipient, TokenSendParams,
+    Txid, Utxo,
 };
 
 type Error = Box<dyn std::error::Error>;
@@ -74,7 +75,7 @@ fn main() -> Result<(), Error> {
             Ok(TokenRecipient {
                 address: r["address"].as_str().ok_or("recipient.address")?.parse()?,
                 currency: currency.hash(),
-                amount: r["amount"].as_u64().ok_or("recipient.amount")?,
+                amount: Amount::from_sat(r["amount"].as_u64().ok_or("recipient.amount")?),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -111,14 +112,14 @@ fn main() -> Result<(), Error> {
         json!({
             "txid": signed.txid,
             "hex": signed.hex,
-            "fee": signed.fee,
-            "native_change": signed.change,
+            "fee": signed.fee.to_sat(),
+            "native_change": signed.change.to_sat(),
             "inputs_used": signed.inputs_used.len(),
             "tokens_in": available.iter()
                 .map(|(id, amount)| json!({ "currency": id, "amount": amount }))
                 .collect::<Vec<_>>(),
             "tokens_sent": recipients.iter()
-                .map(|r| json!({ "currency": hex::encode(r.currency), "amount": r.amount }))
+                .map(|r| json!({ "currency": hex::encode(r.currency), "amount": r.amount.to_sat() }))
                 .collect::<Vec<_>>(),
         })
     );
@@ -129,7 +130,7 @@ fn read_utxo(value: &Value) -> Result<Utxo, Error> {
     Ok(Utxo {
         txid: Txid::from_display_hex(value["txid"].as_str().ok_or("utxo.txid")?)?,
         vout: u32::try_from(value["vout"].as_u64().ok_or("utxo.vout")?)?,
-        satoshis: value["satoshis"].as_u64().ok_or("utxo.satoshis")?,
+        satoshis: Amount::from_sat(value["satoshis"].as_u64().ok_or("utxo.satoshis")?),
         script_pubkey: hex::decode(
             value["script_pubkey"]
                 .as_str()
