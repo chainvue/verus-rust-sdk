@@ -165,7 +165,7 @@ fn registration() {
             &utxos,
             &primaries,
             chain(),
-            100_00000000,
+            Amount::from_sat(100_00000000),
             key().address(),
             Expiry::Never,
         )
@@ -198,7 +198,7 @@ fn referred_registration() {
             &utxos,
             &primaries,
             chain(),
-            100_00000000,
+            Amount::from_sat(100_00000000),
             key().address(),
             Expiry::Never,
         )
@@ -237,7 +237,7 @@ fn referral_chain_pays_every_level() {
             &utxos,
             &primaries,
             chain(),
-            100_00000000,
+            Amount::from_sat(100_00000000),
             key().address(),
             Expiry::Never,
         )
@@ -288,13 +288,13 @@ fn sub_identity_registration() {
             &utxos,
             &primaries,
             chain(),
-            0,
+            Amount::from_sat(0),
             key().address(),
             Expiry::Never,
         )
         .with_parent_currency(ParentCurrencyFee {
-            fee: 1_00000000,
-            native_import_fee: 2_000_000,
+            fee: Amount::from_sat(1_00000000),
+            native_import_fee: Amount::from_sat(2_000_000),
             token_funding: &token_funding,
             proof_protocol: 2,
         }),

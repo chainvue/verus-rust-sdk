@@ -41,6 +41,7 @@
 use verus_keys::{Address, PrivateKey};
 use verus_wire::TxOut;
 
+use crate::amount::Amount;
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::cc::identity_primary_script;
 use crate::decode::{decode_output_script, OutputKind};
@@ -270,7 +271,7 @@ fn republish(
                 value: 0,
                 script_pubkey,
             }],
-            burn: 0,
+            burn: Amount::ZERO,
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: common.change_address,
@@ -283,7 +284,6 @@ fn republish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amount;
     use crate::cc::Destination;
     use crate::Txid;
 

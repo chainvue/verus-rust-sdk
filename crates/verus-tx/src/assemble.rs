@@ -30,7 +30,7 @@ pub(crate) struct Assembly<'a> {
     pub(crate) outputs: Vec<TxOut>,
     /// Value that leaves the transaction without an output — the registration
     /// fee. Funded and conserved like any other outlay.
-    pub(crate) burn: u64,
+    pub(crate) burn: Amount,
     /// Output count handed to the fee estimator.
     pub(crate) fee_output_count: u64,
     /// Where change goes.
@@ -65,7 +65,7 @@ pub(crate) fn assemble(
 
     // A burn is caller-supplied chain policy, so a typo in it is possible and
     // conservation would certify the result regardless.
-    check_burn_ceiling(plan.burn)?;
+    check_burn_ceiling(plan.burn.to_sat())?;
 
     // Everything that has to be funded: the value the declared outputs carry
     // plus the burn. Most callers here emit only valueless CryptoConditions and
@@ -73,7 +73,7 @@ pub(crate) fn assemble(
     // omitting it under-funds the transaction by exactly the payout.
     let declared_value: u64 = plan.outputs.iter().map(|out| out.value).sum();
     let required = declared_value
-        .checked_add(plan.burn)
+        .checked_add(plan.burn.to_sat())
         .ok_or(TxError::ValueOverflow)?;
 
     let selection = select_utxos(
@@ -117,7 +117,7 @@ pub(crate) fn assemble(
     let inputs_total: u64 = inputs.iter().map(|u| u.satoshis.to_sat()).sum();
     let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
-    let expected = selection.fee + plan.burn;
+    let expected = selection.fee + plan.burn.to_sat();
     if actual != i128::from(expected) {
         return Err(TxError::ValueNotConserved {
             inputs: inputs_total,

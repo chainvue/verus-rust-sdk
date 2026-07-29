@@ -36,6 +36,7 @@
 
 use verus_keys::{Address, PrivateKey};
 
+use crate::amount::Amount;
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::cc::{identity_primary_script, Destination};
 use crate::decode::{decode_output_script, OutputKind};
@@ -188,7 +189,7 @@ pub fn build_identity_update(
                 value: 0,
                 script_pubkey,
             }],
-            burn: 0,
+            burn: Amount::ZERO,
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: &params.change_address,
@@ -226,7 +227,6 @@ fn check_authority_unchanged(current: &Identity, proposed: &Identity) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amount;
     use crate::Txid;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
