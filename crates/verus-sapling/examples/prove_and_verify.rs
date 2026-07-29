@@ -198,13 +198,14 @@ fn main() {
     let spend = build_shielded_spend(
         &params,
         &SpendSpec {
-            note: NoteToSpend {
+            notes: &[NoteToSpend {
                 extsk_bytes: &account.extsk,
                 output: &outputs[mine],
                 tree_before_block: &empty_tree,
                 block_cmus: &block_cmus,
                 my_cmu_index: mine,
-            },
+                advanced_witness: None,
+            }],
             shielded_outputs: &shielded_change,
             transparent_outputs: &transparent_outputs,
             fee: 10_000_000,
