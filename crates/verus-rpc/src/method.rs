@@ -28,6 +28,7 @@ pub(crate) enum Method {
     GetCurrencyState,
     EstimateConversion,
     GetIdentity,
+    GetVdxfId,
     VerifyMessage,
     // Transactions
     GetRawTransaction,
@@ -52,6 +53,7 @@ impl Method {
             Method::GetCurrencyState => "getcurrencystate",
             Method::EstimateConversion => "estimateconversion",
             Method::GetIdentity => "getidentity",
+            Method::GetVdxfId => "getvdxfid",
             Method::VerifyMessage => "verifymessage",
             Method::GetRawTransaction => "getrawtransaction",
             Method::DecodeRawTransaction => "decoderawtransaction",
@@ -80,6 +82,7 @@ impl Method {
         Method::GetCurrencyState,
         Method::EstimateConversion,
         Method::GetIdentity,
+        Method::GetVdxfId,
         Method::VerifyMessage,
         Method::GetRawTransaction,
         Method::DecodeRawTransaction,

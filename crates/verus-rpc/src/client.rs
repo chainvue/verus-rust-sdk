@@ -100,6 +100,25 @@ pub trait ChainReader {
     /// `api.verustest.net` is arity-sensitive, and a third argument is refused
     /// as `-32601` — see [the crate docs](crate).
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError>;
+    /// The VDXF key a content name resolves to.
+    ///
+    /// Returns the 20-byte key, in the order a content map stores it.
+    ///
+    /// **This needs a node, and that is a real limitation.** The derivation is
+    /// public and deterministic, so it ought to be computable offline; the
+    /// construction was probed at length and not pinned down, and publishing
+    /// content under a *guessed* key would put it somewhere nobody looks. So it
+    /// is asked rather than invented.
+    ///
+    /// Two things to know about the answer:
+    ///
+    /// * A **bare** name resolves against the node's own chain, so `"profile"`
+    ///   means different keys on VRSC and VRSCTEST. A `vrsc::`-qualified name
+    ///   names its namespace and gives the same key everywhere — prefer it.
+    /// * The daemon prints `hash160result` byte-**reversed** relative to the
+    ///   `vdxfid` address, the same convention as a txid. This returns the key
+    ///   in `vdxfid` order.
+    fn vdxf_id(&self, name: &str) -> Result<[u8; 20], RpcError>;
     /// Ask the node whether a signed message checks out.
     ///
     /// **A cross-check, not the primary path.** `verus_tx::signature` verifies
@@ -305,6 +324,23 @@ impl<T: Transport> ChainReader for RpcClient<T> {
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError> {
         let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id, height]))?;
         raw.into_typed()
+    }
+
+    fn vdxf_id(&self, name: &str) -> Result<[u8; 20], RpcError> {
+        let answer: serde_json::Value = self.call(Method::GetVdxfId, json!([name]))?;
+        let printed = answer["hash160result"]
+            .as_str()
+            .ok_or_else(|| RpcError::Unexpected("getvdxfid returned no hash160result".into()))?;
+        let mut bytes: [u8; 20] = hex::decode(printed)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| {
+                RpcError::Unexpected(format!("getvdxfid returned {printed:?}, not 20 bytes"))
+            })?;
+        // Printed in display order, like a txid. Reversed here so the caller
+        // gets what a content map actually holds.
+        bytes.reverse();
+        Ok(bytes)
     }
 
     fn verify_message(

@@ -301,6 +301,13 @@ impl ChainReader for ScriptedReader {
             })
     }
 
+    fn vdxf_id(&self, _name: &str) -> Result<[u8; 20], RpcError> {
+        self.count();
+        Err(RpcError::Unexpected(
+            "the scripted chain does not derive VDXF keys".into(),
+        ))
+    }
+
     fn verify_message(
         &self,
         _identity: &str,
