@@ -1,0 +1,56 @@
+# Recorded RPC replies
+
+Verbatim bodies captured from `https://api.verustest.net`, committed so the
+parsers are tested against bytes the network actually produced rather than
+against a mock written from documentation. Same reasoning as `fixtures/daemon/`.
+
+Regenerate one with:
+
+```sh
+curl -s -X POST https://api.verustest.net -H 'content-type: application/json' \
+  --data '{"method":"getcurrency","params":["VRSCTEST"],"id":"c"}' \
+  > fixtures/rpc/getcurrency_vrsctest.json
+```
+
+Two things must survive any regeneration, or the tests they support stop
+meaning anything:
+
+- **`getcurrency_vrsctest.json` must keep `"idregistrationfees":100.0`
+  literally.** A fee arrives from the daemon in *coins*, as a JSON float, while
+  the builders take satoshis. That token is the whole reason `json.rs` exists;
+  if a regeneration rewrites it to `100` or `10000000000`, the exactness test
+  passes for the wrong reason.
+- **The `err_*.json` files must keep their exact shape** — in particular that an
+  error reply carries **no `result` key at all**, rather than `result: null`.
+  That is what breaks the obvious `struct { result: T, error: Option<E> }`.
+
+| File | What it pins |
+|---|---|
+| `getinfo.json` | chain name, id, height |
+| `getcurrency_vrsctest.json` | the `100.0` coins literal, referral levels, proofprotocol |
+| `getaddressutxos_funded.json` | outputs with `satoshis`, `height`, `isspendable` |
+| `getaddressutxos_empty.json` | an address with nothing — the empty array |
+| `getaddressutxos_second_address.json` | a second funded address |
+| `getidentity_rustsdk.json` | an identity and the outpoint holding it |
+| `err_notfound.json` | `-5`, unknown identity |
+| `err_badparam.json` | `-1`, with a long help-text message |
+| `err_baddecode.json` | `-22`, `sendrawtransaction` refusing bad hex |
+| `err_methodmissing.json` | `-32601` — "refused", which is not the same as "absent"; see below |
+| `getaddressbalance.json` | the same balance in satoshis *and* in coins, in one reply |
+
+## `-32601` is not proof a method is missing
+
+The endpoint is a filtering proxy and its allowlist is **arity-sensitive**:
+
+```sh
+# Served.
+--data '{"method":"getblock","params":[1166308],"id":"c"}'
+# Same method, refused as "Method not found".
+--data '{"method":"getblock","params":[1166308,1],"id":"c"}'
+```
+
+An availability table built by probing with a convenient argument count will be
+wrong. This one was: `getblock` was recorded as absent, and it is not — which
+means a block's Sapling commitments *are* enumerable through the public node
+after all. `z_gettreestate` is genuinely gone at every arity, and
+`getsaplingtree` answers only for the tip whatever height it is given.

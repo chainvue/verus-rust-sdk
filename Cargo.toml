@@ -5,6 +5,7 @@ members = [
     "crates/verus-keys",
     "crates/verus-tx",
     "crates/verus-sapling",
+    "crates/verus-rpc",
     "crates/verus-sdk",
 ]
 
