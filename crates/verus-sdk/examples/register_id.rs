@@ -93,7 +93,13 @@ fn main() -> Result<(), Error> {
         None => random_salt()?,
     };
 
-    let reservation = NameReservation::new(name, parent.hash(), None, salt)?;
+    // A referral is committed to in step 1 and must be identical in step 2 —
+    // it is inside the hash consensus re-derives.
+    let referral = match spec["referral"].as_str() {
+        Some(text) => Some(text.parse::<Address>()?.hash()),
+        None => None,
+    };
+    let reservation = NameReservation::new(name, parent.hash(), referral, salt)?;
 
     match spec["step"].as_u64() {
         Some(1) => {
@@ -113,12 +119,30 @@ fn main() -> Result<(), Error> {
                     "salt": hex::encode(reservation.salt),
                     "salt_daemon_display": hex::encode(reservation.salt_display()),
                     "commitment_hash": hex::encode(reservation.commitment_hash()?),
+                    "referral": spec["referral"].as_str(),
                     "identity_address": identity_address(&reservation)?,
                 })
             );
         }
         Some(2) => {
             let commitment = read_utxo(&spec["commitment"])?;
+            // Only needed when the referrer was itself referred; the chain is
+            // chain state, read from each referrer's getidentity output.
+            let referral_chain: Vec<[u8; 20]> = spec["referral_chain"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|e| -> Result<[u8; 20], Error> {
+                            Ok(e.as_str()
+                                .ok_or("referral_chain[]")?
+                                .parse::<Address>()?
+                                .hash())
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
             let primary_addresses = spec["primary_addresses"]
                 .as_array()
                 .ok_or("spec.primary_addresses")?
@@ -146,6 +170,8 @@ fn main() -> Result<(), Error> {
                     registration_fee: spec["registration_fee"]
                         .as_u64()
                         .ok_or("spec.registration_fee")?,
+                    referral_levels: u32::try_from(spec["referral_levels"].as_u64().unwrap_or(3))?,
+                    referral_chain: &referral_chain,
                     change_address,
                     expiry_height,
                     fee_per_kb: 10_000,

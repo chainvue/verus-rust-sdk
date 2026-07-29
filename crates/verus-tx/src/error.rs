@@ -158,6 +158,24 @@ pub enum TxError {
         satoshis: u64,
     },
 
+    /// Amounts that overflow a u64 when summed.
+    #[error("transaction value overflows a 64-bit integer")]
+    ValueOverflow,
+
+    /// A referral chain was supplied for a reservation that committed to no
+    /// referral. The commitment fixes whether there is a referrer at all.
+    #[error("a referral chain was supplied but the reservation committed to no referral")]
+    ReferralNotCommitted,
+
+    /// More referrers than the chain pays out.
+    #[error("referral chain has {entries} entries but only {levels} levels are paid")]
+    ReferralChainTooLong {
+        /// Entries the caller supplied.
+        entries: usize,
+        /// Levels the chain pays.
+        levels: u32,
+    },
+
     /// The signing key is not one of the identity's primary addresses.
     ///
     /// The identity output's condition can only be satisfied by a key the

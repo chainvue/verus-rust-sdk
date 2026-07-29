@@ -60,7 +60,7 @@ use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
-use crate::cc::{cc_script, identity_primary_script, OptCcParams};
+use crate::cc::{cc_script, identity_payment_script, identity_primary_script, OptCcParams};
 use crate::cc::{Destination, EVAL_NONE};
 use crate::error::TxError;
 use crate::fee::DEFAULT_FEE_PER_KB;
@@ -368,18 +368,59 @@ pub struct RegistrationParams<'a> {
     pub revocation_authority: Option<[u8; 20]>,
     /// Who may recover after revocation. Defaults to the identity itself.
     pub recovery_authority: Option<[u8; 20]>,
-    /// The registration fee, in satoshis, burned as an implicit miner fee.
+    /// The registration fee, in satoshis, before any referral discount.
     ///
-    /// Chain policy, not a constant this crate can know: `getinfo` reports it as
-    /// `idregistrationfees`. Passing the wrong value gets the transaction
+    /// Chain policy, not a constant this crate can know: `getcurrency` reports
+    /// it as `idregistrationfees`. Passing the wrong value gets the transaction
     /// rejected with the commitment already spent.
     pub registration_fee: u64,
+    /// How many referral levels the chain pays out — `getcurrency`'s
+    /// `idreferrallevels`, 3 on VRSCTEST. Only consulted when the reservation
+    /// names a referral; it sets the size of each payout.
+    pub referral_levels: u32,
+    /// The referral chain to pay, nearest referrer first.
+    ///
+    /// Empty means "just the referrer named in the reservation". Supply more
+    /// only when that referrer was itself referred: the chain is chain state
+    /// this crate cannot see, and each entry is read from the previous one's
+    /// `getidentity` output. Too few or too many entries is a transaction the
+    /// daemon rejects with the commitment already spent.
+    pub referral_chain: &'a [[u8; 20]],
     /// Where change goes.
     pub change_address: Address,
     /// Block height after which the transaction expires; `0` never expires.
     pub expiry_height: u32,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
+}
+
+/// What a registration actually costs, once a referral is taken into account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegistrationFees {
+    /// Paid to each referrer in the chain.
+    pub referral_amount: u64,
+    /// What the registrant parts with in total: the payouts plus the burn.
+    pub outlay: u64,
+}
+
+/// Split a registration fee the way consensus does.
+///
+/// Unreferred, the registrant burns the whole fee. Referred, they pay
+/// `fee * (levels + 1) / (levels + 2)` and each referrer takes
+/// `fee / (levels + 2)` out of it. Integer division throughout, matching the
+/// daemon — 100 VRSC over 3 levels is 80 paid, 20 per referrer.
+pub fn registration_fees(fee: u64, levels: u32, referred: bool) -> RegistrationFees {
+    if !referred {
+        return RegistrationFees {
+            referral_amount: 0,
+            outlay: fee,
+        };
+    }
+    let levels = u64::from(levels);
+    RegistrationFees {
+        referral_amount: fee / (levels + 2),
+        outlay: fee * (levels + 1) / (levels + 2),
+    }
 }
 
 /// A registration, signed and ready to broadcast.
@@ -400,6 +441,17 @@ pub struct SignedRegistration {
 /// Spends the step-1 commitment as input 0 and publishes three things: the
 /// identity itself, the revealed reservation, and the registration fee — which
 /// is *burned*, appearing as an oversized miner fee rather than as an output.
+///
+/// # Referrals
+///
+/// When the reservation names a referral the registrant pays **less**, not
+/// more. With `idreferrallevels` of 3 and a 100 VRSC fee, each referrer is paid
+/// `fee / (levels + 2)` = 20, the registrant's total outlay is
+/// `fee * (levels + 1) / (levels + 2)` = 80, and the remaining 60 is burned.
+/// Funding the full 100 overpays by 20 on every referred registration.
+///
+/// Verified against a `registeridentity` the daemon built on VRSCTEST: one
+/// 20.0 payout to the referrer, inputs minus outputs exactly 60.
 pub fn build_identity_registration(
     key: &PrivateKey,
     params: &RegistrationParams<'_>,
@@ -458,21 +510,56 @@ pub fn build_identity_registration(
         unlock_after: 0,
     };
 
-    let outputs = vec![
-        TxOut {
-            value: 0,
-            script_pubkey: identity_primary_script(
-                identity_id,
-                identity.to_bytes()?,
-                revocation,
-                recovery,
-            )?,
-        },
-        TxOut {
-            value: 0,
-            script_pubkey: reservation_script(identity_id, params.reservation)?,
-        },
-    ];
+    // Referral payouts sit between the identity and the reservation, which is
+    // where the daemon puts them.
+    let fees = registration_fees(
+        params.registration_fee,
+        params.referral_levels,
+        params.reservation.referral.is_some(),
+    );
+    let referrers: Vec<[u8; 20]> = match (params.reservation.referral, params.referral_chain) {
+        (None, []) => Vec::new(),
+        (None, _) => return Err(TxError::ReferralNotCommitted),
+        (Some(referrer), []) => vec![referrer],
+        (Some(_), chain) => chain.to_vec(),
+    };
+    if referrers.len() > params.referral_levels as usize {
+        return Err(TxError::ReferralChainTooLong {
+            entries: referrers.len(),
+            levels: params.referral_levels,
+        });
+    }
+
+    let mut outputs = Vec::with_capacity(referrers.len() + 2);
+    outputs.push(TxOut {
+        value: 0,
+        script_pubkey: identity_primary_script(
+            identity_id,
+            identity.to_bytes()?,
+            revocation,
+            recovery,
+        )?,
+    });
+    for referrer in &referrers {
+        outputs.push(TxOut {
+            value: fees.referral_amount,
+            script_pubkey: identity_payment_script(*referrer)?,
+        });
+    }
+    outputs.push(TxOut {
+        value: 0,
+        script_pubkey: reservation_script(identity_id, params.reservation)?,
+    });
+
+    // The payouts come OUT OF the registrant's outlay; the remainder is burned.
+    let paid_out = fees.referral_amount * referrers.len() as u64;
+    let burn = fees
+        .outlay
+        .checked_sub(paid_out)
+        .ok_or(TxError::ReferralChainTooLong {
+            entries: referrers.len(),
+            levels: params.referral_levels,
+        })?;
 
     let transaction = assemble(
         key,
@@ -482,12 +569,12 @@ pub fn build_identity_registration(
             leading: core::slice::from_ref(params.commitment),
             funding: params.utxos,
             outputs,
-            burn: params.registration_fee,
-            // The TypeScript SDK sizes the fee for the two declared outputs plus
-            // one extra change slot on top of what selection already reserves.
-            // Kept as-is: it decides the change value, and a different estimate
-            // is a different transaction.
-            fee_output_count: 3,
+            burn,
+            // The TypeScript SDK sizes the fee for the declared outputs plus one
+            // extra change slot on top of what selection already reserves. Kept
+            // as-is: it decides the change value, and a different estimate is a
+            // different transaction.
+            fee_output_count: 3 + referrers.len() as u64,
             change_address: &params.change_address,
             expiry_height: params.expiry_height,
             fee_per_kb: params.fee_per_kb,
@@ -649,6 +736,26 @@ mod tests {
         }
     }
 
+    /// The daemon's own arithmetic: 100 VRSC over 3 referral levels pays the
+    /// referrer 20 and costs the registrant 80, of which 60 is burned. Taken
+    /// from a referred `registeridentity` on VRSCTEST, where inputs minus
+    /// outputs came to exactly 60 with a single 20.0 payout.
+    #[test]
+    fn splits_a_referred_registration_fee_the_way_the_daemon_does() {
+        let fees = registration_fees(100_00000000, 3, true);
+        assert_eq!(fees.referral_amount, 20_00000000);
+        assert_eq!(fees.outlay, 80_00000000);
+        assert_eq!(fees.outlay - fees.referral_amount, 60_00000000);
+    }
+
+    /// Without a referral the registrant burns the whole fee and nobody is paid.
+    #[test]
+    fn an_unreferred_registration_burns_the_whole_fee() {
+        let fees = registration_fees(100_00000000, 3, false);
+        assert_eq!(fees.referral_amount, 0);
+        assert_eq!(fees.outlay, 100_00000000);
+    }
+
     /// A registration whose commitment was locked to somebody else's key cannot
     /// be signed — catching it here is what stops the commitment being spent
     /// into a transaction the daemon will reject.
@@ -682,6 +789,8 @@ mod tests {
             revocation_authority: None,
             recovery_authority: None,
             registration_fee: 100_00000000,
+            referral_levels: 3,
+            referral_chain: &[],
             change_address: key.address(),
             expiry_height: 0,
             fee_per_kb: DEFAULT_FEE_PER_KB,

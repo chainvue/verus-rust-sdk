@@ -64,9 +64,18 @@ pub(crate) fn assemble(
         }
     }
 
+    // Everything that has to be funded: the value the declared outputs carry
+    // plus the burn. Most callers here emit only valueless CryptoConditions and
+    // the outputs term is zero — a referral payout is the first that is not, and
+    // omitting it under-funds the transaction by exactly the payout.
+    let declared_value: u64 = plan.outputs.iter().map(|out| out.value).sum();
+    let required = declared_value
+        .checked_add(plan.burn)
+        .ok_or(TxError::ValueOverflow)?;
+
     let selection = select_utxos(
         plan.funding,
-        plan.burn,
+        required,
         plan.fee_output_count,
         plan.fee_per_kb,
         // Every output here is a CryptoCondition, which the fee heuristic sizes
