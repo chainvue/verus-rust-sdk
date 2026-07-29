@@ -173,6 +173,47 @@ pub struct SignedOffer {
     pub funding_outpoint: (Txid, u32),
 }
 
+/// Move funds into an output that can back an offer.
+///
+/// An offer cannot be signed over an ordinary P2PKH output, so this is the step
+/// before [`make_offer`]: an ordinary transaction whose first output pays
+/// [`offer_funding_script`] for the signing key.
+///
+/// The resulting output is spendable by nobody but the key — until an offer is
+/// signed over it, at which point anyone may spend it *on the maker's terms*.
+pub fn fund_offer(
+    key: &PrivateKey,
+    utxos: &[Utxo],
+    amount: Amount,
+    change_address: &verus_keys::Address,
+    expiry: Expiry,
+    fee_per_kb: u64,
+) -> Result<crate::send::SignedTransaction, TxError> {
+    expiry.check()?;
+    if amount == Amount::ZERO {
+        return Err(TxError::InvalidOffer(
+            "an offer of nothing cannot be taken".into(),
+        ));
+    }
+    crate::assemble::assemble(
+        key,
+        &[],
+        crate::assemble::Assembly {
+            leading: &[],
+            funding: utxos,
+            outputs: vec![TxOut {
+                value: amount.to_sat(),
+                script_pubkey: offer_funding_script(key.address().hash())?,
+            }],
+            burn: Amount::ZERO,
+            fee_output_count: 2,
+            change_address,
+            expiry,
+            fee_per_kb,
+        },
+    )
+}
+
 /// Sign an offer.
 ///
 /// The result does **not** balance and must not be broadcast as it is; that is
@@ -331,8 +372,22 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     });
 
     // What the taker pays: whatever output 0 demands, funded from their own
-    // coins. A token demand is carried in the output's payload rather than its
-    // native value, so only the native part is funded here.
+    // coins.
+    //
+    // A maker who asked for a TOKEN is refused here rather than half-funded. A
+    // reserve output carries its value in the payload and zero natively, so the
+    // arithmetic below would see a demand of nothing, fund nothing, and produce
+    // a transaction that does not conserve the token — rejected on chain after
+    // the work is done. Paying a token needs reserve inputs and token change,
+    // which this path does not build.
+    if crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey)
+        .map(|kind| matches!(kind, crate::decode::OutputKind::ReserveOutput { .. }))
+        .unwrap_or(false)
+    {
+        return Err(TxError::InvalidOffer(
+            "this offer asks to be paid in a token, which taking does not fund yet".into(),
+        ));
+    }
     let owed = Amount::from_sat(transaction.outputs[0].value);
     let available = Amount::checked_sum(params.utxos.iter().map(|u| u.satoshis))
         .ok_or(TxError::ValueOverflow)?;
@@ -731,6 +786,68 @@ mod tests {
             ),
         )
         .is_err());
+    }
+
+    /// An offer asking to be paid in a token cannot be funded by this taker
+    /// path: a reserve output carries zero native value, so the demand would
+    /// read as nothing and the token side would go unfunded.
+    #[test]
+    fn an_offer_wanting_a_token_is_refused_rather_than_underfunded() {
+        let funding = funding(1_00000000);
+        let offer = make_offer(
+            &key(),
+            &OfferParams::new(
+                &funding,
+                Wanted::Token {
+                    currency: CurrencyId::from_bytes([0x2b; 20]),
+                    amount: Amount::from_sat(2_00000000),
+                    recipient: key().address().hash(),
+                },
+                Expiry::AtHeight(1_167_992),
+            ),
+        )
+        .unwrap();
+        let utxos = [taker_utxo(3_00000000)];
+        let result = take_offer(
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
+        );
+        assert!(result.is_err(), "a token demand was silently unfunded");
+    }
+
+    /// The funding step produces an output an offer can actually be signed over.
+    #[test]
+    fn funding_produces_an_output_make_offer_accepts() {
+        let coins = [Utxo {
+            txid: Txid::from_internal([0xc0; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(5_00000000),
+            script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
+        }];
+        let funded = fund_offer(
+            &key(),
+            &coins,
+            Amount::from_sat(1_00000000),
+            &key().address(),
+            Expiry::AtHeight(1_167_992),
+            crate::fee::DEFAULT_FEE_PER_KB,
+        )
+        .unwrap();
+
+        let tx = TxV4::deserialize(&hex::decode(&funded.hex).unwrap()).unwrap();
+        assert_eq!(
+            tx.outputs[0].script_pubkey,
+            offer_funding_script(key().address().hash()).unwrap(),
+            "output 0 is not an offer funding output"
+        );
+        assert_eq!(tx.outputs[0].value, 1_00000000);
     }
 
     /// Rubbish in place of an offer is refused rather than panicking.

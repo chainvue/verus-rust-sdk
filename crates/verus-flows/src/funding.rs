@@ -36,6 +36,18 @@ pub struct Funding {
     /// Reported rather than silently dropped: "you have 500 but can spend 20"
     /// is a fact a wallet needs to be able to explain to a user.
     pub immature: Vec<AddressUtxo>,
+    /// Outputs that are not plain P2PKH — reserve outputs holding tokens,
+    /// identity outputs, anything CryptoCondition.
+    ///
+    /// Kept out of [`Funding::utxos`] because the native builders refuse them,
+    /// and rightly: a reserve output's value is in its payload, not its satoshis,
+    /// so spending one as ordinary funding would destroy whatever it carries.
+    /// A wallet that holds a single token would otherwise be unable to make an
+    /// ordinary payment at all.
+    ///
+    /// Handed back rather than dropped, because a token transfer needs exactly
+    /// these — see `verus_tx::token` and `verus_flows::convert`.
+    pub other: Vec<AddressUtxo>,
 }
 
 impl Funding {
@@ -66,12 +78,27 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
         }
     }
 
-    let utxos = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
-    let spendable_outpoints: Vec<_> = utxos.iter().map(|u| (u.txid, u.vout)).collect();
-    let immature = found
+    let mature = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
+    let mature_outpoints: Vec<_> = mature.iter().map(|u| (u.txid, u.vout)).collect();
+
+    // A native builder can only spend P2PKH. Everything else is separated here
+    // rather than refused later by the builder, which cannot tell a caller
+    // which of their outputs was the problem.
+    let (utxos, other): (Vec<Utxo>, Vec<Utxo>) = mature
         .into_iter()
-        .filter(|found| !spendable_outpoints.contains(&(found.utxo.txid, found.utxo.vout)))
-        .collect();
+        .partition(|utxo| is_p2pkh(&utxo.script_pubkey));
+    let other_outpoints: Vec<_> = other.iter().map(|u| (u.txid, u.vout)).collect();
+
+    let mut immature = Vec::new();
+    let mut non_native = Vec::new();
+    for utxo in found {
+        let outpoint = (utxo.utxo.txid, utxo.utxo.vout);
+        if other_outpoints.contains(&outpoint) {
+            non_native.push(utxo);
+        } else if !mature_outpoints.contains(&outpoint) {
+            immature.push(utxo);
+        }
+    }
 
     let total = Amount::checked_sum(utxos.iter().map(|u| u.satoshis)).ok_or_else(|| {
         FlowError::NotReady("the address holds more than can be represented".into())
@@ -82,7 +109,18 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
         tip,
         total,
         immature,
+        other: non_native,
     })
+}
+
+/// `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`, and nothing else.
+fn is_p2pkh(script: &[u8]) -> bool {
+    script.len() == 25
+        && script[0] == 0x76
+        && script[1] == 0xa9
+        && script[2] == 0x14
+        && script[23] == 0x88
+        && script[24] == 0xac
 }
 
 /// Whether a transaction is a coinbase.
@@ -184,6 +222,33 @@ mod tests {
         spendable(&reader, "R1").unwrap();
         // Two lookups: 950 and 960 are within 100 of the tip, 10 is not.
         assert_eq!(reader.requests(), 4);
+    }
+
+    /// The bug this separation exists for: a wallet holding one token could not
+    /// make an ordinary payment, because the reserve output was handed to a
+    /// native builder that correctly refused it.
+    #[test]
+    fn a_token_output_does_not_break_a_native_send() {
+        let address = "R1";
+        let reader = ScriptedReader::new(1_000)
+            .with_utxo(address, 100, 5_000_000)
+            .with_reserve_utxo(address, 200);
+
+        let funding = spendable(&reader, address).unwrap();
+        assert_eq!(funding.utxos.len(), 1, "the reserve output was left in");
+        assert_eq!(funding.total.to_sat(), 5_000_000);
+        assert_eq!(funding.other.len(), 1, "the reserve output was dropped");
+        assert!(funding.immature.is_empty());
+    }
+
+    /// A reserve output's value is in its payload, so it must not be counted as
+    /// native funds either.
+    #[test]
+    fn a_token_output_is_not_counted_as_native_value() {
+        let reader = ScriptedReader::new(1_000).with_reserve_utxo("R1", 200);
+        let funding = spendable(&reader, "R1").unwrap();
+        assert_eq!(funding.total.to_sat(), 0);
+        assert!(funding.utxos.is_empty());
     }
 
     #[test]
