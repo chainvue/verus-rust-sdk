@@ -28,6 +28,7 @@ use verus_keys::{Address, PrivateKey};
 use verus_tx::cc::{reserve_output_script, Destination};
 use verus_tx::identity::Identity;
 use verus_tx::register::{commitment_script, identity_id, NameReservation};
+use verus_tx::CurrencyId;
 use verus_tx::{decode_output_script, identity_payment_script, identity_primary_script};
 
 const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
@@ -97,7 +98,12 @@ fn valid_scripts() -> Vec<Vec<u8>> {
     vec![
         key().address().p2pkh_script_pubkey().unwrap(),
         identity_payment_script(id).unwrap(),
-        reserve_output_script(key().address().hash(), [0x77; 20], 42_000_000).unwrap(),
+        reserve_output_script(
+            key().address().hash(),
+            CurrencyId::from_bytes([0x77; 20]),
+            42_000_000,
+        )
+        .unwrap(),
         identity_primary_script(
             id,
             identity.to_bytes().unwrap(),

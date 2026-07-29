@@ -27,7 +27,7 @@ fn vector(name: &str) -> Value {
 
 /// The currency id behind an `i` address.
 fn currency_of(address: &str) -> CurrencyId {
-    address.parse::<Address>().expect("valid i-address").hash()
+    CurrencyId::from_bytes(address.parse::<Address>().expect("valid i-address").hash())
 }
 
 #[test]

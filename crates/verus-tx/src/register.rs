@@ -65,6 +65,7 @@ use crate::cc::{
     OptCcParams, EVAL_RESERVE_OUTPUT,
 };
 use crate::cc::{Destination, EVAL_NONE};
+use crate::currency::CurrencyId;
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
 use crate::expiry::Expiry;
@@ -718,7 +719,10 @@ pub fn build_identity_registration(
             value: 0,
             script_pubkey: reserve_output_script_to(
                 Destination::Identity(parent),
-                parent,
+                // The parent identity read as the currency it launched — the
+                // same twenty bytes wearing the other hat. Written out because
+                // it is an assumption, not a coincidence to lean on silently.
+                CurrencyId::of_identity(parent),
                 sub.fee,
             )?,
         });
@@ -743,7 +747,7 @@ pub fn build_identity_registration(
             match decode_output_script(&utxo.script_pubkey)? {
                 OutputKind::ReserveOutput { tokens, .. } => {
                     for (currency, amount) in tokens {
-                        if currency != parent {
+                        if currency != CurrencyId::of_identity(parent) {
                             return Err(TxError::UnsupportedFundingEval {
                                 txid: utxo.txid.to_display_hex(),
                                 vout: utxo.vout,
@@ -765,7 +769,7 @@ pub fn build_identity_registration(
         let change = held
             .checked_sub(sub.fee)
             .ok_or(TxError::InsufficientTokens {
-                currency: hex::encode(parent),
+                currency: CurrencyId::of_identity(parent).to_string(),
                 missing: sub.fee - held.min(sub.fee),
             })?;
         if change > 0 {
@@ -773,7 +777,7 @@ pub fn build_identity_registration(
                 value: 0,
                 script_pubkey: reserve_output_script_to(
                     Destination::PubKeyHash(params.change_address.hash()),
-                    parent,
+                    CurrencyId::of_identity(parent),
                     change,
                 )?,
             });

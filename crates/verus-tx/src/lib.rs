@@ -47,6 +47,7 @@
 mod amount;
 mod assemble;
 pub mod cc;
+mod currency;
 pub mod decode;
 mod error;
 mod expiry;
@@ -62,6 +63,7 @@ pub mod update;
 
 pub use amount::{Amount, SATS_PER_COIN};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
+pub use currency::CurrencyId;
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
@@ -78,7 +80,7 @@ pub use revoke::{
 pub use send::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
-pub use token::{build_token_send, CurrencyId, TokenRecipient, TokenSendParams};
+pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use txid::Txid;
 pub use update::{build_identity_update, UpdateParams};
 

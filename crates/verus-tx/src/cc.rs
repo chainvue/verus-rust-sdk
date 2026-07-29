@@ -26,6 +26,7 @@
 //! rather than against that reading, because a comment cannot be wrong in a way
 //! a test cannot catch.
 
+use crate::currency::CurrencyId;
 use crate::error::TxError;
 use crate::identity::{EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE};
 
@@ -271,9 +272,9 @@ pub fn identity_payment_script(identity: [u8; 20]) -> Result<Vec<u8>, TxError> {
 
 /// Serialize a single-currency `TokenOutput`: the payload that says *which*
 /// token an output holds and *how much*.
-pub fn token_output(currency: [u8; 20], amount: u64) -> Vec<u8> {
+pub fn token_output(currency: CurrencyId, amount: u64) -> Vec<u8> {
     let mut out = var_int(TOKEN_OUTPUT_VERSION_SINGLE);
-    out.extend_from_slice(&currency);
+    out.extend_from_slice(&currency.to_bytes());
     out.extend_from_slice(&var_int(amount));
     out
 }
@@ -284,7 +285,7 @@ pub fn token_output(currency: [u8; 20], amount: u64) -> Vec<u8> {
 /// is the token amount inside the payload, not the satoshis on the output.
 pub fn reserve_output_script(
     destination: [u8; 20],
-    currency: [u8; 20],
+    currency: CurrencyId,
     amount: u64,
 ) -> Result<Vec<u8>, TxError> {
     reserve_output_script_to(Destination::PubKeyHash(destination), currency, amount)
@@ -297,7 +298,7 @@ pub fn reserve_output_script(
 /// hash produces an output nobody can spend.
 pub fn reserve_output_script_to(
     destination: Destination,
-    currency: [u8; 20],
+    currency: CurrencyId,
     amount: u64,
 ) -> Result<Vec<u8>, TxError> {
     let master = OptCcParams::one_of_one(EVAL_NONE, destination.clone());
@@ -432,10 +433,10 @@ mod tests {
         0x4e, 0xef, 0xc3, 0x04, 0xd9,
     ];
     /// The token's currency id.
-    const CURRENCY: [u8; 20] = [
+    const CURRENCY: CurrencyId = CurrencyId::from_bytes([
         0xf3, 0xec, 0x55, 0x36, 0x34, 0xef, 0x17, 0x42, 0x31, 0xa1, 0x4c, 0x0a, 0x28, 0xef, 0x4e,
         0x72, 0xc9, 0xba, 0x5f, 0xda,
-    ];
+    ]);
 
     #[test]
     fn reproduces_the_golden_reserve_output_script() {

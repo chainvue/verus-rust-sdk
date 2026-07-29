@@ -38,7 +38,7 @@ use std::io::Read;
 use serde_json::{json, Value};
 use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::{
-    build_token_send, decode_output_script, Amount, Expiry, OutputKind, TokenRecipient,
+    build_token_send, decode_output_script, Amount, CurrencyId, Expiry, OutputKind, TokenRecipient,
     TokenSendParams, Txid, Utxo,
 };
 
@@ -78,7 +78,7 @@ fn main() -> Result<(), Error> {
                 .parse()?;
             Ok(TokenRecipient {
                 address: r["address"].as_str().ok_or("recipient.address")?.parse()?,
-                currency: currency.hash(),
+                currency: CurrencyId::from_bytes(currency.hash()),
                 amount: Amount::from_sat(r["amount"].as_u64().ok_or("recipient.amount")?),
             })
         })
@@ -91,7 +91,7 @@ fn main() -> Result<(), Error> {
         if let OutputKind::ReserveOutput { tokens, .. } = decode_output_script(&utxo.script_pubkey)?
         {
             for (currency, amount) in tokens {
-                let currency = hex::encode(currency);
+                let currency = currency.to_string();
                 match available.iter_mut().find(|(id, _)| *id == currency) {
                     Some(entry) => entry.1 += amount,
                     None => available.push((currency, amount)),
@@ -116,7 +116,7 @@ fn main() -> Result<(), Error> {
                 .map(|(id, amount)| json!({ "currency": id, "amount": amount }))
                 .collect::<Vec<_>>(),
             "tokens_sent": recipients.iter()
-                .map(|r| json!({ "currency": hex::encode(r.currency), "amount": r.amount.to_sat() }))
+                .map(|r| json!({ "currency": r.currency.to_string(), "amount": r.amount.to_sat() }))
                 .collect::<Vec<_>>(),
         })
     );

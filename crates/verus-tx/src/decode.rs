@@ -13,6 +13,7 @@
 //! outputs take the native path.
 
 use crate::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
+use crate::currency::CurrencyId;
 use crate::error::TxError;
 use crate::identity::{
     Identity, EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
@@ -38,7 +39,7 @@ pub enum OutputKind {
         /// Destination hash.
         destination: [u8; 20],
         /// `(currency id, amount)` pairs the output carries.
-        tokens: Vec<([u8; 20], u64)>,
+        tokens: Vec<(CurrencyId, u64)>,
     },
     /// A pay-to-identity output: native value held for a VerusID.
     ///
@@ -142,7 +143,7 @@ fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
 }
 
 /// Parse a single-currency `TokenOutput` payload.
-fn parse_token_output(payload: &[u8]) -> Result<([u8; 20], u64), TxError> {
+fn parse_token_output(payload: &[u8]) -> Result<(CurrencyId, u64), TxError> {
     let mut offset = 0;
     let version = read_var_int(payload, &mut offset)?;
     // Bit 1 selects the multivalue encoding, which prefixes a count. Nothing
@@ -163,7 +164,7 @@ fn parse_token_output(payload: &[u8]) -> Result<([u8; 20], u64), TxError> {
     if offset != payload.len() {
         return Err(malformed("trailing bytes after the TokenOutput amount"));
     }
-    Ok((currency, amount))
+    Ok((CurrencyId::from_bytes(currency), amount))
 }
 
 /// Decode an output script.
@@ -295,10 +296,10 @@ mod tests {
         0xa0, 0x0a, 0x0a, 0x30, 0xa0, 0x20, 0xa4, 0xf4, 0x70, 0x8e, 0xe2, 0x8a, 0xeb, 0x62, 0xf1,
         0x4e, 0xef, 0xc3, 0x04, 0xd9,
     ];
-    const CURRENCY: [u8; 20] = [
+    const CURRENCY: CurrencyId = CurrencyId::from_bytes([
         0xf3, 0xec, 0x55, 0x36, 0x34, 0xef, 0x17, 0x42, 0x31, 0xa1, 0x4c, 0x0a, 0x28, 0xef, 0x4e,
         0x72, 0xc9, 0xba, 0x5f, 0xda,
-    ];
+    ]);
 
     #[test]
     fn reads_the_golden_reserve_output() {

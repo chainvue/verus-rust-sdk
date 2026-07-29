@@ -34,6 +34,7 @@ use verus_tx::revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
 use verus_tx::update::{build_identity_update, UpdateParams};
+use verus_tx::CurrencyId;
 use verus_tx::{Amount, Expiry, Txid, Utxo};
 
 /// The public test key used across this repository. It holds nothing.
@@ -272,7 +273,7 @@ fn sub_identity_registration() {
         satoshis: Amount::ZERO,
         script_pubkey: verus_tx::cc::reserve_output_script(
             key().address().hash(),
-            parent,
+            CurrencyId::of_identity(parent),
             3_00000000,
         )
         .unwrap(),

@@ -579,6 +579,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::cc::reserve_output_script;
+    use crate::currency::CurrencyId;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
 
@@ -604,7 +605,12 @@ mod tests {
             txid: Txid::from_internal([0xc0; 32]),
             vout: 1,
             satoshis: Amount::ZERO,
-            script_pubkey: reserve_output_script(key.address().hash(), [0x77; 20], 1_000).unwrap(),
+            script_pubkey: reserve_output_script(
+                key.address().hash(),
+                CurrencyId::from_bytes([0x77; 20]),
+                1_000,
+            )
+            .unwrap(),
         }
     }
 

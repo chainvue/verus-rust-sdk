@@ -22,22 +22,13 @@ use verus_wire::{TxIn, TxOut, TxV4};
 
 use crate::amount::Amount;
 use crate::cc::{fulfillment_script_sig, reserve_output_script};
+use crate::currency::CurrencyId;
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
 use crate::expiry::Expiry;
 use crate::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use crate::send::SignedTransaction;
 use crate::Utxo;
-
-/// A currency id — the 20-byte hash behind an `i` address.
-///
-/// Still an alias, not a newtype. It should be one: a currency id and an
-/// identity id are both 20 bytes and are *sometimes the same bytes* — a
-/// sub-identity's parent is an identity that is also a currency — so nothing
-/// stops one being passed where the other belongs. Making it a newtype touches
-/// the decoder, the script builders and every caller, which is a separate change
-/// from this one.
-pub type CurrencyId = [u8; 20];
 
 /// Where token value is going.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -251,7 +242,7 @@ pub fn build_token_send(
     let shortfalls = balances.shortfalls();
     if let Some((currency, missing)) = shortfalls.first() {
         return Err(TxError::InsufficientTokens {
-            currency: hex::encode(currency),
+            currency: currency.to_string(),
             missing: u64::try_from(*missing).unwrap_or(u64::MAX),
         });
     }
