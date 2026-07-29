@@ -50,7 +50,7 @@ pub mod send {
 /// The order matters more than it looks. A freshly registered identity is its
 /// own revocation and recovery authority, which makes it **unrevokable** —
 /// pointing recovery elsewhere is a decision at registration time, through
-/// [`RegistrationParams::with_authorities`], not a later refinement.
+/// [`identity::RegistrationParams::with_authorities`], not a later refinement.
 #[cfg(feature = "transparent")]
 pub mod identity {
     pub use verus_tx::identity::{Identity, FLAG_LOCKED, FLAG_REVOKED};
