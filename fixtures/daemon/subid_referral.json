@@ -1,0 +1,51 @@
+{
+  "_comment": "How the daemon builds a sub-identity registration that names a referrer. Captured from verusd 1.2.17-2 on VRSCTEST, 2026-07-29, with registeridentity's `returntx` flag so nothing was broadcast.",
+  "_finding": "A referral on a sub-identity is RECORDED IN THE RESERVATION AND PAID NOTHING. The referred and unreferred registrations under the same parent are structurally identical: the full fee to the parent as a reserve output, no payout output, and exactly idimportfees consumed natively. There is no discount either. This is unlike a chain-level registration, where a referral both discounts the fee and pays the referrers.",
+  "parent": {
+    "name": "sdkcuralpha",
+    "currencyid": "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7",
+    "proofprotocol": 2,
+    "idregistrationfees": 1.0,
+    "idreferrallevels": 3,
+    "idimportfees": 0.02,
+    "_note": "3 referral levels, so the currency does pay referrers for something — just not for this."
+  },
+  "referrer": {
+    "name": "sdkrefa.sdkcuralpha.VRSCTEST@",
+    "identityaddress": "i4DmfQC7R3K1uuN3368dwEcmZbUNAMHC3E",
+    "_note": "Registered on VRSCTEST purely to have a referrer to name."
+  },
+  "referred": {
+    "name": "sdkrefb",
+    "commitment_txid": "00c814d37c3e2b047c41caca889a2283677a2289c92609a44340ed9bf17e3db2",
+    "salt": "be4fc9e6e6cfcd6b19bb573de2b6641cc20e2d2092ea28172ea44a26606ac126",
+    "outputs": [
+      { "native": 0.0, "kind": "identityprimary" },
+      { "native": 0.0, "kind": "reserveoutput", "to": "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7", "currencyvalues": { "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7": 1.0 }, "_note": "the FULL fee, undiscounted" },
+      { "native": 0.0, "kind": "identityreservation", "referral": "i4DmfQC7R3K1uuN3368dwEcmZbUNAMHC3E" },
+      { "native": 6.86985368, "kind": "change", "_note": "the daemon packs native and reserve change into one output; this SDK emits two, which consensus also accepts — see the on-chain sub-identity 4e746e10d67c9815e46b9bdb0ac3ec7fd41d432fa76b1f9895ce66ec7b560b45" }
+    ],
+    "conservation": {
+      "native_in": 6.88985368,
+      "native_out": 6.86985368,
+      "native_consumed": 0.02,
+      "_note": "exactly idimportfees; the reserve is fully conserved, 99.0 in and 99.0 out",
+      "reserve_in": { "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7": 99.0 },
+      "reserve_out": { "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7": 99.0 }
+    }
+  },
+  "unreferred_control": {
+    "name": "sdkrefc",
+    "_why": "the same registration with no referrer, to prove the referral changes nothing",
+    "outputs": 4,
+    "fee_to_parent": 1.0,
+    "payout_outputs": 0
+  },
+  "_proofprotocol_probe": {
+    "_comment": "The refusal of parents whose proofprotocol is not 2 was justified by 'a fractional parent needs a CReserveTransfer'. That reasoning does not hold; the refusal remains only because no reference transaction exists.",
+    "VRSCTEST": { "proofprotocol": 1, "options": 264, "_note": "an ordinary chain-level registration is already a registration under a proofprotocol 1 parent" },
+    "Royal1": { "proofprotocol": 1, "options": 40, "_note": "a token, NOT fractional, and it accepts a name commitment as a parent" },
+    "kmerg": { "proofprotocol": 1, "options": 2144, "_note": "refuses outright: 'kmerg is unable to issue currencies', so the gate is the options, not the proof protocol" },
+    "_blocked_on": "a sub-identity registration under a proofprotocol 1 token parent needs that parent's tokens to pay the fee; none are held on any node available here"
+  }
+}
