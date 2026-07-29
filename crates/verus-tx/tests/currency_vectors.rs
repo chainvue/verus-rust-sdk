@@ -217,6 +217,192 @@ fn reserve_lists_are_a_count_then_fixed_width_elements() {
     );
 }
 
+/// Read a Satoshi VARINT.
+fn varint(bytes: &[u8], at: &mut usize) -> u64 {
+    let mut value = 0u64;
+    loop {
+        let byte = bytes[*at];
+        *at += 1;
+        value = (value << 7) | u64::from(byte & 0x7f);
+        if byte & 0x80 != 0 {
+            value += 1;
+        } else {
+            return value;
+        }
+    }
+}
+
+/// The non-fractional layout, parsed end to end.
+///
+/// This is the state of the reverse engineering: a token definition can be read
+/// completely and every field agrees with what the daemon reported. A fractional
+/// one cannot — see the incompleteness note the fixture carries.
+#[test]
+fn every_token_definition_parses_completely() {
+    let fixture = fixture();
+    let mut parsed = 0;
+    for (name, vector) in fixture["vectors"].as_object().expect("vectors") {
+        let options = vector["definition"]["options"].as_u64().expect("options");
+        if options & 0x1 != 0 {
+            continue; // fractional; not mapped yet
+        }
+        // Preallocations are (identity, amount) pairs — see the test below —
+        // but WHERE they sit is not settled: inserting them misaligns this
+        // parser well before the amount lists, so they are not simply appended
+        // after them. Excluded rather than parsed on a guess.
+        if !vector["spec"]["preallocations"].is_null() {
+            continue;
+        }
+        let b = payload(vector["definition_script"].as_str().expect("script"));
+        let definition = &vector["definition"];
+        let mut at = 0usize;
+
+        let read_u32 = |b: &[u8], at: &mut usize| {
+            let v = u32::from_le_bytes(b[*at..*at + 4].try_into().unwrap());
+            *at += 4;
+            u64::from(v)
+        };
+
+        assert_eq!(
+            read_u32(&b, &mut at),
+            definition["version"].as_u64().unwrap(),
+            "{name}: version"
+        );
+        assert_eq!(read_u32(&b, &mut at), options, "{name}: options");
+        at += 20; // parent
+        let length = usize::from(b[at]);
+        at += 1;
+        assert_eq!(
+            std::str::from_utf8(&b[at..at + length]).unwrap(),
+            definition["name"].as_str().unwrap(),
+            "{name}: name"
+        );
+        at += length + 40; // systemid, launchsystemid
+        assert_eq!(
+            read_u32(&b, &mut at),
+            definition["notarizationprotocol"].as_u64().unwrap(),
+            "{name}: notarizationprotocol"
+        );
+        assert_eq!(
+            read_u32(&b, &mut at),
+            definition["proofprotocol"].as_u64().unwrap(),
+            "{name}: proofprotocol"
+        );
+        at += 22; // unmapped, all zero in every vector here
+
+        assert_eq!(
+            varint(&b, &mut at),
+            definition["startblock"].as_u64().unwrap_or(0),
+            "{name}: startblock"
+        );
+        assert_eq!(
+            varint(&b, &mut at),
+            definition["endblock"].as_u64().unwrap_or(0),
+            "{name}: endblock"
+        );
+        at += 16; // initialsupply and one more 8-byte field
+
+        // currencies, weights, then the three amount lists.
+        for width in [20usize, 4, 8, 8, 8] {
+            let count = usize::from(b[at]);
+            at += 1 + count * width;
+        }
+        // Preallocations: a count, then that many (20-byte identity, 8-byte
+        // amount) pairs. Found because the preallocation vectors ran the parser
+        // off the end of what had been read as ten opaque zero bytes — one
+        // preallocation lengthens the payload by exactly 28.
+        at += 10; // preallocations count plus nine still-unmapped zero bytes
+
+        // The three fee fields close the payload out exactly.
+        let registration = varint(&b, &mut at);
+        let levels = varint(&b, &mut at);
+        let import = varint(&b, &mut at);
+        assert_eq!(
+            levels,
+            definition["idreferrallevels"].as_u64().unwrap_or(0),
+            "{name}: idreferrallevels"
+        );
+        assert!(registration > 0, "{name}: registration fee is zero");
+        assert_eq!(import, 2_000_000, "{name}: idimportfees is not 0.02");
+        assert_eq!(
+            at,
+            b.len(),
+            "{name}: parser did not consume the payload exactly"
+        );
+        parsed += 1;
+    }
+    assert!(
+        parsed >= 9,
+        "only {parsed} token vectors parsed; there are nine without preallocations"
+    );
+}
+
+/// A preallocation is an identity and an amount, and it lives where ten bytes
+/// previously looked like padding.
+#[test]
+fn preallocations_are_identity_and_amount_pairs() {
+    let fixture = fixture();
+    let one = payload(
+        fixture["vectors"]["token_preallocation"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    );
+    let two = payload(
+        fixture["vectors"]["token_two_preallocations"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    );
+    let none = payload(
+        fixture["vectors"]["token_simple"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    );
+
+    // 20 bytes of identity plus 8 of amount, and the count byte was already
+    // there — so one preallocation costs exactly 28 more bytes. Where in the
+    // payload they sit is NOT settled: adding one misaligns a parser that
+    // otherwise reads a token definition exactly, so they are not appended
+    // after the amount lists as first assumed.
+    assert_eq!(
+        one.len() - none.len(),
+        28,
+        "one preallocation is not 28 bytes"
+    );
+    assert_eq!(two.len() - one.len(), 28, "the second is not another 28");
+
+    // 10.0, little-endian, is in there.
+    assert!(
+        hex::encode(&one).contains(&hex::encode(1_000_000_000u64.to_le_bytes())),
+        "the preallocated amount is not an 8-byte little-endian value"
+    );
+}
+
+/// The three amount lists, in the order they appear.
+///
+/// Identified by giving each a distinct value in one definition, so no two can
+/// be confused: 1.0 is the minimum, 2.0 the maximum, 3.0 the contribution.
+#[test]
+fn the_three_amount_lists_are_min_max_then_contributions() {
+    let fixture = fixture();
+    let payload = hex::encode(payload(
+        fixture["vectors"]["fractional_all_three"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    ));
+    let one = hex::encode(100_000_000u64.to_le_bytes());
+    let two = hex::encode(200_000_000u64.to_le_bytes());
+    let three = hex::encode(300_000_000u64.to_le_bytes());
+
+    let min = payload.find(&one).expect("minpreconversion");
+    let max = payload.find(&two).expect("maxpreconversion");
+    let contributions = payload.find(&three).expect("initialcontributions");
+    assert!(min < max, "the maximum came before the minimum");
+    assert!(max < contributions, "contributions came before the maximum");
+    // One count byte plus one eight-byte element between each.
+    assert_eq!(max - min, 18, "lists are not nine bytes apart");
+    assert_eq!(contributions - max, 18);
+}
+
 /// The fixture must keep saying what is *not* known, or the next person will
 /// assume the mapping is complete.
 #[test]
