@@ -383,9 +383,17 @@ pub struct RegistrationParams<'a> {
     /// it as `idregistrationfees`. Passing the wrong value gets the transaction
     /// rejected with the commitment already spent.
     pub registration_fee: u64,
-    /// How many referral levels the chain pays out — `getcurrency`'s
-    /// `idreferrallevels`, 3 on VRSCTEST. Only consulted when the reservation
-    /// names a referral; it sets the size of each payout.
+    /// How many referral levels the chain pays out.
+    ///
+    /// **Per-currency, not a constant.** It is `idreferrallevels` from the
+    /// *registering* currency's definition: 3 on VRSCTEST, but 0 on
+    /// `ownora-nft`, which forbids referrals entirely. Read it with
+    /// `getcurrency` for the currency this registration is under, not from the
+    /// chain you happen to be on.
+    ///
+    /// It sets the size of every payout — `fee / (levels + 2)` — so a wrong
+    /// value pays each referrer the wrong amount and the daemon rejects the
+    /// registration with the commitment already spent.
     pub referral_levels: u32,
     /// Registering under a parent CURRENCY instead of the chain itself.
     ///
@@ -493,13 +501,23 @@ pub struct SignedRegistration {
 /// # Referrals
 ///
 /// When the reservation names a referral the registrant pays **less**, not
-/// more. With `idreferrallevels` of 3 and a 100 VRSC fee, each referrer is paid
-/// `fee / (levels + 2)` = 20, the registrant's total outlay is
-/// `fee * (levels + 1) / (levels + 2)` = 80, and the remaining 60 is burned.
-/// Funding the full 100 overpays by 20 on every referred registration.
+/// more. Each referrer is paid `fee / (levels + 2)`, the registrant's total
+/// outlay is `fee * (levels + 1) / (levels + 2)`, and whatever the payouts do
+/// not consume is burned. With VRSCTEST's 100-coin fee over 3 levels that is 20
+/// each, an outlay of 80, and 60 burned. Funding the full 100 overpays by 20.
 ///
-/// Verified against a `registeridentity` the daemon built on VRSCTEST: one
-/// 20.0 payout to the referrer, inputs minus outputs exactly 60.
+/// **Both numbers come from the currency being registered under**, not from the
+/// chain: `idregistrationfees` and `idreferrallevels` in its `getcurrency`
+/// output. They differ per currency — `ownora-nft` charges 1.0 and allows no
+/// referrals at all — so a caller that hard-codes VRSCTEST's values will pay the
+/// wrong amount everywhere else.
+///
+/// A referrer who was itself referred is paid too, one output per level, nearest
+/// first. The registrant's outlay does **not** change with depth; only the split
+/// between payouts and burn does. Verified against `registeridentity`
+/// transactions the daemon built on VRSCTEST at both depths: one 20.0 payout and
+/// 60 burned at depth 1, two 20.0 payouts and 40 burned at depth 2, an outlay of
+/// exactly 80 in both.
 pub fn build_identity_registration(
     key: &PrivateKey,
     params: &RegistrationParams<'_>,
@@ -557,6 +575,16 @@ pub fn build_identity_registration(
         system_id: params.system_id,
         unlock_after: 0,
     };
+
+    // A referral on a sub-identity would presumably pay the referrers in the
+    // PARENT's currency, since that is what the registration fee itself is
+    // denominated in — but nothing here has seen one, and paying them natively
+    // (which is what the code below would do) is a guess about where real money
+    // goes. Currencies that would exercise it exist, so this is a gap to close
+    // with a daemon vector rather than an impossibility.
+    if params.parent_currency.is_some() && params.reservation.referral.is_some() {
+        return Err(TxError::ReferredSubIdentityUnsupported);
+    }
 
     // Referral payouts sit between the identity and the reservation, which is
     // where the daemon puts them.
@@ -873,6 +901,61 @@ mod tests {
         let fees = registration_fees(100_00000000, 3, false);
         assert_eq!(fees.referral_amount, 0);
         assert_eq!(fees.outlay, 100_00000000);
+    }
+
+    /// A referral on a sub-identity is refused rather than guessed: the fee is
+    /// denominated in the parent's currency, so the payouts presumably are too,
+    /// and paying them natively would move real money on a guess.
+    #[test]
+    fn refuses_a_referred_sub_identity() {
+        let key =
+            PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap();
+        let parent = [0x9a; 20];
+        let reservation =
+            NameReservation::new("sub", parent, Some([0x55; 20]), [0x11; 32]).unwrap();
+        let commitment = Utxo {
+            txid: Txid::from_internal([0xaa; 32]),
+            vout: 0,
+            satoshis: Amount::ZERO,
+            script_pubkey: commitment_script(
+                &reservation.commitment_hash().unwrap(),
+                key.address().hash(),
+            )
+            .unwrap(),
+        };
+        let funding = [Utxo {
+            txid: Txid::from_internal([0xbb; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(100_000_000),
+            script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
+        }];
+        let primaries = [key.address()];
+        let params = RegistrationParams {
+            commitment: &commitment,
+            reservation: &reservation,
+            utxos: &funding,
+            primary_addresses: &primaries,
+            min_sigs: 1,
+            system_id: parent,
+            revocation_authority: None,
+            recovery_authority: None,
+            registration_fee: 0,
+            parent_currency: Some(ParentCurrencyFee {
+                fee: 100_000_000,
+                native_import_fee: 2_000_000,
+                token_funding: &[],
+                proof_protocol: 2,
+            }),
+            referral_levels: 3,
+            referral_chain: &[],
+            change_address: key.address(),
+            expiry_height: 0,
+            fee_per_kb: DEFAULT_FEE_PER_KB,
+        };
+        assert!(matches!(
+            build_identity_registration(&key, &params),
+            Err(TxError::ReferredSubIdentityUnsupported)
+        ));
     }
 
     /// A fractional parent pays its fee through a CReserveTransfer, not a plain
