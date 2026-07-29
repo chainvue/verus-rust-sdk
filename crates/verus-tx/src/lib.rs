@@ -55,6 +55,7 @@ mod expiry;
 pub mod fee;
 pub mod identity;
 pub mod multisig;
+pub mod offer;
 pub mod partial;
 pub mod register;
 pub mod revoke;

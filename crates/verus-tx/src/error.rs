@@ -201,6 +201,10 @@ pub enum TxError {
     #[error("invalid message signature: {0}")]
     MessageSignature(String),
 
+    /// An offer this crate will not build or complete.
+    #[error("invalid offer: {0}")]
+    InvalidOffer(String),
+
     /// A multisig arrangement this crate will not build.
     #[error("invalid multisig: {0}")]
     InvalidMultisig(String),
