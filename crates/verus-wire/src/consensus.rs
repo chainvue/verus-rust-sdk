@@ -20,8 +20,34 @@ pub const SAPLING_VERSION_GROUP_ID: u32 = 0x892f_2085;
 /// `bad-txns-sapling-binding-signature-invalid`.
 pub const VERUS_BRANCH_ID: u32 = 0x76b8_09bb;
 
-/// `SIGHASH_ALL` — the only hash type this crate signs with today.
+/// `SIGHASH_ALL` — commits to every input and every output. The default, and
+/// the only sane choice for an ordinary payment.
 pub const SIGHASH_ALL: u32 = 1;
+/// `SIGHASH_NONE` — commits to the inputs but to **no outputs at all**.
+///
+/// Anyone who holds the signed transaction can redirect every output. Only
+/// meaningful when something else constrains where the money goes.
+pub const SIGHASH_NONE: u32 = 2;
+/// `SIGHASH_SINGLE` — commits to only the output at the same index as the input
+/// being signed.
+///
+/// The basis of an offer: "I sign that I spend this and that output N pays me",
+/// leaving every other output for a counterparty to fill in.
+///
+/// **A signature is invalid if there is no output at that index.** Bitcoin
+/// famously returns the hash `1` in that case; ZIP-243 specifies a zero
+/// `hashOutputs` instead, which is what Verus does — but the resulting signature
+/// commits to nothing about the outputs, so this crate refuses to produce one.
+pub const SIGHASH_SINGLE: u32 = 3;
+/// `SIGHASH_ANYONECANPAY` — a modifier: commit to **only the input being
+/// signed**, so anyone may add inputs of their own.
+///
+/// Combined with [`SIGHASH_SINGLE`] this is how a half-signed trade is
+/// expressed: the signer commits to what they give and what they take, and a
+/// counterparty supplies the rest.
+pub const SIGHASH_ANYONECANPAY: u32 = 0x80;
+/// The bits that select the base type, with [`SIGHASH_ANYONECANPAY`] masked off.
+pub const SIGHASH_MASK: u32 = 0x1f;
 
 /// ZIP-243 BLAKE2b personalization for the prevouts hash.
 pub const PREVOUT_PERSONAL: &[u8; 16] = b"ZcashPrevoutHash";
