@@ -59,7 +59,7 @@ use serde_json::{json, Value};
 use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::register::{
     build_identity_registration, build_name_commitment, CommitmentParams, NameReservation,
-    RegistrationParams,
+    ParentCurrencyFee, RegistrationParams,
 };
 use verus_sdk::verus_tx::{Txid, Utxo};
 
@@ -151,6 +151,24 @@ fn main() -> Result<(), Error> {
                     Ok(a.as_str().ok_or("primary_addresses[]")?.parse()?)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            // A sub-identity under a parent CURRENCY: the fee is paid in the
+            // parent's own currency, so it needs token-bearing inputs, and what
+            // burns natively is the parent's idimportfees.
+            let token_funding = match spec["parent_currency"].as_object() {
+                Some(p) => read_utxos(&p["token_funding"])?,
+                None => Vec::new(),
+            };
+            let parent_currency = match spec["parent_currency"].as_object() {
+                Some(p) => Some(ParentCurrencyFee {
+                    fee: p["fee"].as_u64().ok_or("parent_currency.fee")?,
+                    native_import_fee: p["native_import_fee"]
+                        .as_u64()
+                        .ok_or("parent_currency.native_import_fee")?,
+                    token_funding: &token_funding,
+                    proof_protocol: u32::try_from(p["proof_protocol"].as_u64().unwrap_or(2))?,
+                }),
+                None => None,
+            };
             let system_id: Address = spec["system_id"]
                 .as_str()
                 .ok_or("spec.system_id")?
@@ -172,6 +190,7 @@ fn main() -> Result<(), Error> {
                         .ok_or("spec.registration_fee")?,
                     referral_levels: u32::try_from(spec["referral_levels"].as_u64().unwrap_or(3))?,
                     referral_chain: &referral_chain,
+                    parent_currency,
                     change_address,
                     expiry_height,
                     fee_per_kb: 10_000,

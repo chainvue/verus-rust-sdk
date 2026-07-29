@@ -60,8 +60,12 @@ use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
-use crate::cc::{cc_script, identity_payment_script, identity_primary_script, OptCcParams};
+use crate::cc::{
+    cc_script, identity_payment_script, identity_primary_script, reserve_output_script_to,
+    OptCcParams, EVAL_RESERVE_OUTPUT,
+};
 use crate::cc::{Destination, EVAL_NONE};
+use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
 use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::identity::Identity;
@@ -81,6 +85,11 @@ pub const EVAL_IDENTITY_COMMITMENT: u8 = 17;
 /// Confirmed by diffing a `registeridentity` transaction the daemon built on
 /// VRSCTEST against one this crate built for the same name.
 pub const EVAL_IDENTITY_ADVANCEDRESERVATION: u8 = 10;
+
+/// The only parent `proofprotocol` whose fee output this crate builds: a
+/// centralized or token currency, which takes a plain reserve output. A
+/// fractional parent takes a `CReserveTransfer` instead.
+const CENTRALIZED_PROOF_PROTOCOL: u32 = 2;
 
 /// The identity version a fresh registration publishes: PBaaS, which carries
 /// `system_id` and a content multimap.
@@ -378,6 +387,11 @@ pub struct RegistrationParams<'a> {
     /// `idreferrallevels`, 3 on VRSCTEST. Only consulted when the reservation
     /// names a referral; it sets the size of each payout.
     pub referral_levels: u32,
+    /// Registering under a parent CURRENCY instead of the chain itself.
+    ///
+    /// `None` for an ordinary registration under the chain. A sub-identity is
+    /// funded differently in every respect — see [`ParentCurrencyFee`].
+    pub parent_currency: Option<ParentCurrencyFee<'a>>,
     /// The referral chain to pay, nearest referrer first.
     ///
     /// Empty means "just the referrer named in the reservation". Supply more
@@ -392,6 +406,40 @@ pub struct RegistrationParams<'a> {
     pub expiry_height: u32,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
+}
+
+/// Registering a sub-identity: a name under a parent currency.
+///
+/// A sub-identity is not a parameter change on an ordinary registration, it is a
+/// different transaction:
+///
+/// * The parent must be a **currency**, not merely an identity. A plain VerusID
+///   is rejected as `Invalid parent currency`.
+/// * The registration fee is paid in the **parent's own currency**, to the
+///   parent's `i` address, as a reserve output carrying no native value.
+/// * What is burned natively is the parent's `idimportfees`, not
+///   `idregistrationfees`.
+/// * The fee therefore has to be funded with token-bearing inputs, which are
+///   CryptoConditions and are spent with a fulfillment like any other.
+///
+/// Confirmed against a `registeridentity` the daemon built on VRSCTEST for a
+/// sub-identity of `ownora-nft`: a 1.0 reserve output to the parent, and exactly
+/// 0.02 native burned.
+///
+/// Only `proofprotocol` 2 — a centralized or token parent — is built here. A
+/// fractional or PBaaS parent pays through a `CReserveTransfer` instead, which
+/// is a different output this crate has not tested, so it is refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentCurrencyFee<'a> {
+    /// `idregistrationfees`, in the parent currency's smallest unit.
+    pub fee: u64,
+    /// `idimportfees`, burned natively.
+    pub native_import_fee: u64,
+    /// Token-bearing inputs paying the fee. Every one is spent in full and the
+    /// surplus comes back as token change, so a token left out is a token burned.
+    pub token_funding: &'a [Utxo],
+    /// The parent's `proofprotocol`. Anything but 2 is refused.
+    pub proof_protocol: u32,
 }
 
 /// What a registration actually costs, once a referral is taken into account.
@@ -530,7 +578,7 @@ pub fn build_identity_registration(
         });
     }
 
-    let mut outputs = Vec::with_capacity(referrers.len() + 2);
+    let mut outputs = Vec::with_capacity(referrers.len() + 3);
     outputs.push(TxOut {
         value: 0,
         script_pubkey: identity_primary_script(
@@ -540,6 +588,20 @@ pub fn build_identity_registration(
             recovery,
         )?,
     });
+    // The parent's fee, in the parent's currency, paid to the parent itself.
+    if let Some(sub) = &params.parent_currency {
+        if sub.proof_protocol != CENTRALIZED_PROOF_PROTOCOL {
+            return Err(TxError::UnsupportedParentProofProtocol(sub.proof_protocol));
+        }
+        outputs.push(TxOut {
+            value: 0,
+            script_pubkey: reserve_output_script_to(
+                Destination::Identity(parent),
+                parent,
+                sub.fee,
+            )?,
+        });
+    }
     for referrer in &referrers {
         outputs.push(TxOut {
             value: fees.referral_amount,
@@ -551,22 +613,78 @@ pub fn build_identity_registration(
         script_pubkey: reservation_script(identity_id, params.reservation)?,
     });
 
+    // Token change: every token-bearing input is spent whole, so whatever the
+    // parent's fee does not consume must come back or it is destroyed.
+    let mut token_leading: Vec<Utxo> = Vec::new();
+    if let Some(sub) = &params.parent_currency {
+        let mut held: u64 = 0;
+        for utxo in sub.token_funding {
+            match decode_output_script(&utxo.script_pubkey)? {
+                OutputKind::ReserveOutput { tokens, .. } => {
+                    for (currency, amount) in tokens {
+                        if currency != parent {
+                            return Err(TxError::UnsupportedFundingEval {
+                                txid: utxo.txid.to_display_hex(),
+                                vout: utxo.vout,
+                                eval_code: EVAL_RESERVE_OUTPUT,
+                            });
+                        }
+                        held = held.checked_add(amount).ok_or(TxError::ValueOverflow)?;
+                    }
+                }
+                _ => {
+                    return Err(TxError::UnsupportedFundingScript {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                    })
+                }
+            }
+            token_leading.push(utxo.clone());
+        }
+        let change = held
+            .checked_sub(sub.fee)
+            .ok_or(TxError::InsufficientTokens {
+                currency: hex::encode(parent),
+                missing: sub.fee - held.min(sub.fee),
+            })?;
+        if change > 0 {
+            outputs.push(TxOut {
+                value: 0,
+                script_pubkey: reserve_output_script_to(
+                    Destination::PubKeyHash(params.change_address.hash()),
+                    parent,
+                    change,
+                )?,
+            });
+        }
+    }
+
     // The payouts come OUT OF the registrant's outlay; the remainder is burned.
+    // A sub-identity burns the parent's import fee instead: its registration fee
+    // left in the parent's currency, not natively.
     let paid_out = fees.referral_amount * referrers.len() as u64;
-    let burn = fees
-        .outlay
-        .checked_sub(paid_out)
-        .ok_or(TxError::ReferralChainTooLong {
-            entries: referrers.len(),
-            levels: params.referral_levels,
-        })?;
+    let burn = match &params.parent_currency {
+        Some(sub) => sub.native_import_fee,
+        None => fees
+            .outlay
+            .checked_sub(paid_out)
+            .ok_or(TxError::ReferralChainTooLong {
+                entries: referrers.len(),
+                levels: params.referral_levels,
+            })?,
+    };
+
+    // The commitment first, then any token inputs — all CryptoConditions, all
+    // satisfied by the same control key.
+    let mut leading = vec![params.commitment.clone()];
+    leading.extend(token_leading);
 
     let transaction = assemble(
         key,
         // The commitment is a 1-of-1 condition over the control key.
         &[key],
         Assembly {
-            leading: core::slice::from_ref(params.commitment),
+            leading: &leading,
             funding: params.utxos,
             outputs,
             burn,
@@ -756,6 +874,61 @@ mod tests {
         assert_eq!(fees.outlay, 100_00000000);
     }
 
+    /// A fractional parent pays its fee through a CReserveTransfer, not a plain
+    /// reserve output. Building the wrong shape would pay the fee somewhere
+    /// consensus does not look for it, so it is refused rather than guessed.
+    #[test]
+    fn refuses_a_parent_whose_proofprotocol_is_untested() {
+        let key =
+            PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap();
+        let parent = parse(VRSCTEST).hash();
+        let reservation = NameReservation::new("sub", parent, None, [0x11; 32]).unwrap();
+        let commitment = Utxo {
+            txid: Txid::from_internal([0xaa; 32]),
+            vout: 0,
+            satoshis: 0,
+            script_pubkey: commitment_script(
+                &reservation.commitment_hash().unwrap(),
+                key.address().hash(),
+            )
+            .unwrap(),
+        };
+        let funding = [Utxo {
+            txid: Txid::from_internal([0xbb; 32]),
+            vout: 0,
+            satoshis: 100_000_000,
+            script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
+        }];
+        let primaries = [key.address()];
+        let params = RegistrationParams {
+            commitment: &commitment,
+            reservation: &reservation,
+            utxos: &funding,
+            primary_addresses: &primaries,
+            min_sigs: 1,
+            system_id: parent,
+            revocation_authority: None,
+            recovery_authority: None,
+            registration_fee: 0,
+            parent_currency: Some(ParentCurrencyFee {
+                fee: 1_00000000,
+                native_import_fee: 2_000_000,
+                token_funding: &[],
+                // 1 = fractional / PBaaS.
+                proof_protocol: 1,
+            }),
+            referral_levels: 0,
+            referral_chain: &[],
+            change_address: key.address(),
+            expiry_height: 0,
+            fee_per_kb: DEFAULT_FEE_PER_KB,
+        };
+        assert!(matches!(
+            build_identity_registration(&key, &params),
+            Err(TxError::UnsupportedParentProofProtocol(1))
+        ));
+    }
+
     /// A registration whose commitment was locked to somebody else's key cannot
     /// be signed — catching it here is what stops the commitment being spent
     /// into a transaction the daemon will reject.
@@ -789,6 +962,7 @@ mod tests {
             revocation_authority: None,
             recovery_authority: None,
             registration_fee: 100_00000000,
+            parent_currency: None,
             referral_levels: 3,
             referral_chain: &[],
             change_address: key.address(),

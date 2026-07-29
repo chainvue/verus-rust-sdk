@@ -286,10 +286,23 @@ pub fn reserve_output_script(
     currency: [u8; 20],
     amount: u64,
 ) -> Result<Vec<u8>, TxError> {
-    let master = OptCcParams::one_of_one(EVAL_NONE, Destination::PubKeyHash(destination));
+    reserve_output_script_to(Destination::PubKeyHash(destination), currency, amount)
+}
+
+/// As [`reserve_output_script`], but paying any destination kind.
+///
+/// A sub-identity's registration fee is paid to the parent *identity*, so the
+/// destination is an `i` address rather than a key hash. Writing it as a key
+/// hash produces an output nobody can spend.
+pub fn reserve_output_script_to(
+    destination: Destination,
+    currency: [u8; 20],
+    amount: u64,
+) -> Result<Vec<u8>, TxError> {
+    let master = OptCcParams::one_of_one(EVAL_NONE, destination.clone());
     let params = OptCcParams {
         vdata: vec![token_output(currency, amount)],
-        ..OptCcParams::one_of_one(EVAL_RESERVE_OUTPUT, Destination::PubKeyHash(destination))
+        ..OptCcParams::one_of_one(EVAL_RESERVE_OUTPUT, destination)
     };
     cc_script(&master, &params)
 }
