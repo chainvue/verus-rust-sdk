@@ -9,7 +9,8 @@
 use crate::compact::{write_compact_size, write_var_slice};
 use crate::consensus::{
     sighash_personal, OUTPUTS_PERSONAL, PREVOUT_PERSONAL, SAPLING_VERSION_GROUP_ID,
-    SEQUENCE_PERSONAL, SHIELDED_OUTPUTS_PERSONAL, SHIELDED_SPENDS_PERSONAL, SIGHASH_ALL, V4_HEADER,
+    SEQUENCE_PERSONAL, SHIELDED_OUTPUTS_PERSONAL, SHIELDED_SPENDS_PERSONAL, SIGHASH_ALL,
+    SIGHASH_ANYONECANPAY, SIGHASH_MASK, SIGHASH_NONE, SIGHASH_SINGLE, V4_HEADER,
 };
 use crate::error::WireError;
 use crate::hash::{blake2b_personal, sha256d};
@@ -170,6 +171,8 @@ impl TxV4 {
     /// section** — what the Sapling binding signature and the shielded
     /// spend-auth signatures commit to.
     pub fn shielded_sighash(&self, branch_id: u32) -> [u8; 32] {
+        // Always SIGHASH_ALL: a shielded signature has no input index to narrow
+        // to, and the binding signature must cover the whole transaction.
         let mut preimage = self.sighash_prefix();
         preimage.extend_from_slice(&SIGHASH_ALL.to_le_bytes());
         blake2b_personal(&sighash_personal(branch_id), &preimage)
@@ -191,8 +194,15 @@ impl TxV4 {
         value: u64,
         hash_type: u32,
     ) -> Result<[u8; 32], WireError> {
-        if hash_type != SIGHASH_ALL {
-            return Err(WireError::UnsupportedSighashType(hash_type));
+        check_sighash_type(hash_type)?;
+        // SIGHASH_SINGLE without a matching output produces a signature that
+        // commits to no outputs whatsoever. ZIP-243 permits it; nothing good
+        // comes of it, so it is refused rather than silently signed.
+        if hash_type & SIGHASH_MASK == SIGHASH_SINGLE && input_index >= self.outputs.len() {
+            return Err(WireError::SighashSingleWithoutOutput {
+                index: input_index,
+                outputs: self.outputs.len(),
+            });
         }
         let input = self
             .inputs
@@ -202,7 +212,7 @@ impl TxV4 {
                 len: self.inputs.len(),
             })?;
 
-        let mut preimage = self.sighash_prefix();
+        let mut preimage = self.sighash_prefix_for(hash_type, input_index);
         preimage.extend_from_slice(&hash_type.to_le_bytes());
         // The transparent-input section the shielded sighash omits.
         preimage.extend_from_slice(&input.txid_internal);
@@ -222,7 +232,22 @@ impl TxV4 {
     /// sighashes then diverge in exactly one place: the transparent-input
     /// section. Note the shielded hashes come *before* `lockTime`.
     fn sighash_prefix(&self) -> Vec<u8> {
-        let hash_prevouts = {
+        self.sighash_prefix_for(SIGHASH_ALL, 0)
+    }
+
+    /// As [`TxV4::sighash_prefix`], for a given hash type.
+    ///
+    /// The three hashes are blanked according to ZIP-243 section "hash type":
+    /// `ANYONECANPAY` drops the other inputs, `NONE` and `SINGLE` drop or narrow
+    /// the outputs. Blanked means an all-zero hash, **not** an omitted field —
+    /// the preimage keeps its shape.
+    fn sighash_prefix_for(&self, hash_type: u32, input_index: usize) -> Vec<u8> {
+        let base = hash_type & SIGHASH_MASK;
+        let anyone_can_pay = hash_type & SIGHASH_ANYONECANPAY != 0;
+
+        let hash_prevouts = if anyone_can_pay {
+            [0u8; 32]
+        } else {
             let mut data = Vec::with_capacity(self.inputs.len() * 36);
             for input in &self.inputs {
                 data.extend_from_slice(&input.txid_internal);
@@ -230,14 +255,30 @@ impl TxV4 {
             }
             blake2b_personal(PREVOUT_PERSONAL, &data)
         };
-        let hash_sequence = {
+        let hash_sequence = if anyone_can_pay || base == SIGHASH_SINGLE || base == SIGHASH_NONE {
+            [0u8; 32]
+        } else {
             let mut data = Vec::with_capacity(self.inputs.len() * 4);
             for input in &self.inputs {
                 data.extend_from_slice(&input.sequence.to_le_bytes());
             }
             blake2b_personal(SEQUENCE_PERSONAL, &data)
         };
-        let hash_outputs = {
+        let hash_outputs = if base == SIGHASH_SINGLE {
+            match self.outputs.get(input_index) {
+                Some(output) => {
+                    let mut data = Vec::new();
+                    data.extend_from_slice(&output.value.to_le_bytes());
+                    write_var_slice(&mut data, &output.script_pubkey);
+                    blake2b_personal(OUTPUTS_PERSONAL, &data)
+                }
+                // Refused before reaching here for a transparent signature; the
+                // zero hash is what ZIP-243 specifies.
+                None => [0u8; 32],
+            }
+        } else if base == SIGHASH_NONE {
+            [0u8; 32]
+        } else {
             let mut data = Vec::new();
             for output in &self.outputs {
                 data.extend_from_slice(&output.value.to_le_bytes());
@@ -276,6 +317,19 @@ impl TxV4 {
         preimage.extend_from_slice(&self.value_balance.to_le_bytes());
         preimage
     }
+}
+
+/// Refuse a hash type this crate does not implement.
+fn check_sighash_type(hash_type: u32) -> Result<(), WireError> {
+    let base = hash_type & SIGHASH_MASK;
+    let known = matches!(base, SIGHASH_ALL | SIGHASH_NONE | SIGHASH_SINGLE);
+    // Only ANYONECANPAY may appear outside the base bits. Anything else is a
+    // hash type nobody agreed on, and signing under it is unpredictable.
+    let extra = hash_type & !(SIGHASH_MASK | SIGHASH_ANYONECANPAY);
+    if !known || extra != 0 {
+        return Err(WireError::UnsupportedSighashType(hash_type));
+    }
+    Ok(())
 }
 
 /// Hash a set of shielded descriptions, or all-zero when there are none
@@ -341,14 +395,30 @@ mod tests {
         );
     }
 
+    /// The marketplace hash type is now implemented; this used to be refused.
+    ///
+    /// It needs an output at the input's index, which is the rule
+    /// `SIGHASH_SINGLE` carries with it.
+    #[test]
+    fn accepts_the_marketplace_hash_type() {
+        let tx = tx_with_one_input();
+        // SIGHASH_SINGLE|ANYONECANPAY = 0x83.
+        assert!(tx
+            .transparent_sighash(VERUS_BRANCH_ID, 0, &[], 0, 0x83)
+            .is_ok());
+    }
+
     #[test]
     fn refuses_sighash_types_it_does_not_implement() {
         let tx = tx_with_one_input();
-        // SIGHASH_SINGLE|ANYONECANPAY, used by marketplace offers.
+        // 0x05 is not a base type, with or without the ANYONECANPAY bit.
         let err = tx
-            .transparent_sighash(VERUS_BRANCH_ID, 0, &[], 0, 0x83)
+            .transparent_sighash(VERUS_BRANCH_ID, 0, &[], 0, 0x05)
             .unwrap_err();
-        assert_eq!(err, WireError::UnsupportedSighashType(0x83));
+        assert_eq!(err, WireError::UnsupportedSighashType(0x05));
+        assert!(tx
+            .transparent_sighash(VERUS_BRANCH_ID, 0, &[], 0, 0x40)
+            .is_err());
     }
 
     #[test]
@@ -439,5 +509,197 @@ mod tests {
         // The empty script already cost one byte for its CompactSize length, so
         // the growth is the 107 script bytes alone.
         assert_eq!(tx.serialize().unwrap().len(), unsigned_len + 107);
+    }
+}
+
+#[cfg(test)]
+mod sighash_variant_tests {
+    use super::*;
+    use crate::consensus::VERUS_BRANCH_ID;
+
+    fn tx(inputs: u8, outputs: u8) -> TxV4 {
+        TxV4 {
+            inputs: (0..inputs)
+                .map(|i| TxIn::unsigned([i; 32], u32::from(i), 0xffff_fffe))
+                .collect(),
+            outputs: (0..outputs)
+                .map(|i| TxOut {
+                    value: 1_000 + u64::from(i),
+                    script_pubkey: vec![0x76, 0xa9, i],
+                })
+                .collect(),
+            lock_time: 0,
+            expiry_height: 0,
+            value_balance: 0,
+            shielded_spends: Vec::new(),
+            shielded_outputs: Vec::new(),
+            binding_sig: None,
+        }
+    }
+
+    fn hash(tx: &TxV4, index: usize, hash_type: u32) -> [u8; 32] {
+        tx.transparent_sighash(VERUS_BRANCH_ID, index, &[0x51], 5_000, hash_type)
+            .expect("sighash")
+    }
+
+    /// Each hash type must produce a different commitment, or choosing one is
+    /// decorative.
+    #[test]
+    fn every_hash_type_commits_differently() {
+        let tx = tx(2, 2);
+        let mut seen = std::collections::HashSet::new();
+        for hash_type in [
+            SIGHASH_ALL,
+            SIGHASH_NONE,
+            SIGHASH_SINGLE,
+            SIGHASH_ALL | SIGHASH_ANYONECANPAY,
+            SIGHASH_NONE | SIGHASH_ANYONECANPAY,
+            SIGHASH_SINGLE | SIGHASH_ANYONECANPAY,
+        ] {
+            assert!(
+                seen.insert(hash(&tx, 0, hash_type)),
+                "{hash_type:#x} collided with another hash type"
+            );
+        }
+    }
+
+    /// SIGHASH_ALL commits to every output: changing any one changes the hash.
+    #[test]
+    fn sighash_all_covers_every_output() {
+        let original = tx(1, 2);
+        let mut changed = original.clone();
+        changed.outputs[1].value += 1;
+        assert_ne!(
+            hash(&original, 0, SIGHASH_ALL),
+            hash(&changed, 0, SIGHASH_ALL)
+        );
+    }
+
+    /// SIGHASH_NONE commits to no outputs at all — anyone holding the signed
+    /// transaction can redirect every one of them.
+    #[test]
+    fn sighash_none_lets_every_output_be_rewritten() {
+        let original = tx(1, 2);
+        let mut changed = original.clone();
+        changed.outputs[0].value = 999_999;
+        changed.outputs[1].script_pubkey = vec![0xff];
+        assert_eq!(
+            hash(&original, 0, SIGHASH_NONE),
+            hash(&changed, 0, SIGHASH_NONE),
+            "SIGHASH_NONE committed to an output"
+        );
+    }
+
+    /// SIGHASH_SINGLE commits to the output at the signer's own index and
+    /// nothing else. This is what lets one side of a trade be signed before the
+    /// other side exists.
+    #[test]
+    fn sighash_single_covers_only_the_matching_output() {
+        let original = tx(2, 2);
+
+        let mut other_changed = original.clone();
+        other_changed.outputs[1].value += 1;
+        assert_eq!(
+            hash(&original, 0, SIGHASH_SINGLE),
+            hash(&other_changed, 0, SIGHASH_SINGLE),
+            "input 0 committed to output 1"
+        );
+
+        let mut mine_changed = original.clone();
+        mine_changed.outputs[0].value += 1;
+        assert_ne!(
+            hash(&original, 0, SIGHASH_SINGLE),
+            hash(&mine_changed, 0, SIGHASH_SINGLE),
+            "input 0 did not commit to output 0"
+        );
+    }
+
+    /// ANYONECANPAY commits to only the input being signed, so a counterparty
+    /// can add their own inputs without invalidating the signature.
+    #[test]
+    fn anyonecanpay_lets_other_inputs_be_added() {
+        let original = tx(1, 2);
+        let mut extended = original.clone();
+        extended
+            .inputs
+            .push(TxIn::unsigned([0x99; 32], 7, 0xffff_fffe));
+
+        assert_eq!(
+            hash(&original, 0, SIGHASH_ALL | SIGHASH_ANYONECANPAY),
+            hash(&extended, 0, SIGHASH_ALL | SIGHASH_ANYONECANPAY),
+            "ANYONECANPAY committed to the other inputs"
+        );
+        // And without it, adding an input breaks the signature — which is the
+        // property an ordinary payment relies on.
+        assert_ne!(
+            hash(&original, 0, SIGHASH_ALL),
+            hash(&extended, 0, SIGHASH_ALL)
+        );
+    }
+
+    /// The offer shape: I commit to what I spend and what I am paid, and to
+    /// nothing else at all.
+    #[test]
+    fn single_plus_anyonecanpay_is_the_half_signed_trade() {
+        let original = tx(1, 1);
+        let mut counterparty = original.clone();
+        counterparty
+            .inputs
+            .push(TxIn::unsigned([0x77; 32], 3, 0xffff_fffe));
+        counterparty.outputs.push(TxOut {
+            value: 42,
+            script_pubkey: vec![0xab],
+        });
+
+        assert_eq!(
+            hash(&original, 0, SIGHASH_SINGLE | SIGHASH_ANYONECANPAY),
+            hash(&counterparty, 0, SIGHASH_SINGLE | SIGHASH_ANYONECANPAY),
+            "the counterparty's additions invalidated the offer"
+        );
+    }
+
+    /// SIGHASH_SINGLE with no output at the index would commit to nothing about
+    /// the outputs. ZIP-243 allows it; this refuses it.
+    #[test]
+    fn sighash_single_without_a_matching_output_is_refused() {
+        let tx = tx(3, 1);
+        assert!(tx
+            .transparent_sighash(VERUS_BRANCH_ID, 0, &[0x51], 1, SIGHASH_SINGLE)
+            .is_ok());
+        assert!(matches!(
+            tx.transparent_sighash(VERUS_BRANCH_ID, 1, &[0x51], 1, SIGHASH_SINGLE),
+            Err(WireError::SighashSingleWithoutOutput {
+                index: 1,
+                outputs: 1
+            })
+        ));
+    }
+
+    /// A hash type nobody agreed on must be refused rather than signed under
+    /// some default interpretation.
+    #[test]
+    fn unknown_hash_types_are_refused() {
+        let tx = tx(1, 1);
+        for bad in [0, 4, 5, 0x1f, 0x40, 0x100, 0xff] {
+            assert!(
+                tx.transparent_sighash(VERUS_BRANCH_ID, 0, &[0x51], 1, bad)
+                    .is_err(),
+                "accepted hash type {bad:#x}"
+            );
+        }
+    }
+
+    /// The shielded sighash has no input index and must keep committing to
+    /// everything, whatever transparent hash types are in play.
+    #[test]
+    fn the_shielded_sighash_is_unaffected_by_hash_types() {
+        let original = tx(1, 2);
+        let mut changed = original.clone();
+        changed.outputs[1].value += 1;
+        assert_ne!(
+            original.shielded_sighash(VERUS_BRANCH_ID),
+            changed.shielded_sighash(VERUS_BRANCH_ID),
+            "the shielded sighash stopped covering the outputs"
+        );
     }
 }

@@ -201,6 +201,10 @@ pub enum TxError {
     #[error("invalid message signature: {0}")]
     MessageSignature(String),
 
+    /// A multisig arrangement this crate will not build.
+    #[error("invalid multisig: {0}")]
+    InvalidMultisig(String),
+
     /// A conversion this crate will not build.
     #[error("invalid conversion: {0}")]
     InvalidConversion(String),

@@ -37,6 +37,19 @@ pub enum WireError {
     /// are only needed by marketplace offers, which this crate does not build
     /// yet. Supporting them silently — by ignoring the flags — would sign a
     /// commitment the caller did not ask for.
-    #[error("unsupported sighash type {0:#x}; only SIGHASH_ALL (0x1) is implemented")]
+    #[error("unsupported sighash type {0:#x}")]
     UnsupportedSighashType(u32),
+
+    /// `SIGHASH_SINGLE` signed for an input with no output at the same index.
+    ///
+    /// ZIP-243 hashes an all-zero `hashOutputs` in that case, producing a
+    /// signature that commits to nothing about where the money goes. Refused
+    /// rather than produced.
+    #[error("SIGHASH_SINGLE on input {index} but the transaction has {outputs} outputs")]
+    SighashSingleWithoutOutput {
+        /// The input being signed.
+        index: usize,
+        /// How many outputs exist.
+        outputs: usize,
+    },
 }
