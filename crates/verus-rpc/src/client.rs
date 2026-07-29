@@ -12,19 +12,27 @@ use crate::types::{
     RawAddressUtxo, RawChainInfo, RawCurrency, RawIdentity,
 };
 
-mod sealed {
-    /// Closes [`super::ChainReader`] and [`super::Broadcaster`] to outside
-    /// implementations, so the set of things that can reach a node stays known.
-    pub trait Sealed {}
-    impl<T: super::Transport> Sealed for super::RpcClient<T> {}
-}
-
 /// Asking a node questions.
 ///
 /// Everything here is read-only. A function taking `&impl ChainReader` and
 /// nothing else **cannot broadcast** — that is a signature rather than a
 /// comment, and it makes a dry-run mode compiler-enforced.
-pub trait ChainReader: sealed::Sealed {
+///
+/// # Implementing this yourself
+///
+/// Deliberately not sealed. Implementing it does not let anything new reach a
+/// node — it lets you *supply answers*, and what this crate can send is governed
+/// by [`RequestBody`](crate::RequestBody) and its private method enum, neither
+/// of which this trait touches. Sealing it would only block the useful cases: a
+/// reader backed by your own indexer, one that caches, one that asks three nodes
+/// and compares, or a scripted one in a test.
+///
+/// What you take on is that callers believe your answers. A reader that
+/// under-reports UTXOs makes spending fail; one that misreports chain policy can
+/// cost a name-commitment fee. The same is true of any node, which is why
+/// [the crate docs](crate) treat answers as untrusted regardless of where they
+/// came from.
+pub trait ChainReader {
     /// Name, chain id, height and version.
     fn chain_info(&self) -> Result<ChainInfo, RpcError>;
     /// Height of the best block.
@@ -85,8 +93,10 @@ pub trait ChainReader: sealed::Sealed {
 
 /// Handing a node bytes that were already signed.
 ///
-/// The only capability in this crate that changes anything anywhere.
-pub trait Broadcaster: sealed::Sealed {
+/// The only capability in this crate that changes anything anywhere. Not sealed,
+/// for the reasons given on [`ChainReader`] — a queue, a relay of your own, or a
+/// test double are all legitimate.
+pub trait Broadcaster {
     /// Submit a signed transaction and return its id.
     ///
     /// **Never retry this automatically.** A transport failure is ambiguous —

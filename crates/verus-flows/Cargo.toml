@@ -1,0 +1,36 @@
+[package]
+name = "verus-flows"
+description = "Lookup, build, sign and broadcast, composed into operations a wallet can call."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["http"]
+# Re-exported from verus-rpc so a consumer can take the whole stack in one line.
+http = ["verus-rpc/http"]
+# The scripted chain the flow tests use, for wallets that need the same thing.
+testing = ["dep:hex", "dep:sha2"]
+
+[dependencies]
+hex = { workspace = true, optional = true }
+rand = { workspace = true }
+sha2 = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = { workspace = true }
+verus-keys = { path = "../verus-keys" }
+verus-rpc = { path = "../verus-rpc", default-features = false }
+verus-tx = { path = "../verus-tx", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"
+verus-flows = { path = ".", features = ["testing", "http"] }
+verus-keys = { path = "../verus-keys" }
+verus-rpc = { path = "../verus-rpc", features = ["http"] }
