@@ -13,7 +13,9 @@ protobuf field number. Only bytes from a real server can catch that.
 |---|---|---|
 | `getlatestblock.bin` | `GetLatestBlock` | `BlockID` shape; hash byte order |
 | `getlightdinfo.bin` | `GetLightdInfo` | chain name `VRSCTEST`, consensus branch id `76b809bb` |
+| `gettreestate_before.bin` | `GetTreeState(1156846)` | the frontier before the whole range, so a scan of it can be tested |
 | `gettreestate.bin` | `GetTreeState(1156848)` | a serialized Sapling frontier: 206 bytes, 3099 leaves |
+| `gettreestate_after.bin` | `GetTreeState(1156849)` | the frontier after the 5-output block: 270 bytes, 3104 leaves |
 | `getblockrange.bin` | `GetBlockRange(1156847, 1156850)` | four blocks, two of them empty, five nullifiers, `chainMetadata` |
 
 `compact_formats.proto` and `service.proto` are copied unmodified from the
@@ -36,6 +38,19 @@ The empty blocks are not padding. Witness maintenance requires applying **every*
 block in order including the empty ones, and a client that skips them silently
 corrupts every witness it holds. A fixture without an empty block cannot catch
 that.
+
+## The proof these fixtures make possible
+
+`gettreestate.bin`, `getblockrange.bin` and `gettreestate_after.bin` together
+prove the entire witness path with **public data and no keys**: take the frontier
+before block 1156849, append exactly the five commitments that block added, and
+the resulting Merkle root must equal the frontier reported after it.
+
+Three things have to be right at once for that to hold, and each fails silently
+on its own — the frontier parse, the byte order of lightwalletd's `cmu` values,
+and appending in block/transaction/output order. None of them surfaces earlier
+than the daemon rejecting a finished proof. See
+`crates/verus-flows/tests/shielded_scan.rs`.
 
 ## The cross-check these two fixtures make possible
 
