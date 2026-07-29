@@ -36,9 +36,18 @@
 //! funding output themselves**, which invalidates the offer by consuming what it
 //! was going to give away. Until then, anyone holding the half-signed
 //! transaction may complete it. Set [`OfferParams::expiry`] and mean it.
+//!
+//! # What a taker must check, and this crate cannot
+//!
+//! [`take_offer`] builds what the maker asked for. It cannot tell you whether
+//! the trade is a good one, and — more importantly — it cannot tell you the
+//! maker's funding output still exists. That value lives in an outpoint, not in
+//! the offer, so [`TakeParams::offered_value`] is taken on trust from the
+//! caller. **Look the outpoint up before completing.** A maker who spent it
+//! after publishing leaves an offer that costs you a fee to discover.
 
 use verus_keys::PrivateKey;
-use verus_wire::consensus::{SIGHASH_ANYONECANPAY, SIGHASH_SINGLE, VERUS_BRANCH_ID};
+use verus_wire::consensus::{SIGHASH_ALL, SIGHASH_ANYONECANPAY, SIGHASH_SINGLE, VERUS_BRANCH_ID};
 use verus_wire::{TxIn, TxOut, TxV4};
 
 use crate::amount::Amount;
@@ -230,8 +239,15 @@ pub struct TakeParams<'a> {
     pub recipient: [u8; 20],
     /// Where the taker's change goes.
     pub change_address: verus_keys::Address,
-    /// Fee rate in satoshis per kilobyte.
-    pub fee_per_kb: u64,
+    /// What the maker's funding output is worth.
+    ///
+    /// **The taker must verify this on chain**, and this crate cannot: the value
+    /// lives in an outpoint, not in the offer. Take the maker's word for it and
+    /// you may pay for an output that is already spent or never held what was
+    /// claimed.
+    pub offered_value: Amount,
+    /// The miner fee, in satoshis. Paid by the taker.
+    pub fee: u64,
 }
 
 impl<'a> TakeParams<'a> {
@@ -241,13 +257,16 @@ impl<'a> TakeParams<'a> {
         utxos: &'a [Utxo],
         recipient: [u8; 20],
         change_address: verus_keys::Address,
+        offered_value: Amount,
+        fee: u64,
     ) -> Self {
         Self {
             offer,
             utxos,
             recipient,
             change_address,
-            fee_per_kb: crate::fee::DEFAULT_FEE_PER_KB,
+            offered_value,
+            fee,
         }
     }
 }
@@ -267,17 +286,123 @@ impl<'a> TakeParams<'a> {
 pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, TxError> {
     let bytes = hex::decode(params.offer)
         .map_err(|e| TxError::InvalidOffer(format!("offer is not hex: {e}")))?;
-    let _ = &bytes;
-    let _ = key;
-    let _ = params.utxos;
-    let _ = params.recipient;
-    let _ = params.fee_per_kb;
-    // Completing an offer requires parsing the maker's partial transaction,
-    // which needs a transaction decoder this workspace does not have — every
-    // serializer here is write-only. Refused rather than half-implemented.
-    Err(TxError::InvalidOffer(
-        "taking an offer needs a transaction parser, which this crate does not have yet".into(),
-    ))
+    let offer = TxV4::deserialize(&bytes).map_err(TxError::from)?;
+
+    // What a maker's half-signed offer must look like. Anything else is not an
+    // offer, and completing it would sign something whose shape is unknown.
+    if offer.inputs.len() != 1 || offer.outputs.len() != 1 {
+        return Err(TxError::InvalidOffer(format!(
+            "an offer has one input and one output, this has {} and {}",
+            offer.inputs.len(),
+            offer.outputs.len()
+        )));
+    }
+    // The hash type sits in the fulfillment: PUSH(version, hash_type, …). If it
+    // is not SIGHASH_SINGLE|ANYONECANPAY then the maker's signature covers more
+    // than their own input and output, and appending to it would void it.
+    let fulfillment = &offer.inputs[0].script_sig;
+    let hash_type = fulfillment
+        .iter()
+        .position(|b| *b == 0x01)
+        .and_then(|start| fulfillment.get(start + 1).copied())
+        .ok_or_else(|| TxError::InvalidOffer("the offer input has no fulfillment".into()))?;
+    if u32::from(hash_type) != OFFER_HASH_TYPE {
+        return Err(TxError::InvalidOffer(format!(
+            "the offer is signed under hash type {hash_type:#x}, not {OFFER_HASH_TYPE:#x}; \
+             adding to it would void the maker's signature"
+        )));
+    }
+
+    // The maker's input and output are carried over untouched, in place. Their
+    // signature covers input 0 paired with output 0, so neither may move.
+    let mut transaction = offer;
+
+    // What the taker receives: the whole offered value. The miner fee comes out
+    // of the taker's own funding below — charging it here as well would take it
+    // twice, which is exactly the bug the conservation test caught.
+    transaction.outputs.push(TxOut {
+        value: params.offered_value.to_sat(),
+        script_pubkey: verus_keys::Address::new(
+            verus_keys::AddressKind::PubKeyHash,
+            params.recipient,
+        )
+        .p2pkh_script_pubkey()
+        .map_err(TxError::from)?,
+    });
+
+    // What the taker pays: whatever output 0 demands, funded from their own
+    // coins. A token demand is carried in the output's payload rather than its
+    // native value, so only the native part is funded here.
+    let owed = Amount::from_sat(transaction.outputs[0].value);
+    let available = Amount::checked_sum(params.utxos.iter().map(|u| u.satoshis))
+        .ok_or(TxError::ValueOverflow)?;
+    let needed = owed
+        .checked_add(Amount::from_sat(params.fee))
+        .ok_or(TxError::ValueOverflow)?;
+    if available < needed {
+        return Err(TxError::InvalidOffer(format!(
+            "taking this offer costs {} but only {} was supplied",
+            needed.to_coins_string(),
+            available.to_coins_string()
+        )));
+    }
+
+    let first_taker_input = transaction.inputs.len();
+    for utxo in params.utxos {
+        transaction.inputs.push(TxIn::unsigned(
+            utxo.txid.to_internal(),
+            utxo.vout,
+            0xffff_ffff,
+        ));
+    }
+
+    let change = available
+        .checked_sub(needed)
+        .ok_or_else(|| TxError::InvalidOffer("change underflowed".into()))?;
+    if change > Amount::ZERO {
+        transaction.outputs.push(TxOut {
+            value: change.to_sat(),
+            script_pubkey: params
+                .change_address
+                .p2pkh_script_pubkey()
+                .map_err(TxError::from)?,
+        });
+    }
+
+    // The taker signs with SIGHASH_ALL, committing to the whole completed
+    // transaction — including the maker's side, which is what stops anyone
+    // altering it in flight.
+    for (offset, utxo) in params.utxos.iter().enumerate() {
+        let index = first_taker_input + offset;
+        let sighash = transaction
+            .transparent_sighash(
+                VERUS_BRANCH_ID,
+                index,
+                &utxo.script_pubkey,
+                utxo.satoshis.to_sat(),
+                SIGHASH_ALL,
+            )
+            .map_err(TxError::from)?;
+        let signature = key.sign_prehash_der(&sighash, 1)?;
+        let mut script_sig = Vec::new();
+        push_data(&mut script_sig, &signature)?;
+        push_data(&mut script_sig, &key.public_key().to_bytes())?;
+        transaction.inputs[index].script_sig = script_sig;
+    }
+
+    transaction.serialize().map_err(TxError::from)
+}
+
+/// Minimal push encoding for a scriptSig element.
+fn push_data(script: &mut Vec<u8>, data: &[u8]) -> Result<(), TxError> {
+    if data.len() >= 0x4c {
+        return Err(TxError::InvalidOffer(
+            "a scriptSig element is unexpectedly large".into(),
+        ));
+    }
+    script.push(u8::try_from(data.len()).expect("checked"));
+    script.extend_from_slice(data);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -466,33 +591,165 @@ mod tests {
         );
     }
 
-    /// Taking is not implemented, and says so rather than producing something
-    /// that looks like a completed trade.
-    #[test]
-    fn taking_an_offer_is_refused_until_there_is_a_parser() {
+    fn taker() -> PrivateKey {
+        PrivateKey::from_bytes(&[0x27; 32], true).unwrap()
+    }
+
+    fn taker_utxo(amount: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([0x71; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(amount),
+            script_pubkey: taker().address().p2pkh_script_pubkey().unwrap(),
+        }
+    }
+
+    fn sample_offer(wanted: u64) -> (Utxo, SignedOffer) {
         let funding = funding(1_00000000);
         let offer = make_offer(
             &key(),
-            &OfferParams {
-                funding: &funding,
-                wanted: Wanted::Native {
-                    amount: Amount::from_sat(1),
+            &OfferParams::new(
+                &funding,
+                Wanted::Native {
+                    amount: Amount::from_sat(wanted),
                     recipient: key().address().hash(),
                 },
-                expiry: Expiry::AtHeight(1_000),
-            },
+                Expiry::AtHeight(1_167_992),
+            ),
         )
         .unwrap();
+        (funding, offer)
+    }
+
+    /// The whole swap: a maker's half-signed offer completed by a taker into a
+    /// transaction that balances.
+    #[test]
+    fn a_taker_completes_an_offer_into_a_balanced_transaction() {
+        let (funding, offer) = sample_offer(2_00000000);
+        let utxos = [taker_utxo(3_00000000)];
+        let fee = 10_000u64;
+
+        let completed = take_offer(
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                fee,
+            ),
+        )
+        .unwrap();
+
+        let tx = TxV4::deserialize(&completed).expect("the result must be a transaction");
+        assert_eq!(tx.inputs.len(), 2, "maker's input plus the taker's");
+        // maker wants, taker receives, taker change.
+        assert_eq!(tx.outputs.len(), 3);
+
+        // Value conserves: in = maker's offered + taker's funding.
+        let inputs = funding.satoshis.to_sat() + utxos[0].satoshis.to_sat();
+        let outputs: u64 = tx.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(inputs - outputs, fee, "the fee is not what was asked for");
+    }
+
+    /// The maker's input and output must survive completion untouched. Moving
+    /// either voids their signature, so this is the invariant the whole scheme
+    /// depends on.
+    #[test]
+    fn completion_leaves_the_makers_side_exactly_where_it_was() {
+        let (funding, offer) = sample_offer(2_00000000);
+        let original = TxV4::deserialize(&hex::decode(&offer.hex).unwrap()).unwrap();
+
+        let utxos = [taker_utxo(3_00000000)];
+        let completed = take_offer(
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
+        )
+        .unwrap();
+        let tx = TxV4::deserialize(&completed).unwrap();
+
+        assert_eq!(tx.inputs[0], original.inputs[0], "the maker's input moved");
+        assert_eq!(
+            tx.outputs[0], original.outputs[0],
+            "the maker's output moved"
+        );
+    }
+
+    /// A taker who cannot cover what the maker asked for is stopped before
+    /// signing, rather than producing a transaction the network rejects.
+    #[test]
+    fn a_taker_who_cannot_pay_is_refused() {
+        let (funding, offer) = sample_offer(2_00000000);
+        let utxos = [taker_utxo(1_00000000)];
         assert!(take_offer(
-            &key(),
-            &TakeParams {
-                offer: &offer.hex,
-                utxos: &[],
-                recipient: key().address().hash(),
-                change_address: key().address(),
-                fee_per_kb: crate::fee::DEFAULT_FEE_PER_KB,
-            },
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
         )
         .is_err());
+    }
+
+    /// A transaction signed under some other hash type is not an offer. Adding
+    /// to it would void the signature, so completing it is refused.
+    #[test]
+    fn a_transaction_that_is_not_an_offer_is_refused() {
+        let (funding, offer) = sample_offer(2_00000000);
+        let mut tx = TxV4::deserialize(&hex::decode(&offer.hex).unwrap()).unwrap();
+        // Rewrite the fulfillment's hash type byte to SIGHASH_ALL.
+        let position = tx.inputs[0]
+            .script_sig
+            .windows(2)
+            .position(|w| w == [0x01, 0x83])
+            .expect("hash type");
+        tx.inputs[0].script_sig[position + 1] = 0x01;
+        let tampered = hex::encode(tx.serialize().unwrap());
+
+        let utxos = [taker_utxo(3_00000000)];
+        assert!(take_offer(
+            &taker(),
+            &TakeParams::new(
+                &tampered,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
+        )
+        .is_err());
+    }
+
+    /// Rubbish in place of an offer is refused rather than panicking.
+    #[test]
+    fn malformed_offers_are_refused() {
+        let utxos = [taker_utxo(3_00000000)];
+        for bad in ["", "zz", "00", "0400008085202f89"] {
+            assert!(take_offer(
+                &taker(),
+                &TakeParams::new(
+                    bad,
+                    &utxos,
+                    taker().address().hash(),
+                    taker().address(),
+                    Amount::from_sat(1_00000000),
+                    10_000,
+                ),
+            )
+            .is_err());
+        }
     }
 }

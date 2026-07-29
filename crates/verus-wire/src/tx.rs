@@ -161,6 +161,110 @@ impl TxV4 {
         Ok(tx)
     }
 
+    /// Parse a serialized v4 transaction.
+    ///
+    /// The exact inverse of [`TxV4::serialize`]. Until this existed every
+    /// serializer in this workspace was write-only, and anything that needed to
+    /// *read* a transaction — completing a counterparty's offer, checking what
+    /// was actually built — had to ask a daemon.
+    ///
+    /// # This parses hostile input
+    ///
+    /// A transaction to be decoded generally came from someone else: an offer to
+    /// be completed, bytes from a node, a file. So every length is checked
+    /// against what remains rather than trusted, nothing is allocated on the
+    /// strength of a declared count, and trailing bytes are refused instead of
+    /// ignored — a decoder that stops early lets two different byte strings
+    /// parse to the same transaction, which is a way to be paid for something
+    /// other than what was signed.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+
+        let header = reader.u32()?;
+        if header != V4_HEADER {
+            return Err(WireError::UnsupportedTransactionVersion(header));
+        }
+        let group = reader.u32()?;
+        if group != SAPLING_VERSION_GROUP_ID {
+            return Err(WireError::UnsupportedVersionGroup(group));
+        }
+
+        let input_count = reader.compact_size()?;
+        let mut inputs = Vec::new();
+        for _ in 0..input_count {
+            let txid_internal = reader.array32()?;
+            let vout = reader.u32()?;
+            let script_sig = reader.var_slice()?.to_vec();
+            let sequence = reader.u32()?;
+            inputs.push(TxIn {
+                txid_internal,
+                vout,
+                script_sig,
+                sequence,
+            });
+        }
+
+        let output_count = reader.compact_size()?;
+        let mut outputs = Vec::new();
+        for _ in 0..output_count {
+            let value = reader.u64()?;
+            let script_pubkey = reader.var_slice()?.to_vec();
+            outputs.push(TxOut {
+                value,
+                script_pubkey,
+            });
+        }
+
+        let lock_time = reader.u32()?;
+        let expiry_height = reader.u32()?;
+        // valueBalance is signed on the wire; the wrap is the intended
+        // two's-complement reinterpretation, not a lossy narrowing.
+        let value_balance = reader.u64()?.cast_signed();
+
+        let spend_count = reader.compact_size()?;
+        let mut shielded_spends = Vec::new();
+        for _ in 0..spend_count {
+            let body = reader.take(SPEND_BODY_LEN)?.to_vec();
+            let spend_auth_sig = reader.array64()?;
+            shielded_spends.push(ShieldedSpend {
+                body,
+                spend_auth_sig: Some(spend_auth_sig),
+            });
+        }
+
+        let output_desc_count = reader.compact_size()?;
+        let mut shielded_outputs = Vec::new();
+        for _ in 0..output_desc_count {
+            shielded_outputs.push(reader.take(SHIELDED_OUTPUT_LEN)?.to_vec());
+        }
+
+        let join_splits = reader.compact_size()?;
+        if join_splits != 0 {
+            return Err(WireError::JoinSplitsUnsupported(join_splits));
+        }
+
+        let shielded = !shielded_spends.is_empty() || !shielded_outputs.is_empty();
+        let binding_sig = if shielded {
+            Some(reader.array64()?)
+        } else {
+            None
+        };
+
+        // Trailing bytes are a different transaction wearing this one's prefix.
+        reader.expect_end()?;
+
+        Ok(TxV4 {
+            inputs,
+            outputs,
+            lock_time,
+            expiry_height,
+            value_balance,
+            shielded_spends,
+            shielded_outputs,
+            binding_sig,
+        })
+    }
+
     /// Transaction id, in internal byte order. Use
     /// [`txid_display`](crate::hash::txid_display) for the RPC representation.
     pub fn txid(&self) -> Result<[u8; 32], WireError> {
@@ -316,6 +420,115 @@ impl TxV4 {
         preimage.extend_from_slice(&self.expiry_height.to_le_bytes());
         preimage.extend_from_slice(&self.value_balance.to_le_bytes());
         preimage
+    }
+}
+
+/// A Sapling spend description body: `cv || anchor || nullifier || rk || proof`.
+const SPEND_BODY_LEN: usize = 320;
+/// A Sapling output description, whole.
+const SHIELDED_OUTPUT_LEN: usize = 948;
+
+/// A bounds-checked cursor over untrusted bytes.
+///
+/// Every read is checked against what remains. Nothing here allocates on the
+/// strength of a length that has not been verified to exist.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Reader { bytes, at: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], WireError> {
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or(WireError::TruncatedTransaction)?;
+        let slice = self
+            .bytes
+            .get(self.at..end)
+            .ok_or(WireError::TruncatedTransaction)?;
+        self.at = end;
+        Ok(slice)
+    }
+
+    fn u32(&mut self) -> Result<u32, WireError> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("took four bytes"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, WireError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("took eight bytes"),
+        ))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], WireError> {
+        Ok(self.take(32)?.try_into().expect("took 32 bytes"))
+    }
+
+    fn array64(&mut self) -> Result<[u8; 64], WireError> {
+        Ok(self.take(64)?.try_into().expect("took 64 bytes"))
+    }
+
+    /// A compact size, refusing the non-canonical encodings.
+    ///
+    /// Bitcoin accepts `0xfd 0x01 0x00` for 1; Verus does not re-serialize it
+    /// that way, so a transaction encoded like that would round-trip to
+    /// different bytes and a different txid. Refused rather than normalised.
+    fn compact_size(&mut self) -> Result<u64, WireError> {
+        let first = self.take(1)?[0];
+        let value = match first {
+            0xfd => {
+                let n = u64::from(u16::from_le_bytes(
+                    self.take(2)?.try_into().expect("two bytes"),
+                ));
+                if n < 0xfd {
+                    return Err(WireError::NonCanonicalCompactSize);
+                }
+                n
+            }
+            0xfe => {
+                let n = u64::from(u32::from_le_bytes(
+                    self.take(4)?.try_into().expect("four bytes"),
+                ));
+                if n <= u64::from(u16::MAX) {
+                    return Err(WireError::NonCanonicalCompactSize);
+                }
+                n
+            }
+            0xff => {
+                let n = u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes"));
+                if n <= u64::from(u32::MAX) {
+                    return Err(WireError::NonCanonicalCompactSize);
+                }
+                n
+            }
+            n => u64::from(n),
+        };
+        // A count can never exceed what is left to read, so this bounds every
+        // loop above without trusting the declared number.
+        if value > (self.bytes.len() - self.at) as u64 {
+            return Err(WireError::TruncatedTransaction);
+        }
+        Ok(value)
+    }
+
+    fn var_slice(&mut self) -> Result<&'a [u8], WireError> {
+        let length = self.compact_size()?;
+        let length = usize::try_from(length).map_err(|_| WireError::TruncatedTransaction)?;
+        self.take(length)
+    }
+
+    fn expect_end(&self) -> Result<(), WireError> {
+        if self.at != self.bytes.len() {
+            return Err(WireError::TrailingBytes(self.bytes.len() - self.at));
+        }
+        Ok(())
     }
 }
 
