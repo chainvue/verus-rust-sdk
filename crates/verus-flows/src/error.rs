@@ -18,6 +18,17 @@ pub enum FlowError {
     #[error(transparent)]
     Key(#[from] verus_keys::KeyError),
 
+    /// A shielded lookup could not be trusted to position or witness a note.
+    ///
+    /// Almost every case here is a *continuity* failure — a reorg under a scan,
+    /// a chunk that does not chain to the last, a tree size that disagrees with
+    /// the frontier. None of them would fail loudly on their own: they shift
+    /// note positions, and a note witnessed at the wrong position produces a
+    /// proof the daemon rejects only after ~20 seconds of proving.
+    #[cfg(feature = "shielded")]
+    #[error("shielded lookup failed: {0}")]
+    Shielded(String),
+
     /// There is not enough spendable value at the funding address.
     ///
     /// `available` counts only what can actually be spent *now*: an immature

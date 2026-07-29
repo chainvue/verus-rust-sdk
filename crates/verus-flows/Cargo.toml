@@ -17,6 +17,10 @@ default = ["http"]
 http = ["verus-rpc/http"]
 # The scripted chain the flow tests use, for wallets that need the same thing.
 testing = ["dep:hex", "dep:sha2"]
+# Find, value and witness shielded notes through a lightwalletd server. Off by
+# default: it pulls the Sapling stack, which is a much heavier tree than the
+# transparent path needs.
+shielded = ["dep:verus-light", "dep:verus-sapling", "dep:verus-wire"]
 
 [dependencies]
 hex = { workspace = true, optional = true }
@@ -26,12 +30,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = { workspace = true }
 verus-keys = { path = "../verus-keys" }
+verus-light = { path = "../verus-light", optional = true }
 verus-rpc = { path = "../verus-rpc", default-features = false }
+verus-sapling = { path = "../verus-sapling", optional = true }
+verus-wire = { path = "../verus-wire", optional = true }
 verus-tx = { path = "../verus-tx", features = ["serde"] }
 
 [dev-dependencies]
+verus-light = { path = "../verus-light" }
+verus-sapling = { path = "../verus-sapling" }
 verus-wire = { path = "../verus-wire" }
 serde_json = "1"
-verus-flows = { path = ".", features = ["testing", "http"] }
+verus-flows = { path = ".", features = ["testing", "http", "shielded"] }
 verus-keys = { path = "../verus-keys" }
 verus-rpc = { path = "../verus-rpc", features = ["http"] }

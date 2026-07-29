@@ -30,17 +30,22 @@
 //! * [`broadcast`](mod@broadcast) — and the one failure that must never be retried
 //!   automatically.
 //!
-//! # What is not here
+//! # Shielded, behind a feature
 //!
-//! **Shielded.** Not for want of builders — `verus-sapling` does t→z, z→z, z→t
-//! and multi-note spends, all proven on chain. Building a note witness needs
-//! every Sapling commitment in the note's block *and* the tree frontier before
-//! it. The commitments are reachable through a public node (`getblock`, then
-//! `getrawtransaction` per transaction); the historical frontier is not, since
-//! `z_gettreestate` is absent and `getsaplingtree` only ever answers for the
-//! tip. Folding one up from genesis is possible and slow, which is the problem
-//! lightwalletd exists to solve. So shielded flows wait for that client rather
-//! than for more builder work.
+//! [`shielded`](mod@shielded) finds, values and witnesses Sapling notes through
+//! a lightwalletd server. It is off by default because it pulls the Sapling
+//! stack, which is a far heavier tree than the transparent path needs.
+//!
+//! The blocker was never the builders — `verus-sapling` has done t→z, z→z, z→t
+//! and multi-note spends, proven on chain, since PR #9. It was the data: a
+//! witness needs every commitment added before its note, a commitment tree
+//! cannot be walked backwards, and public Verus RPC will not serve
+//! `z_gettreestate`. `verus-light` closes that, and this module joins the two.
+//!
+//! What it does **not** yet do is spend. Building the transaction is
+//! `verus_sapling::build_shielded_spend`, which needs the prover and the Sapling
+//! parameters; [`shielded::witness_note`] assembles everything it takes as
+//! input.
 //!
 //! # A node is untrusted infrastructure
 //!
@@ -66,6 +71,9 @@ pub mod identity;
 pub mod login;
 pub mod send;
 
+#[cfg(feature = "shielded")]
+pub mod shielded;
+
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -79,6 +87,9 @@ pub use identity::{
 };
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use send::{prepare_send, send, send_token, Sent};
+
+#[cfg(feature = "shielded")]
+pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};
 
 // The whole stack, so a consumer takes one dependency rather than three.
 #[cfg(feature = "http")]

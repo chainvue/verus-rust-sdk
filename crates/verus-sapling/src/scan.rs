@@ -52,6 +52,7 @@ pub struct CompactOutput {
 
 /// A detected note (an output that decrypted under the wallet's ivk), with
 /// everything a later spend or spent-check needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedNote {
     /// Block height the note was mined in.
     pub height: u64,

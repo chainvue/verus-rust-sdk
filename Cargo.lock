@@ -1527,7 +1527,9 @@ dependencies = [
  "thiserror 2.0.19",
  "verus-flows",
  "verus-keys",
+ "verus-light",
  "verus-rpc",
+ "verus-sapling",
  "verus-tx",
  "verus-wire",
 ]
