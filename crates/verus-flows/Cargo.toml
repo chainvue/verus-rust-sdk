@@ -21,6 +21,10 @@ testing = ["dep:hex", "dep:sha2"]
 # default: it pulls the Sapling stack, which is a much heavier tree than the
 # transparent path needs.
 shielded = ["dep:verus-light", "dep:verus-sapling", "dep:verus-wire"]
+# Additionally BUILD shielded spends. Separately priced from `shielded` because
+# it drags in bellman and needs the ~50 MB Sapling parameters at runtime, which
+# a balance-only wallet has no use for.
+prover = ["shielded", "verus-sapling/prover"]
 
 [dependencies]
 hex = { workspace = true, optional = true }

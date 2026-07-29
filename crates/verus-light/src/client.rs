@@ -159,10 +159,22 @@ impl<T: LightTransport> LightClient<T> {
 
     /// Hand a signed transaction to the network.
     ///
-    /// The only method here that is not a question. A non-zero `errorCode` from
-    /// the server becomes an error; on success the server's message is returned
-    /// verbatim, which for lightwalletd is the daemon's `sendrawtransaction`
-    /// reply — conventionally the txid, though the protocol does not say so.
+    /// The only method here that is not a question. A non-zero `errorCode`
+    /// becomes an error; on success the server's message is returned **verbatim**.
+    ///
+    /// # The reply is not a bare txid
+    ///
+    /// lightwalletd passes the daemon's `sendrawtransaction` answer straight
+    /// through, JSON encoding included. A real success, observed 2026-07-29:
+    ///
+    /// ```text
+    /// "8f9e0a6b1073349bd6f25433e617de3bd4826ab4afeae68b293d23d6e68a78c8"
+    /// ```
+    ///
+    /// — 66 characters, with the quotation marks. Use
+    /// [`txid_from_reply`](Self::txid_from_reply) rather than treating this as a
+    /// hash; a caller that compares it to a txid gets an inequality it cannot
+    /// explain, and one that stores it produces an id no explorer will resolve.
     ///
     /// **Never retry this automatically.** A transport failure is ambiguous:
     /// the server may have relayed it already. Re-read with
@@ -178,5 +190,35 @@ impl<T: LightTransport> LightClient<T> {
             });
         }
         Ok(response.error_message)
+    }
+
+    /// Extract a transaction id from a [`send_transaction`](Self::send_transaction)
+    /// reply.
+    ///
+    /// Strips the JSON quoting lightwalletd passes through from the daemon, and
+    /// refuses anything that is not 64 hex characters — so a server that answers
+    /// with a status string, an empty body or an error message cannot be
+    /// mistaken for a transaction that exists. A caller polling a fabricated id
+    /// waits forever on a payment that was never relayed.
+    ///
+    /// ```
+    /// # use verus_light::{LightClient, LightTransport};
+    /// # fn f<T: LightTransport>(c: &LightClient<T>) {
+    /// let reply = "\"8f9e0a6b1073349bd6f25433e617de3bd4826ab4afeae68b293d23d6e68a78c8\"";
+    /// assert_eq!(
+    ///     LightClient::<T>::txid_from_reply(reply).unwrap(),
+    ///     "8f9e0a6b1073349bd6f25433e617de3bd4826ab4afeae68b293d23d6e68a78c8"
+    /// );
+    /// assert!(LightClient::<T>::txid_from_reply("ok").is_err());
+    /// # }
+    /// ```
+    pub fn txid_from_reply(reply: &str) -> Result<String, LightError> {
+        let trimmed = reply.trim().trim_matches('"');
+        if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(LightError::Protobuf(format!(
+                "the server's reply is not a transaction id: {reply:?}"
+            )));
+        }
+        Ok(trimmed.to_ascii_lowercase())
     }
 }
