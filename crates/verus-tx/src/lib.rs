@@ -48,6 +48,7 @@ mod error;
 pub mod fee;
 pub mod identity;
 pub mod register;
+pub mod revoke;
 mod send;
 mod token;
 mod txid;
@@ -61,6 +62,9 @@ pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
 pub use register::{
     build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
     NameReservation, RegistrationParams, SignedRegistration,
+};
+pub use revoke::{
+    build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
 pub use send::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,

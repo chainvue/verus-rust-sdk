@@ -183,8 +183,13 @@ fn main() -> Result<(), Error> {
                     primary_addresses: &primary_addresses,
                     min_sigs: u32::try_from(spec["min_sigs"].as_u64().unwrap_or(1))?,
                     system_id: system_id.hash(),
-                    revocation_authority: None,
-                    recovery_authority: None,
+                    // Default to the identity itself. Pointing recovery at
+                    // ANOTHER identity is what makes revocation usable later:
+                    // an identity that is its own recovery authority cannot be
+                    // recovered once revoked, and the daemon refuses to revoke
+                    // it at all.
+                    revocation_authority: authority(&spec["revocation_authority"])?,
+                    recovery_authority: authority(&spec["recovery_authority"])?,
                     registration_fee: spec["registration_fee"]
                         .as_u64()
                         .ok_or("spec.registration_fee")?,
@@ -214,6 +219,14 @@ fn main() -> Result<(), Error> {
         _ => return Err("spec.step must be 1 or 2".into()),
     }
     Ok(())
+}
+
+/// An optional authority i-address from the spec.
+fn authority(value: &Value) -> Result<Option<[u8; 20]>, Error> {
+    match value.as_str() {
+        Some(text) => Ok(Some(text.parse::<Address>()?.hash())),
+        None => Ok(None),
+    }
 }
 
 fn identity_address(reservation: &NameReservation) -> Result<String, Error> {

@@ -220,6 +220,27 @@ pub enum TxError {
         field: String,
     },
 
+    /// The identity is already revoked.
+    #[error("this identity is already revoked")]
+    AlreadyRevoked,
+
+    /// Recovering an identity that was never revoked.
+    #[error("this identity is not revoked, so there is nothing to recover")]
+    NotRevoked,
+
+    /// A recovery that leaves the revoked flag set — it would spend the output
+    /// and change nothing but the fee.
+    #[error("the recovered identity still has the revoked flag set")]
+    StillRevoked,
+
+    /// A revocation nobody could undo.
+    ///
+    /// An identity whose recovery authority is itself cannot be recovered once
+    /// revoked: the only party permitted to act is the revoked identity, which
+    /// no longer can. The daemon refuses this too.
+    #[error("recovery authority is the identity itself; revoking it would strand it permanently")]
+    RevocationWouldStrand,
+
     /// The output being spent does not hold the identity being updated.
     #[error("the output being spent does not hold this identity")]
     IdentityOutputMismatch,
