@@ -115,7 +115,13 @@ pub(crate) fn assemble(
         });
     }
 
-    sign_inputs(&mut tx, funding_key, leading_keys, &inputs, plan.leading.len())?;
+    sign_inputs(
+        &mut tx,
+        funding_key,
+        leading_keys,
+        &inputs,
+        plan.leading.len(),
+    )?;
 
     let raw = tx.serialize()?;
     Ok(SignedTransaction {
