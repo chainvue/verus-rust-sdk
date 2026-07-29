@@ -11,9 +11,10 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
+use crate::amount::Amount;
 use crate::cc::fulfillment_script_sig;
 use crate::error::TxError;
-use crate::fee::select_utxos;
+use crate::fee::{check_burn_ceiling, select_utxos};
 use crate::send::{p2pkh_script_sig, SignedTransaction};
 use crate::Utxo;
 
@@ -55,14 +56,18 @@ pub(crate) fn assemble(
     // A leading input carrying native value would silently fund the burn and
     // break the accounting below, which assumes their contribution is zero.
     for utxo in plan.leading {
-        if utxo.satoshis != 0 {
+        if !utxo.satoshis.is_zero() {
             return Err(TxError::LeadingInputCarriesValue {
                 txid: utxo.txid.to_display_hex(),
                 vout: utxo.vout,
-                satoshis: utxo.satoshis,
+                satoshis: utxo.satoshis.to_sat(),
             });
         }
     }
+
+    // A burn is caller-supplied chain policy, so a typo in it is possible and
+    // conservation would certify the result regardless.
+    check_burn_ceiling(plan.burn)?;
 
     // Everything that has to be funded: the value the declared outputs carry
     // plus the burn. Most callers here emit only valueless CryptoConditions and
@@ -111,7 +116,7 @@ pub(crate) fn assemble(
 
     // Exact-integer conservation: inputs − outputs must be the miner fee plus
     // the declared burn, and nothing else.
-    let inputs_total: u64 = inputs.iter().map(|u| u.satoshis).sum();
+    let inputs_total: u64 = inputs.iter().map(|u| u.satoshis.to_sat()).sum();
     let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
     let expected = selection.fee + plan.burn;
@@ -136,8 +141,8 @@ pub(crate) fn assemble(
     Ok(SignedTransaction {
         hex: hex::encode(&raw),
         txid: txid_display(&tx.txid()?),
-        fee: expected,
-        change: selection.change,
+        fee: Amount::from_sat(expected),
+        change: Amount::from_sat(selection.change),
         inputs_used: inputs.iter().map(|utxo| (utxo.txid, utxo.vout)).collect(),
     })
 }
@@ -168,7 +173,7 @@ fn sign_inputs(
             VERUS_BRANCH_ID,
             index,
             &utxo.script_pubkey,
-            utxo.satoshis,
+            utxo.satoshis.to_sat(),
             SIGHASH_ALL,
         )?;
         tx.inputs[index].script_sig = if index < leading {

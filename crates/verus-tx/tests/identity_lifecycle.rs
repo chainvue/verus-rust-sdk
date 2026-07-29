@@ -34,7 +34,7 @@ use verus_tx::revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
 use verus_tx::update::{build_identity_update, UpdateParams};
-use verus_tx::{Txid, Utxo};
+use verus_tx::{Amount, Txid, Utxo};
 
 /// The public test key used across this repository. It holds nothing.
 const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
@@ -61,7 +61,7 @@ fn funding(satoshis: u64) -> Utxo {
     Utxo {
         txid: Txid::from_internal([0xf0; 32]),
         vout: 0,
-        satoshis,
+        satoshis: Amount::from_sat(satoshis),
         script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
     }
 }
@@ -75,7 +75,7 @@ fn commitment_utxo(reservation: &NameReservation) -> Utxo {
     Utxo {
         txid: Txid::from_internal([0xc0; 32]),
         vout: 0,
-        satoshis: 0,
+        satoshis: Amount::ZERO,
         script_pubkey: verus_tx::register::commitment_script(
             &reservation.commitment_hash().unwrap(),
             key().address().hash(),
@@ -111,7 +111,7 @@ fn identity_utxo(identity: &Identity) -> Utxo {
     Utxo {
         txid: Txid::from_internal([0x1d; 32]),
         vout: 0,
-        satoshis: 0,
+        satoshis: Amount::ZERO,
         script_pubkey: verus_tx::identity_primary_script(
             identity_id(&identity.name, Some(identity.parent)),
             identity.to_bytes().unwrap(),
@@ -237,7 +237,7 @@ fn sub_identity_registration() {
     let token = Utxo {
         txid: Txid::from_internal([0x70; 32]),
         vout: 0,
-        satoshis: 0,
+        satoshis: Amount::ZERO,
         script_pubkey: verus_tx::cc::reserve_output_script(
             key().address().hash(),
             parent,

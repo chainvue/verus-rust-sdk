@@ -158,6 +158,23 @@ pub enum TxError {
         satoshis: u64,
     },
 
+    /// A decimal amount that is not one, or has more precision than a satoshi.
+    #[error("{0:?} is not a valid amount of coins")]
+    InvalidAmount(String),
+
+    /// A miner fee far above anything the heuristic should produce.
+    ///
+    /// Exact conservation proves a transaction is internally consistent, not
+    /// that its numbers are sane: it is equally happy to certify a fee of a
+    /// thousand coins. This is the sanity half.
+    #[error("miner fee of {fee} exceeds the {ceiling} ceiling; pass a higher one deliberately")]
+    FeeTooLarge {
+        /// What the fee came out as.
+        fee: u64,
+        /// The ceiling it passed.
+        ceiling: u64,
+    },
+
     /// Amounts that overflow a u64 when summed.
     #[error("transaction value overflows a 64-bit integer")]
     ValueOverflow,

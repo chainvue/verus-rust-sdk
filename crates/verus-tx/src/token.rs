@@ -20,6 +20,7 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
+use crate::amount::Amount;
 use crate::cc::{fulfillment_script_sig, reserve_output_script};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
@@ -28,6 +29,13 @@ use crate::send::SignedTransaction;
 use crate::Utxo;
 
 /// A currency id — the 20-byte hash behind an `i` address.
+///
+/// Still an alias, not a newtype. It should be one: a currency id and an
+/// identity id are both 20 bytes and are *sometimes the same bytes* — a
+/// sub-identity's parent is an identity that is also a currency — so nothing
+/// stops one being passed where the other belongs. Making it a newtype touches
+/// the decoder, the script builders and every caller, which is a separate change
+/// from this one.
 pub type CurrencyId = [u8; 20];
 
 /// Where token value is going.
@@ -38,7 +46,7 @@ pub struct TokenRecipient {
     /// Which token.
     pub currency: CurrencyId,
     /// How much, in the token's smallest unit.
-    pub amount: u64,
+    pub amount: Amount,
 }
 
 /// What to build.
@@ -210,10 +218,10 @@ pub fn build_token_send(
         if recipient.address.kind() != AddressKind::PubKeyHash {
             return Err(TxError::UnsupportedRecipient);
         }
-        if recipient.amount == 0 {
+        if recipient.amount.is_zero() {
             return Err(TxError::ZeroValueOutput { index: 0 });
         }
-        balances.add_required(recipient.currency, recipient.amount);
+        balances.add_required(recipient.currency, recipient.amount.to_sat());
     }
 
     // Phase 1: take UTXOs carrying a currency we still need, in caller order.
@@ -230,7 +238,7 @@ pub fn build_token_send(
         for (id, amount) in &candidate.tokens {
             balances.sub(*id, *amount);
         }
-        remaining_native -= i128::from(candidate.utxo.satoshis);
+        remaining_native -= i128::from(candidate.utxo.satoshis.to_sat());
         selected.push(candidate);
     }
 
@@ -248,7 +256,12 @@ pub fn build_token_send(
         .iter()
         .filter(|d| !selected.iter().any(|s| std::ptr::eq(*s, *d)))
         .collect();
-    candidates.sort_by_key(|d| (d.carries_tokens(), core::cmp::Reverse(d.utxo.satoshis)));
+    candidates.sort_by_key(|d| {
+        (
+            d.carries_tokens(),
+            core::cmp::Reverse(d.utxo.satoshis.to_sat()),
+        )
+    });
     let mut candidates = candidates.into_iter();
 
     let declared_outputs = params.recipients.len() as u64;
@@ -261,13 +274,13 @@ pub fn build_token_send(
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
-            let available: u64 = params.utxos.iter().map(|u| u.satoshis).sum();
+            let available: u64 = params.utxos.iter().map(|u| u.satoshis.to_sat()).sum();
             return Err(TxError::InsufficientFunds {
                 required: fee,
                 available,
             });
         };
-        remaining_native -= i128::from(next.utxo.satoshis);
+        remaining_native -= i128::from(next.utxo.satoshis.to_sat());
         // Tokens on a UTXO pulled in for its native value become change, or they
         // would be spent with no output to receive them.
         for (id, amount) in &next.tokens {
@@ -282,7 +295,7 @@ pub fn build_token_send(
         );
     }
 
-    let total_native_in: u64 = selected.iter().map(|d| d.utxo.satoshis).sum();
+    let total_native_in: u64 = selected.iter().map(|d| d.utxo.satoshis.to_sat()).sum();
     let actual_change = total_native_in - fee;
     let (native_change, fee) = if actual_change > DUST_THRESHOLD {
         (actual_change, fee)
@@ -299,7 +312,7 @@ pub fn build_token_send(
             script_pubkey: reserve_output_script(
                 recipient.address.hash(),
                 recipient.currency,
-                recipient.amount,
+                recipient.amount.to_sat(),
             )?,
         });
     }
@@ -346,7 +359,7 @@ pub fn build_token_send(
             VERUS_BRANCH_ID,
             index,
             &utxo.script_pubkey,
-            utxo.satoshis,
+            utxo.satoshis.to_sat(),
             SIGHASH_ALL,
         )?;
         script_sigs.push(if entry.is_cryptocondition {
@@ -374,8 +387,8 @@ pub fn build_token_send(
     Ok(SignedTransaction {
         hex: hex::encode(&raw),
         txid: txid_display(&tx.txid()?),
-        fee,
-        change: native_change,
+        fee: Amount::from_sat(fee),
+        change: Amount::from_sat(native_change),
         inputs_used: selected
             .iter()
             .map(|d| (d.utxo.txid, d.utxo.vout))

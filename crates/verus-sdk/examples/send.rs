@@ -22,7 +22,7 @@ use std::io::Read;
 
 use serde_json::{json, Value};
 use verus_sdk::verus_keys::{Address, PrivateKey};
-use verus_sdk::verus_tx::{build_transparent_send, Recipient, SendParams, Txid, Utxo};
+use verus_sdk::verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Utxo {
                 txid: Txid::from_display_hex(u["txid"].as_str().ok_or("utxo.txid")?)?,
                 vout: u32::try_from(u["vout"].as_u64().ok_or("utxo.vout")?)?,
-                satoshis: u["satoshis"].as_u64().ok_or("utxo.satoshis")?,
+                satoshis: Amount::from_sat(u["satoshis"].as_u64().ok_or("utxo.satoshis")?),
                 script_pubkey: hex::decode(
                     u["script_pubkey"].as_str().ok_or("utxo.script_pubkey")?,
                 )?,
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|o| -> Result<Recipient, Box<dyn std::error::Error>> {
             Ok(Recipient {
                 address: o["address"].as_str().ok_or("output.address")?.parse()?,
-                satoshis: o["satoshis"].as_u64().ok_or("output.satoshis")?,
+                satoshis: Amount::from_sat(o["satoshis"].as_u64().ok_or("output.satoshis")?),
             })
         })
         .collect::<Result<_, _>>()?;
@@ -72,8 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{}",
         serde_json::to_string_pretty(&json!({
             "txid": signed.txid,
-            "fee": signed.fee,
-            "change": signed.change,
+            "fee": signed.fee.to_sat(),
+            "change": signed.change.to_sat(),
             "inputs_used": signed.inputs_used.len(),
             "hex": signed.hex,
         }))?

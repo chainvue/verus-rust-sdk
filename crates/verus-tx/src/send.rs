@@ -5,6 +5,7 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
+use crate::amount::Amount;
 use crate::cc::identity_payment_script;
 use crate::error::TxError;
 use crate::fee::{select_utxos, DEFAULT_FEE_PER_KB};
@@ -47,7 +48,7 @@ pub fn sign_p2pkh_inputs(
             VERUS_BRANCH_ID,
             index,
             &utxo.script_pubkey,
-            utxo.satoshis,
+            utxo.satoshis.to_sat(),
             SIGHASH_ALL,
         )?;
         tx.inputs[index].script_sig = p2pkh_script_sig(key, &sighash, &pubkey)?;
@@ -79,8 +80,8 @@ pub(crate) fn p2pkh_script_sig(
 pub struct Recipient {
     /// The `R` address being paid.
     pub address: Address,
-    /// Amount in satoshis.
-    pub satoshis: u64,
+    /// How much to pay.
+    pub satoshis: Amount,
 }
 
 /// What to build.
@@ -126,10 +127,10 @@ pub struct SignedTransaction {
     pub hex: String,
     /// Transaction id in display order.
     pub txid: String,
-    /// Fee paid, in satoshis, including any dust folded into it.
-    pub fee: u64,
+    /// Fee paid, including any dust folded into it.
+    pub fee: Amount,
     /// Change returned, or zero if it would have been dust.
-    pub change: u64,
+    pub change: Amount,
     /// The outpoints spent, in input order.
     pub inputs_used: Vec<(Txid, u32)>,
 }
@@ -182,10 +183,12 @@ pub fn build_transparent_send(
             AddressKind::Identity => has_smart_outputs = true,
             _ => return Err(TxError::UnsupportedRecipient),
         }
-        if recipient.satoshis == 0 {
+        if recipient.satoshis.is_zero() {
             return Err(TxError::ZeroValueOutput { index });
         }
-        required_native += recipient.satoshis;
+        required_native = required_native
+            .checked_add(recipient.satoshis.to_sat())
+            .ok_or(TxError::ValueOverflow)?;
     }
 
     let selection = select_utxos(
@@ -205,7 +208,7 @@ pub fn build_transparent_send(
             _ => recipient.address.p2pkh_script_pubkey()?,
         };
         outputs.push(TxOut {
-            value: recipient.satoshis,
+            value: recipient.satoshis.to_sat(),
             script_pubkey,
         });
     }
@@ -231,7 +234,7 @@ pub fn build_transparent_send(
     // Exact-integer conservation, checked before signing. This is the real
     // backstop: the JavaScript fork's equivalent truncates input values modulo
     // 2^32 and is blind above ~42.9 coins.
-    let inputs_total: u64 = selection.selected.iter().map(|u| u.satoshis).sum();
+    let inputs_total: u64 = selection.selected.iter().map(|u| u.satoshis.to_sat()).sum();
     let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
     if actual != i128::from(selection.fee) {
@@ -249,8 +252,8 @@ pub fn build_transparent_send(
     Ok(SignedTransaction {
         hex: hex::encode(&raw),
         txid: txid_display(&tx.txid()?),
-        fee: selection.fee,
-        change: selection.change,
+        fee: Amount::from_sat(selection.fee),
+        change: Amount::from_sat(selection.change),
         inputs_used: selection
             .selected
             .iter()
@@ -279,7 +282,7 @@ mod tests {
         Utxo {
             txid: Txid::from_internal([byte; 32]),
             vout: 0,
-            satoshis,
+            satoshis: Amount::from_sat(satoshis),
             script_pubkey: address(TEST_ADDRESS).p2pkh_script_pubkey().unwrap(),
         }
     }
@@ -287,7 +290,7 @@ mod tests {
     fn recipients(satoshis: u64) -> Vec<Recipient> {
         vec![Recipient {
             address: address(TEST_ADDRESS_B),
-            satoshis,
+            satoshis: Amount::from_sat(satoshis),
         }]
     }
 
@@ -364,7 +367,7 @@ mod tests {
         let identity = Address::new(AddressKind::Identity, [0x11; 20]);
         let to = vec![Recipient {
             address: identity,
-            satoshis: 1_000_000,
+            satoshis: Amount::from_sat(1_000_000),
         }];
         let utxos = [funding(0xaa, 100_000_000)];
         let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
@@ -378,7 +381,7 @@ mod tests {
 
         // At this size both land on the 10 000 floor, so the fee alone proves
         // nothing here — see the next test for where it bites.
-        assert_eq!(signed.fee, 10_000);
+        assert_eq!(signed.fee, Amount::from_sat(10_000));
     }
 
     /// The smart-output flag has to actually reach the fee estimate. One small
@@ -391,13 +394,13 @@ mod tests {
         let to_identities: Vec<Recipient> = (0..20)
             .map(|i| Recipient {
                 address: Address::new(AddressKind::Identity, [i; 20]),
-                satoshis: 1_000_000,
+                satoshis: Amount::from_sat(1_000_000),
             })
             .collect();
         let to_addresses: Vec<Recipient> = (0..20)
             .map(|_| Recipient {
                 address: address(TEST_ADDRESS_B),
-                satoshis: 1_000_000,
+                satoshis: Amount::from_sat(1_000_000),
             })
             .collect();
 
@@ -424,15 +427,15 @@ mod tests {
         //   native  60 + 180 + 21*34  =  954 bytes -> 9 540, raised to the
         //                                            10 000 floor
         //   smart   60 + 180 + 21*200 = 4440 bytes -> 44 400, well clear of it
-        assert_eq!(native.fee, 10_000);
-        assert_eq!(smart.fee, 44_400);
+        assert_eq!(native.fee, Amount::from_sat(10_000));
+        assert_eq!(smart.fee, Amount::from_sat(44_400));
     }
 
     #[test]
     fn still_refuses_a_script_hash_recipient() {
         let to = vec![Recipient {
             address: Address::new(AddressKind::ScriptHash, [0x11; 20]),
-            satoshis: 1_000_000,
+            satoshis: Amount::from_sat(1_000_000),
         }];
         let utxos = [funding(0xaa, 100_000_000)];
         let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
@@ -484,7 +487,10 @@ mod tests {
             let to = recipients(amount);
             let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
             let signed = build_transparent_send(&key(), &params).unwrap();
-            assert_eq!(100_000_000, amount + signed.fee + signed.change);
+            assert_eq!(
+                100_000_000,
+                amount + signed.fee.to_sat() + signed.change.to_sat()
+            );
         }
     }
 

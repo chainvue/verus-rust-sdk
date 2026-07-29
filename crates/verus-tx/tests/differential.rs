@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use verus_keys::{Address, PrivateKey};
-use verus_tx::{build_transparent_send, Recipient, SendParams, Txid, Utxo};
+use verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
 
 fn load_vectors() -> Vec<Value> {
     let path = format!(
@@ -71,7 +71,7 @@ fn reproduces_every_typescript_vector_byte_for_byte() {
             .map(|u| Utxo {
                 txid: Txid::from_display_hex(u["txid"].as_str().expect("txid")).expect("txid"),
                 vout: u32::try_from(u64_at(u, "vout")).expect("vout fits u32"),
-                satoshis: u64_at(u, "satoshis"),
+                satoshis: Amount::from_sat(u64_at(u, "satoshis")),
                 script_pubkey: hex::decode(u["script_pubkey"].as_str().expect("script"))
                     .expect("script is hex"),
             })
@@ -87,7 +87,7 @@ fn reproduces_every_typescript_vector_byte_for_byte() {
                     .expect("address")
                     .parse()
                     .expect("addr"),
-                satoshis: u64_at(o, "satoshis"),
+                satoshis: Amount::from_sat(u64_at(o, "satoshis")),
             })
             .collect();
 
@@ -130,15 +130,15 @@ fn reproduces_every_typescript_vector_byte_for_byte() {
                         name.clone(),
                         format!("txid {} != {}", signed.txid, expected_txid),
                     );
-                } else if signed.fee != expected_fee {
+                } else if signed.fee.to_sat() != expected_fee {
                     failures.insert(
                         name.clone(),
-                        format!("fee {} != {}", signed.fee, expected_fee),
+                        format!("fee {} != {}", signed.fee.to_sat(), expected_fee),
                     );
-                } else if signed.change != expected_change {
+                } else if signed.change.to_sat() != expected_change {
                     failures.insert(
                         name.clone(),
-                        format!("change {} != {}", signed.change, expected_change),
+                        format!("change {} != {}", signed.change.to_sat(), expected_change),
                     );
                 } else if signed.inputs_used.len() as u64 != expected_inputs {
                     failures.insert(
