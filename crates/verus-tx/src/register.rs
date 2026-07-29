@@ -158,7 +158,14 @@ fn validate_name(name: &str) -> Result<(), TxError> {
 const NAME_RESERVATION_VERSION: u32 = 1;
 
 /// The claim published in step 1 and revealed in step 2.
+///
+/// Serializable on purpose, under the `serde` feature. The salt is **not
+/// recoverable from the chain**: a registration that loses it between the two
+/// steps has burned the commitment fee and cannot complete, so a wallet has to
+/// be able to write this down before it broadcasts anything. See
+/// `verus_flows::identity` for the flow that depends on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NameReservation {
     /// The name being claimed, without the parent qualification or `@`.
     pub name: String,
