@@ -1,6 +1,6 @@
 //! Private and public keys.
 
-use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use zeroize::Zeroizing;
 
@@ -177,6 +177,28 @@ impl PublicKey {
             .to_encoded_point(self.compressed)
             .as_bytes()
             .to_vec()
+    }
+
+    /// Whether `signature` is a valid DER signature over `hash` by this key.
+    ///
+    /// The hash type byte a scriptSig appends is **not** part of the signature;
+    /// strip it before calling.
+    pub fn verify_der(&self, hash: &[u8; 32], signature: &[u8]) -> bool {
+        Signature::from_der(signature)
+            .map(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
+            .unwrap_or(false)
+    }
+
+    /// Whether `signature` is a valid compact `r || s` signature over `hash`.
+    ///
+    /// The form a CryptoCondition fulfillment carries.
+    pub fn verify_compact(&self, hash: &[u8; 32], signature: &[u8]) -> bool {
+        let Ok(bytes): Result<[u8; 64], _> = signature.try_into() else {
+            return false;
+        };
+        Signature::from_slice(&bytes)
+            .map(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
+            .unwrap_or(false)
     }
 
     /// HASH160 of the serialized key — the 20 bytes an address carries.

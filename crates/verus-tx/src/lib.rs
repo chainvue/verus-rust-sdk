@@ -51,6 +51,7 @@ pub mod decode;
 mod error;
 pub mod fee;
 pub mod identity;
+pub mod partial;
 pub mod register;
 pub mod revoke;
 mod send;
@@ -64,6 +65,7 @@ pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
 pub use fee::{estimate_fee, select_utxos, Selection};
 pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
+pub use partial::{InputKind, PartialTransaction};
 pub use register::{
     build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
     NameReservation, RegistrationParams, SignedRegistration,
