@@ -103,30 +103,30 @@ impl Decoded<'_> {
 /// emitted, and therefore the transaction bytes. A `HashMap` here would produce
 /// a valid but different transaction, nondeterministically — hence a `Vec`.
 #[derive(Default)]
-struct Balances(Vec<(CurrencyId, i128)>);
+pub(crate) struct Balances(Vec<(CurrencyId, i128)>);
 
 impl Balances {
-    fn sub(&mut self, currency: CurrencyId, amount: u64) {
+    pub(crate) fn sub(&mut self, currency: CurrencyId, amount: u64) {
         match self.0.iter_mut().find(|(id, _)| *id == currency) {
             Some((_, balance)) => *balance -= i128::from(amount),
             None => self.0.push((currency, -i128::from(amount))),
         }
     }
 
-    fn add_required(&mut self, currency: CurrencyId, amount: u64) {
+    pub(crate) fn add_required(&mut self, currency: CurrencyId, amount: u64) {
         match self.0.iter_mut().find(|(id, _)| *id == currency) {
             Some((_, balance)) => *balance += i128::from(amount),
             None => self.0.push((currency, i128::from(amount))),
         }
     }
 
-    fn still_needed(&self, currency: CurrencyId) -> bool {
+    pub(crate) fn still_needed(&self, currency: CurrencyId) -> bool {
         self.0
             .iter()
             .any(|(id, balance)| *id == currency && *balance > 0)
     }
 
-    fn shortfalls(&self) -> Vec<(CurrencyId, i128)> {
+    pub(crate) fn shortfalls(&self) -> Vec<(CurrencyId, i128)> {
         self.0
             .iter()
             .filter(|(_, balance)| *balance > 0)
@@ -135,7 +135,7 @@ impl Balances {
     }
 
     /// Currencies with a surplus — these become change outputs, in order.
-    fn change(&self) -> Vec<(CurrencyId, u64)> {
+    pub(crate) fn change(&self) -> Vec<(CurrencyId, u64)> {
         self.0
             .iter()
             .filter(|(_, balance)| *balance < 0)
