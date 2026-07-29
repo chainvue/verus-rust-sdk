@@ -5,7 +5,7 @@
 //!
 //! ```no_run
 //! use verus_keys::{Address, PrivateKey};
-//! use verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
+//! use verus_tx::{build_transparent_send, Amount, Expiry, Recipient, SendParams, Txid, Utxo};
 //!
 //! let key = PrivateKey::from_wif("UusoQ…")?;
 //! let utxos = [Utxo {
@@ -21,7 +21,7 @@
 //!
 //! let signed = build_transparent_send(
 //!     &key,
-//!     &SendParams::new(&utxos, &to, key.address(), 0),
+//!     &SendParams::new(&utxos, &to, key.address(), Expiry::Never),
 //! )?;
 //! println!("{} ({} sat fee)", signed.txid, signed.fee);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -49,6 +49,7 @@ mod assemble;
 pub mod cc;
 pub mod decode;
 mod error;
+mod expiry;
 pub mod fee;
 pub mod identity;
 pub mod partial;
@@ -63,6 +64,7 @@ pub use amount::{Amount, SATS_PER_COIN};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;
+pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
 pub use fee::{estimate_fee, select_utxos, Selection};
 pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
 pub use partial::{InputKind, PartialTransaction};

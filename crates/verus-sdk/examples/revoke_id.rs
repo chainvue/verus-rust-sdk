@@ -40,7 +40,9 @@ use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
-use verus_sdk::verus_tx::{decode_output_script, Amount, Destination, OutputKind, Txid, Utxo};
+use verus_sdk::verus_tx::{
+    decode_output_script, Amount, Destination, Expiry, OutputKind, Txid, Utxo,
+};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -64,7 +66,11 @@ fn main() -> Result<(), Error> {
         .as_str()
         .ok_or("spec.change_address")?
         .parse()?;
-    let expiry_height = u32::try_from(spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?)?;
+    // 0 in a spec means Expiry::Never, which is what these examples have always
+    // sent; a wallet should set a real height.
+    let expiry = Expiry::from_height(u32::try_from(
+        spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?,
+    )?);
     let identity_output = read_utxo(&spec["identity_output"])?;
     let utxos = spec["utxos"]
         .as_array()
@@ -86,7 +92,7 @@ fn main() -> Result<(), Error> {
                 identity_output: &identity_output,
                 utxos: &utxos,
                 change_address,
-                expiry_height,
+                expiry,
                 fee_per_kb: 10_000,
             },
         )?,
@@ -113,7 +119,7 @@ fn main() -> Result<(), Error> {
                     identity: &recovered,
                     utxos: &utxos,
                     change_address,
-                    expiry_height,
+                    expiry,
                     fee_per_kb: 10_000,
                 },
             )?

@@ -6,6 +6,7 @@
 
 use serde_json::Value;
 use verus_keys::{Address, PrivateKey};
+use verus_tx::Expiry;
 use verus_tx::{build_token_send, Amount, CurrencyId, TokenRecipient, TokenSendParams, Txid, Utxo};
 
 fn vector(name: &str) -> Value {
@@ -69,7 +70,9 @@ fn reproduces_the_typescript_token_transfer() {
             .expect("change")
             .parse()
             .expect("addr"),
-        u32::try_from(v["expiry_height"].as_u64().expect("expiry")).expect("fits"),
+        Expiry::from_height(
+            u32::try_from(v["expiry_height"].as_u64().expect("expiry")).expect("fits"),
+        ),
     );
 
     let signed = build_token_send(&key, &params).expect("build");

@@ -61,7 +61,7 @@ use verus_sdk::verus_tx::register::{
     build_identity_registration, build_name_commitment, CommitmentParams, NameReservation,
     ParentCurrencyFee, RegistrationParams,
 };
-use verus_sdk::verus_tx::{Amount, Txid, Utxo};
+use verus_sdk::verus_tx::{Amount, Expiry, Txid, Utxo};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -77,7 +77,11 @@ fn main() -> Result<(), Error> {
         .as_str()
         .ok_or("spec.change_address")?
         .parse()?;
-    let expiry_height = u32::try_from(spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?)?;
+    // 0 in a spec means Expiry::Never, which is what these examples have always
+    // sent; a wallet should set a real height.
+    let expiry = Expiry::from_height(u32::try_from(
+        spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?,
+    )?);
     let utxos = read_utxos(&spec["utxos"])?;
 
     // A salt from step 1 is in wire order already — this prints it in the same
@@ -105,7 +109,7 @@ fn main() -> Result<(), Error> {
         Some(1) => {
             let signed = build_name_commitment(
                 &key,
-                &CommitmentParams::new(&utxos, &reservation, change_address, expiry_height),
+                &CommitmentParams::new(&utxos, &reservation, change_address, expiry),
             )?;
             println!(
                 "{:#}",
@@ -197,7 +201,7 @@ fn main() -> Result<(), Error> {
                     referral_chain: &referral_chain,
                     parent_currency,
                     change_address,
-                    expiry_height,
+                    expiry,
                     fee_per_kb: 10_000,
                 },
             )?;

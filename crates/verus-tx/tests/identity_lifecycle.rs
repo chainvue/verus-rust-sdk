@@ -34,7 +34,7 @@ use verus_tx::revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
 use verus_tx::update::{build_identity_update, UpdateParams};
-use verus_tx::{Amount, Txid, Utxo};
+use verus_tx::{Amount, Expiry, Txid, Utxo};
 
 /// The public test key used across this repository. It holds nothing.
 const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
@@ -141,7 +141,7 @@ fn name_commitment() {
     let utxos = [funding(150_000_000_000)];
     let signed = build_name_commitment(
         &key(),
-        &CommitmentParams::new(&utxos, &reservation, key().address(), 0),
+        &CommitmentParams::new(&utxos, &reservation, key().address(), Expiry::Never),
     )
     .unwrap();
     assert_golden("name_commitment", &signed.hex, GOLDEN_COMMITMENT);
@@ -172,7 +172,7 @@ fn registration() {
             referral_levels: 3,
             referral_chain: &[],
             change_address: key().address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: 10_000,
         },
     )
@@ -211,7 +211,7 @@ fn referred_registration() {
             referral_levels: 3,
             referral_chain: &[],
             change_address: key().address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: 10_000,
         },
     )
@@ -256,7 +256,7 @@ fn referral_chain_pays_every_level() {
             referral_levels: 3,
             referral_chain: &chain_up,
             change_address: key().address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: 10_000,
         },
     )
@@ -318,7 +318,7 @@ fn sub_identity_registration() {
             referral_levels: 0,
             referral_chain: &[],
             change_address: key().address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: 10_000,
         },
     )
@@ -348,7 +348,7 @@ fn update_publishing_content() {
     let signed = build_identity_update(
         &key(),
         &[&key()],
-        &UpdateParams::new(&held, &proposed, &utxos, key().address(), 0),
+        &UpdateParams::new(&held, &proposed, &utxos, key().address(), Expiry::Never),
     )
     .unwrap();
     assert_golden("update_publishing_content", &signed.hex, GOLDEN_UPDATE);
@@ -375,7 +375,7 @@ fn multisig_update() {
     let signed = build_identity_update(
         &key(),
         &[&key(), &co_signer()],
-        &UpdateParams::new(&held, &proposed, &utxos, key().address(), 0),
+        &UpdateParams::new(&held, &proposed, &utxos, key().address(), Expiry::Never),
     )
     .unwrap();
     assert_golden("multisig_update", &signed.hex, GOLDEN_MULTISIG_UPDATE);
@@ -398,7 +398,7 @@ fn revocation() {
     let signed = build_identity_revocation(
         &key(),
         &[&key()],
-        &RevocationParams::new(&held, &utxos, key().address(), 0),
+        &RevocationParams::new(&held, &utxos, key().address(), Expiry::Never),
     )
     .unwrap();
     assert_golden("revocation", &signed.hex, GOLDEN_REVOCATION);
@@ -427,7 +427,7 @@ fn recovery() {
     let signed = build_identity_recovery(
         &key(),
         &[&key()],
-        &RecoveryParams::new(&held, &recovered, &utxos, key().address(), 0),
+        &RecoveryParams::new(&held, &recovered, &utxos, key().address(), Expiry::Never),
     )
     .unwrap();
     assert_golden("recovery", &signed.hex, GOLDEN_RECOVERY);

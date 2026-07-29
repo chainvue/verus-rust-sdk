@@ -67,6 +67,7 @@ use crate::cc::{
 use crate::cc::{Destination, EVAL_NONE};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::identity::Identity;
 use crate::send::SignedTransaction;
@@ -302,8 +303,8 @@ pub struct CommitmentParams<'a> {
     pub reservation: &'a NameReservation,
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -314,13 +315,13 @@ impl<'a> CommitmentParams<'a> {
         utxos: &'a [Utxo],
         reservation: &'a NameReservation,
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             utxos,
             reservation,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
     }
@@ -334,7 +335,7 @@ pub fn build_name_commitment(
     key: &PrivateKey,
     params: &CommitmentParams<'_>,
 ) -> Result<SignedTransaction, TxError> {
-    check_expiry(params.expiry_height)?;
+    check_expiry(params.expiry)?;
     check_p2pkh_funding(params.utxos)?;
 
     let script = commitment_script(&params.reservation.commitment_hash()?, key.address().hash())?;
@@ -352,7 +353,7 @@ pub fn build_name_commitment(
             burn: 0,
             fee_output_count: 1,
             change_address: &params.change_address,
-            expiry_height: params.expiry_height,
+            expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
     )
@@ -410,8 +411,8 @@ pub struct RegistrationParams<'a> {
     pub referral_chain: &'a [[u8; 20]],
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -522,7 +523,7 @@ pub fn build_identity_registration(
     key: &PrivateKey,
     params: &RegistrationParams<'_>,
 ) -> Result<SignedRegistration, TxError> {
-    check_expiry(params.expiry_height)?;
+    check_expiry(params.expiry)?;
     check_p2pkh_funding(params.utxos)?;
     if params.primary_addresses.is_empty() {
         return Err(TxError::NoOutputs);
@@ -722,7 +723,7 @@ pub fn build_identity_registration(
             // different transaction.
             fee_output_count: 3 + referrers.len() as u64,
             change_address: &params.change_address,
-            expiry_height: params.expiry_height,
+            expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
     )?;
@@ -949,7 +950,7 @@ mod tests {
             referral_levels: 3,
             referral_chain: &[],
             change_address: key.address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         };
         assert!(matches!(
@@ -1004,7 +1005,7 @@ mod tests {
             referral_levels: 0,
             referral_chain: &[],
             change_address: key.address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         };
         assert!(matches!(
@@ -1050,7 +1051,7 @@ mod tests {
             referral_levels: 3,
             referral_chain: &[],
             change_address: key.address(),
-            expiry_height: 0,
+            expiry: Expiry::Never,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         };
         assert!(matches!(

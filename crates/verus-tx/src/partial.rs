@@ -46,6 +46,7 @@ use verus_wire::{TxIn, TxOut, TxV4};
 use crate::amount::Amount;
 use crate::cc::fulfillment_script_sig;
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::send::SignedTransaction;
 use crate::{Txid, Utxo};
 
@@ -89,8 +90,8 @@ pub struct PartialTransaction {
     pub outputs: Vec<TxOut>,
     /// The inputs, with their signatures.
     pub inputs: Vec<PartialInput>,
-    /// Expiry height.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable.
+    pub expiry: Expiry,
     /// nLockTime.
     pub lock_time: u32,
 }
@@ -123,7 +124,7 @@ impl PartialTransaction {
         inputs: &[Utxo],
         kinds: &[InputKind],
         outputs: Vec<TxOut>,
-        expiry_height: u32,
+        expiry: Expiry,
         lock_time: u32,
     ) -> Result<Self, TxError> {
         if inputs.len() != kinds.len() {
@@ -145,7 +146,7 @@ impl PartialTransaction {
                     signatures: Vec::new(),
                 })
                 .collect(),
-            expiry_height,
+            expiry,
             lock_time,
         })
     }
@@ -167,7 +168,7 @@ impl PartialTransaction {
                 .collect(),
             outputs: self.outputs.clone(),
             lock_time: self.lock_time,
-            expiry_height: self.expiry_height,
+            expiry_height: self.expiry.to_height(),
             ..TxV4::default()
         }
     }
@@ -390,7 +391,7 @@ impl PartialTransaction {
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
         out.push(FORMAT_VERSION);
-        out.extend_from_slice(&self.expiry_height.to_le_bytes());
+        out.extend_from_slice(&self.expiry.to_height().to_le_bytes());
         out.extend_from_slice(&self.lock_time.to_le_bytes());
 
         write_compact(&mut out, self.outputs.len());
@@ -433,7 +434,7 @@ impl PartialTransaction {
                 "format version {version} is not one this crate reads"
             )));
         }
-        let expiry_height = reader.u32()?;
+        let expiry = Expiry::from_height(reader.u32()?);
         let lock_time = reader.u32()?;
 
         let output_count = reader.compact()?;
@@ -490,7 +491,7 @@ impl PartialTransaction {
         Ok(Self {
             outputs,
             inputs,
-            expiry_height,
+            expiry,
             lock_time,
         })
     }
@@ -612,7 +613,7 @@ mod tests {
             &[condition_input(&a), p2pkh_input(&a, 100_000)],
             &[InputKind::CryptoCondition, InputKind::PubKeyHash],
             outputs(&a, 90_000),
-            0,
+            Expiry::Never,
             0,
         )
         .unwrap()
@@ -745,7 +746,7 @@ mod tests {
         let utxos = [funding.clone()];
         let direct = build_transparent_send(
             &key,
-            &SendParams::new(&utxos, &recipients, key.address(), 0),
+            &SendParams::new(&utxos, &recipients, key.address(), Expiry::Never),
         )
         .unwrap();
 
@@ -762,7 +763,8 @@ mod tests {
             },
         ];
         let mut partial =
-            PartialTransaction::start(&utxos, &[InputKind::PubKeyHash], outputs, 0, 0).unwrap();
+            PartialTransaction::start(&utxos, &[InputKind::PubKeyHash], outputs, Expiry::Never, 0)
+                .unwrap();
         partial.sign(&key).unwrap();
         let assembled = partial.finalize().unwrap();
 

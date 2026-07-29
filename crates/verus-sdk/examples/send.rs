@@ -22,7 +22,9 @@ use std::io::Read;
 
 use serde_json::{json, Value};
 use verus_sdk::verus_keys::{Address, PrivateKey};
-use verus_sdk::verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
+use verus_sdk::verus_tx::{
+    build_transparent_send, Amount, Expiry, Recipient, SendParams, Txid, Utxo,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
@@ -63,9 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_str()
         .ok_or("spec.change_address")?
         .parse()?;
-    let expiry_height = u32::try_from(spec["expiry_height"].as_u64().unwrap_or(0))?;
+    // 0 means Expiry::Never, which is what this example has always sent; a
+    // wallet should set a real height from the chain tip.
+    let expiry = Expiry::from_height(u32::try_from(spec["expiry_height"].as_u64().unwrap_or(0))?);
 
-    let params = SendParams::new(&utxos, &outputs, change_address, expiry_height);
+    let params = SendParams::new(&utxos, &outputs, change_address, expiry);
     let signed = build_transparent_send(&key, &params)?;
 
     println!(

@@ -8,11 +8,9 @@ use verus_wire::{TxIn, TxOut, TxV4};
 use crate::amount::Amount;
 use crate::cc::identity_payment_script;
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::{select_utxos, DEFAULT_FEE_PER_KB};
 use crate::{Txid, Utxo};
-
-/// Verus rejects an expiry height at or above this. `0` means "never expires".
-const EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
 
 /// Sign every transparent input of `tx` as P2PKH, in order.
 ///
@@ -93,11 +91,11 @@ pub struct SendParams<'a> {
     pub recipients: &'a [Recipient],
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
+    /// When this transaction stops being minable.
     ///
-    /// Deliberately not defaulted — an expiry is a policy decision, and a
-    /// silently-chosen one is how transactions go missing.
-    pub expiry_height: u32,
+    /// Deliberately not defaulted — see [`Expiry`], where `Never` has to be
+    /// written rather than fallen into.
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -108,13 +106,13 @@ impl<'a> SendParams<'a> {
         utxos: &'a [Utxo],
         recipients: &'a [Recipient],
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             utxos,
             recipients,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
     }
@@ -157,9 +155,7 @@ pub fn build_transparent_send(
     if params.recipients.is_empty() {
         return Err(TxError::NoOutputs);
     }
-    if params.expiry_height >= EXPIRY_HEIGHT_THRESHOLD {
-        return Err(TxError::ExpiryHeightTooLarge(params.expiry_height));
-    }
+    params.expiry.check()?;
 
     // Refuse anything outside the supported shape BEFORE selecting coins, so a
     // rejection cannot depend on which UTXOs happened to be chosen.
@@ -227,7 +223,7 @@ pub fn build_transparent_send(
             .collect(),
         outputs,
         lock_time: 0,
-        expiry_height: params.expiry_height,
+        expiry_height: params.expiry.to_height(),
         ..TxV4::default()
     };
 
@@ -300,7 +296,7 @@ mod tests {
         utxo.script_pubkey = vec![0x51]; // OP_TRUE — not something we can spend
         let to = recipients(1_000_000);
         let utxos = [utxo];
-        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         assert!(matches!(
             build_transparent_send(&key(), &params),
             Err(TxError::UnsupportedFundingScript { .. })
@@ -370,7 +366,7 @@ mod tests {
             satoshis: Amount::from_sat(1_000_000),
         }];
         let utxos = [funding(0xaa, 100_000_000)];
-        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         let signed = build_transparent_send(&key(), &params).expect("build");
 
         let expected = crate::cc::identity_payment_script([0x11; 20]).unwrap();
@@ -406,12 +402,12 @@ mod tests {
 
         let smart = build_transparent_send(
             &key(),
-            &SendParams::new(&utxos, &to_identities, address(TEST_ADDRESS), 0),
+            &SendParams::new(&utxos, &to_identities, address(TEST_ADDRESS), Expiry::Never),
         )
         .expect("build");
         let native = build_transparent_send(
             &key(),
-            &SendParams::new(&utxos, &to_addresses, address(TEST_ADDRESS), 0),
+            &SendParams::new(&utxos, &to_addresses, address(TEST_ADDRESS), Expiry::Never),
         )
         .expect("build");
 
@@ -438,7 +434,7 @@ mod tests {
             satoshis: Amount::from_sat(1_000_000),
         }];
         let utxos = [funding(0xaa, 100_000_000)];
-        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         assert!(matches!(
             build_transparent_send(&key(), &params),
             Err(TxError::UnsupportedRecipient)
@@ -449,13 +445,18 @@ mod tests {
     fn refuses_an_out_of_range_expiry_height() {
         let utxos = [funding(0xaa, 100_000_000)];
         let to = recipients(1_000_000);
-        let mut params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 500_000_000);
+        let mut params = SendParams::new(
+            &utxos,
+            &to,
+            address(TEST_ADDRESS),
+            Expiry::AtHeight(500_000_000),
+        );
         assert!(matches!(
             build_transparent_send(&key(), &params),
             Err(TxError::ExpiryHeightTooLarge(500_000_000))
         ));
         // One below the threshold is fine.
-        params.expiry_height = 499_999_999;
+        params.expiry = Expiry::AtHeight(499_999_999);
         assert!(build_transparent_send(&key(), &params).is_ok());
     }
 
@@ -463,7 +464,7 @@ mod tests {
     fn refuses_a_zero_value_output() {
         let utxos = [funding(0xaa, 100_000_000)];
         let to = recipients(0);
-        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         assert!(matches!(
             build_transparent_send(&key(), &params),
             Err(TxError::ZeroValueOutput { index: 0 })
@@ -473,7 +474,7 @@ mod tests {
     #[test]
     fn refuses_to_build_with_no_outputs() {
         let utxos = [funding(0xaa, 100_000_000)];
-        let params = SendParams::new(&utxos, &[], address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &[], address(TEST_ADDRESS), Expiry::Never);
         assert!(matches!(
             build_transparent_send(&key(), &params),
             Err(TxError::NoOutputs)
@@ -485,7 +486,7 @@ mod tests {
         for amount in [1_000u64, 546, 50_000_000, 99_000_000] {
             let utxos = [funding(0xaa, 100_000_000)];
             let to = recipients(amount);
-            let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+            let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
             let signed = build_transparent_send(&key(), &params).unwrap();
             assert_eq!(
                 100_000_000,
@@ -498,7 +499,7 @@ mod tests {
     fn is_deterministic() {
         let utxos = [funding(0xaa, 100_000_000), funding(0xbb, 20_000_000)];
         let to = recipients(50_000_000);
-        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), 0);
+        let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         assert_eq!(
             build_transparent_send(&key(), &params).unwrap(),
             build_transparent_send(&key(), &params).unwrap()

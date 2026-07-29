@@ -14,12 +14,10 @@ use verus_wire::{TxIn, TxOut, TxV4};
 use crate::amount::Amount;
 use crate::cc::fulfillment_script_sig;
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::{check_burn_ceiling, select_utxos};
 use crate::send::{p2pkh_script_sig, SignedTransaction};
 use crate::Utxo;
-
-/// Verus rejects an expiry height at or above this. `0` means "never expires".
-const EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
 
 /// The shape of a transaction to assemble.
 pub(crate) struct Assembly<'a> {
@@ -37,8 +35,8 @@ pub(crate) struct Assembly<'a> {
     pub(crate) fee_output_count: u64,
     /// Where change goes.
     pub(crate) change_address: &'a Address,
-    /// Expiry height.
-    pub(crate) expiry_height: u32,
+    /// When the transaction stops being minable.
+    pub(crate) expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub(crate) fee_per_kb: u64,
 }
@@ -110,7 +108,7 @@ pub(crate) fn assemble(
             .collect(),
         outputs,
         lock_time: 0,
-        expiry_height: plan.expiry_height,
+        expiry_height: plan.expiry.to_height(),
         ..TxV4::default()
     };
 
@@ -197,11 +195,8 @@ fn sign_inputs(
     Ok(())
 }
 
-pub(crate) fn check_expiry(expiry_height: u32) -> Result<(), TxError> {
-    if expiry_height >= EXPIRY_HEIGHT_THRESHOLD {
-        return Err(TxError::ExpiryHeightTooLarge(expiry_height));
-    }
-    Ok(())
+pub(crate) fn check_expiry(expiry: Expiry) -> Result<(), TxError> {
+    expiry.check()
 }
 
 pub(crate) fn check_p2pkh_funding(utxos: &[Utxo]) -> Result<(), TxError> {
