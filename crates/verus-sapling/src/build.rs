@@ -48,6 +48,7 @@ use zcash_note_encryption::EphemeralKeyBytes;
 use crate::error::SaplingError;
 use crate::params::SaplingParams;
 use crate::scan::{build_witness, FullOutput, TreeStateBefore};
+use crate::witness::NoteWitness;
 
 /// Size of a Sapling memo field (ZIP-302), in bytes.
 pub const MEMO_SIZE: usize = 512;
@@ -111,12 +112,32 @@ pub struct NoteToSpend<'a> {
     pub block_cmus: &'a [[u8; 32]],
     /// Index into `block_cmus` of this note's own commitment.
     pub my_cmu_index: usize,
+    /// A witness already advanced past the note's own block.
+    ///
+    /// When `None`, the witness is built from the three fields above and roots
+    /// to the end of the note's own block. That is fine for a note spent alone,
+    /// and it is why notes from **different blocks cannot be combined** without
+    /// this: a bundle carries one anchor, and two notes witnessed at their own
+    /// blocks root to two different ones.
+    ///
+    /// Set it to a [`NoteWitness`] advanced to a
+    /// common height and notes from anywhere in the chain can be spent together.
+    /// The other fields are then unused for witnessing, but still describe where
+    /// the note came from.
+    pub advanced_witness: Option<&'a NoteWitness>,
 }
 
-/// A z→z / z→t build: one shielded note in, any mix of outputs out.
+/// A z→z / z→t build: one or more shielded notes in, any mix of outputs out.
 pub struct SpendSpec<'a> {
-    /// The note to spend and its witness inputs.
-    pub note: NoteToSpend<'a>,
+    /// The notes to spend and their witness inputs.
+    ///
+    /// **Every note must be witnessed at the same anchor.** A Sapling bundle
+    /// carries one anchor for all of its spends, so notes witnessed at different
+    /// heights cannot be combined — advance them to a common tip first with
+    /// [`NoteWitness`]. Mismatched anchors are
+    /// refused here rather than silently taking the first, which would produce
+    /// proofs against a tree the other notes are not in.
+    pub notes: &'a [NoteToSpend<'a>],
     /// Shielded recipients.
     pub shielded_outputs: &'a [ShieldedOutput],
     /// Transparent recipients.
@@ -206,27 +227,75 @@ pub fn build_shielded_spend(
 ) -> Result<TxV4, SaplingError> {
     let mut rng = OsRng;
 
-    let extsk = ExtendedSpendingKey::from_bytes(spec.note.extsk_bytes)
-        .map_err(|e| SaplingError::InvalidKey(format!("extended spending key: {e:?}")))?;
-    let dfvk = extsk.to_diversifiable_full_viewing_key();
-    let fvk = dfvk.fvk().clone();
-    let ovk = extsk.expsk.ovk;
-    let ask = extsk.expsk.ask.clone();
+    if spec.notes.is_empty() {
+        return Err(SaplingError::Proving(
+            "a spend needs at least one note".into(),
+        ));
+    }
 
-    let note = decrypt_note_to_spend(&extsk, spec.note.output, spec.zip212)?;
+    // Decrypt every note and witness it before building anything: a bundle
+    // commits to one anchor, so a disagreement has to be caught before the first
+    // proof rather than after the last.
+    let mut prepared = Vec::with_capacity(spec.notes.len());
+    let mut total_in: u64 = 0;
+    let mut anchor: Option<Anchor> = None;
+    let mut seen_commitments: Vec<[u8; 32]> = Vec::new();
+
+    for (index, to_spend) in spec.notes.iter().enumerate() {
+        let extsk = ExtendedSpendingKey::from_bytes(to_spend.extsk_bytes)
+            .map_err(|e| SaplingError::InvalidKey(format!("note {index}: {e:?}")))?;
+        let note = decrypt_note_to_spend(&extsk, to_spend.output, spec.zip212)?;
+
+        // The same note twice is a double spend inside one transaction: two
+        // spends with the same nullifier, which consensus rejects after the
+        // proofs have been paid for.
+        if seen_commitments.contains(&to_spend.output.cmu) {
+            return Err(SaplingError::Proving(format!(
+                "note {index} is already being spent by this transaction"
+            )));
+        }
+        seen_commitments.push(to_spend.output.cmu);
+
+        let (note_anchor, merkle_path) = witness(to_spend)?;
+        match anchor {
+            None => anchor = Some(note_anchor),
+            Some(existing) if existing.to_bytes() != note_anchor.to_bytes() => {
+                return Err(SaplingError::Witness(format!(
+                    "note {index} is witnessed at anchor {} but note 0 at {}; \
+                     advance every witness to the same height before spending",
+                    hex::encode(note_anchor.to_bytes()),
+                    hex::encode(existing.to_bytes())
+                )));
+            }
+            Some(_) => {}
+        }
+
+        total_in = total_in
+            .checked_add(note.value().inner())
+            .ok_or_else(|| SaplingError::Proving("the notes being spent overflow a u64".into()))?;
+        prepared.push((extsk, note, merkle_path));
+    }
+
     check_conservation(
-        note.value().inner(),
+        total_in,
         spec.shielded_outputs,
         spec.transparent_outputs,
         spec.fee,
     )?;
 
-    let (anchor, merkle_path) = witness(&spec.note)?;
+    let anchor = anchor.expect("checked non-empty above");
+    // Outputs are keyed to the first note's outgoing viewing key, which is what
+    // lets that wallet recover its own sends. Notes from different accounts in
+    // one transaction would need a choice this API does not offer.
+    let ovk = prepared[0].0.expsk.ovk;
 
     let mut builder = Builder::new(spec.zip212, BundleType::DEFAULT, anchor);
-    builder
-        .add_spend(fvk, note, merkle_path)
-        .map_err(|e| SaplingError::Proving(format!("add_spend: {e:?}")))?;
+    for (extsk, note, merkle_path) in &prepared {
+        let fvk = extsk.to_diversifiable_full_viewing_key().fvk().clone();
+        builder
+            .add_spend(fvk, note.clone(), merkle_path.clone())
+            .map_err(|e| SaplingError::Proving(format!("add_spend: {e:?}")))?;
+    }
     for out in spec.shielded_outputs {
         builder
             .add_output(
@@ -238,8 +307,9 @@ pub fn build_shielded_spend(
             .map_err(|e| SaplingError::Proving(format!("add_output: {e:?}")))?;
     }
 
+    let spending_keys: Vec<_> = prepared.iter().map(|(extsk, _, _)| extsk.clone()).collect();
     let (bundle, _meta) = builder
-        .build::<SpendParameters, OutputParameters, _, i64>(core::slice::from_ref(&extsk), &mut rng)
+        .build::<SpendParameters, OutputParameters, _, i64>(&spending_keys, &mut rng)
         .map_err(|e| SaplingError::Proving(format!("build: {e:?}")))?
         .ok_or_else(|| SaplingError::Proving("builder produced no bundle".into()))?;
     let proven = bundle.create_proofs(&params.spend, &params.output, &mut rng, ());
@@ -264,8 +334,13 @@ pub fn build_shielded_spend(
     };
 
     let sighash = tx.shielded_sighash(spec.branch_id);
+    // One spend-auth signature per spend, in the same order.
+    let asks: Vec<_> = prepared
+        .iter()
+        .map(|(extsk, _, _)| extsk.expsk.ask.clone())
+        .collect();
     let authorized: Bundle<Authorized, i64> = proven
-        .apply_signatures(rng, sighash, core::slice::from_ref(&ask))
+        .apply_signatures(rng, sighash, &asks)
         .map_err(|e| SaplingError::Proving(format!("apply_signatures: {e:?}")))?;
 
     // Attach the signatures. The bodies do not change — and must not, since the
@@ -380,6 +455,9 @@ fn check_conservation(
 /// block's commitments up to and including ours positions the note, and
 /// appending the rest of the block advances the witness to the block's end.
 fn witness(note: &NoteToSpend<'_>) -> Result<(Anchor, MerklePath), SaplingError> {
+    if let Some(advanced) = note.advanced_witness {
+        return Ok((advanced.to_anchor(), advanced.path()?));
+    }
     let (root, path) = build_witness(note.tree_before_block, note.block_cmus, note.my_cmu_index)?;
     Ok((Anchor::from(root), path))
 }
@@ -394,6 +472,39 @@ fn fixed<const N: usize>(bytes: &[u8], field: &str) -> Result<[u8; N], SaplingEr
 
 #[cfg(test)]
 mod tests {
+    fn tree_fixture() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/daemon/sapling_tree.json"
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+    }
+
+    fn fixture_cmus(fixture: &serde_json::Value) -> Vec<[u8; 32]> {
+        fixture["block_1166308_cmus_display_order"]
+            .as_array()
+            .expect("cmus")
+            .iter()
+            .map(|c| {
+                let mut bytes: [u8; 32] = hex::decode(c.as_str().expect("hex"))
+                    .expect("hex")
+                    .try_into()
+                    .expect("32 bytes");
+                bytes.reverse();
+                bytes
+            })
+            .collect()
+    }
+
+    fn fixture_tree(fixture: &serde_json::Value) -> crate::scan::TreeStateBefore {
+        crate::scan::TreeStateBefore::from_hex(
+            fixture["frontier_before_block_1166308_hex"]
+                .as_str()
+                .expect("frontier"),
+        )
+        .expect("tree")
+    }
+
     use super::*;
 
     fn shielded(value: u64) -> ShieldedOutput {
@@ -464,8 +575,31 @@ mod tests {
             tree_before_block: &tree,
             block_cmus: &[[1u8; 32]],
             my_cmu_index: 5,
+            advanced_witness: None,
         };
         assert!(matches!(witness(&note), Err(SaplingError::Witness(_))));
+    }
+
+    /// A bundle carries ONE anchor for all of its spends. Notes witnessed at
+    /// their own blocks root differently, so combining them is refused before
+    /// the first proof rather than after the last — proving two notes costs
+    /// seconds and the daemon's only reply would be that the requirements were
+    /// not met.
+    #[test]
+    fn notes_witnessed_at_different_anchors_are_refused() {
+        let fixture = tree_fixture();
+        let cmus = fixture_cmus(&fixture);
+        let tree = fixture_tree(&fixture);
+
+        // The same commitments, but one witness stops a commitment earlier, so
+        // the two root to different trees.
+        let (early, _) = build_witness(&tree, &cmus[..1], 0).expect("early witness");
+        let (late, _) = build_witness(&tree, &cmus, 0).expect("late witness");
+        assert_ne!(
+            early.to_bytes(),
+            late.to_bytes(),
+            "the fixture must have more than one commitment for this to mean anything"
+        );
     }
 
     #[test]

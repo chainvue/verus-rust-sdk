@@ -105,27 +105,48 @@ fn main() -> Result<(), Error> {
         .iter()
         .map(|c| reversed32(c.as_str().ok_or("block_cmus[]")?))
         .collect::<Result<_, Error>>()?;
-    let my_cmu_index = usize::try_from(spec["my_cmu_index"].as_u64().ok_or("spec.my_cmu_index")?)?;
-
-    let out = &spec["note_output"];
-    let output = FullOutput {
-        cv: reversed32(out["cv"].as_str().ok_or("note_output.cv")?)?,
-        cmu: reversed32(out["cmu"].as_str().ok_or("note_output.cmu")?)?,
-        epk: reversed32(
-            out["ephemeralKey"]
-                .as_str()
-                .ok_or("note_output.ephemeralKey")?,
-        )?,
-        enc: hex::decode(out["encCiphertext"].as_str().ok_or("encCiphertext")?)?,
-        ct: hex::decode(out["outCiphertext"].as_str().ok_or("outCiphertext")?)?,
-        proof: hex::decode(out["proof"].as_str().ok_or("proof")?)?,
+    // One or more notes. They must share an anchor, which here means sharing a
+    // block: NoteToSpend witnesses each note at the end of its own block, so
+    // notes from different blocks root differently and are refused. Combining
+    // those needs witnesses advanced to a common height first.
+    let note_specs: Vec<(&Value, usize)> = match spec["notes"].as_array() {
+        Some(notes) => notes
+            .iter()
+            .map(|n| -> Result<(&Value, usize), Error> {
+                Ok((
+                    &n["note_output"],
+                    usize::try_from(n["my_cmu_index"].as_u64().ok_or("notes[].my_cmu_index")?)?,
+                ))
+            })
+            .collect::<Result<_, _>>()?,
+        None => vec![(
+            &spec["note_output"],
+            usize::try_from(spec["my_cmu_index"].as_u64().ok_or("spec.my_cmu_index")?)?,
+        )],
     };
-    if block_cmus.get(my_cmu_index) != Some(&output.cmu) {
-        return Err(format!(
-            "block_cmus[{my_cmu_index}] is not the note's own commitment — \
-             the witness would be built for the wrong leaf"
-        )
-        .into());
+
+    let mut outputs = Vec::with_capacity(note_specs.len());
+    for (out, index) in &note_specs {
+        let output = FullOutput {
+            cv: reversed32(out["cv"].as_str().ok_or("note_output.cv")?)?,
+            cmu: reversed32(out["cmu"].as_str().ok_or("note_output.cmu")?)?,
+            epk: reversed32(
+                out["ephemeralKey"]
+                    .as_str()
+                    .ok_or("note_output.ephemeralKey")?,
+            )?,
+            enc: hex::decode(out["encCiphertext"].as_str().ok_or("encCiphertext")?)?,
+            ct: hex::decode(out["outCiphertext"].as_str().ok_or("outCiphertext")?)?,
+            proof: hex::decode(out["proof"].as_str().ok_or("proof")?)?,
+        };
+        if block_cmus.get(*index) != Some(&output.cmu) {
+            return Err(format!(
+                "block_cmus[{index}] is not that note's own commitment — \
+                 the witness would be built for the wrong leaf"
+            )
+            .into());
+        }
+        outputs.push(output);
     }
 
     let shielded: Vec<ShieldedOutput> = spec["shielded"]
@@ -174,7 +195,7 @@ fn main() -> Result<(), Error> {
     // Check the anchor BEFORE proving. This is the whole reason `witness_anchor`
     // exists without the prover: a frontier from the wrong height fails nowhere
     // else, and finding out from the daemon costs a 30-second proof first.
-    let anchor = witness_anchor(&tree, &block_cmus, my_cmu_index)?;
+    let anchor = witness_anchor(&tree, &block_cmus, note_specs[0].1)?;
     eprintln!("anchor  : {}", hex::encode(anchor));
     if let Some(expected) = spec["expected_anchor"].as_str() {
         // Block headers display finalsaplingroot reversed, like a txid.
@@ -199,20 +220,27 @@ fn main() -> Result<(), Error> {
         format!("{dir}/sapling-output.params"),
     )?;
 
-    eprintln!("proving …");
+    let notes: Vec<NoteToSpend<'_>> = outputs
+        .iter()
+        .zip(&note_specs)
+        .map(|(output, (_, index))| NoteToSpend {
+            extsk_bytes: &extsk,
+            output,
+            tree_before_block: &tree,
+            block_cmus: &block_cmus,
+            my_cmu_index: *index,
+            advanced_witness: None,
+        })
+        .collect();
+
+    eprintln!("proving {} note(s) …", notes.len());
     // Value conservation against the decrypted note is enforced inside
     // `build_shielded_spend` — an overshoot here is a valid transaction that
     // hands the difference to a miner, so it is refused rather than broadcast.
     let tx = build_shielded_spend(
         &params,
         &SpendSpec {
-            note: NoteToSpend {
-                extsk_bytes: &extsk,
-                output: &output,
-                tree_before_block: &tree,
-                block_cmus: &block_cmus,
-                my_cmu_index,
-            },
+            notes: &notes,
             shielded_outputs: &shielded,
             transparent_outputs: &transparent,
             fee,
