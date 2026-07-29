@@ -38,6 +38,7 @@ mod error;
 #[cfg(feature = "prover")]
 pub mod params;
 pub mod scan;
+pub mod witness;
 pub mod zaddr;
 
 pub use error::SaplingError;
