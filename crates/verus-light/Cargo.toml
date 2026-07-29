@@ -1,0 +1,28 @@
+[package]
+name = "verus-light"
+description = "Read Sapling chain data from a lightwalletd server. Never sends a key anywhere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# A blocking grpc-web transport, so the crate is usable without wiring one up.
+# Off in a wasm build, which supplies its own transport over fetch — the same
+# grpc-web framing works there unchanged, which is why this is the default
+# rather than native gRPC.
+default = ["grpc-web"]
+grpc-web = ["dep:ureq"]
+
+[dependencies]
+hex = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+
+[dev-dependencies]
+verus-wire = { path = "../verus-wire" }

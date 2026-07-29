@@ -87,13 +87,15 @@ fn the_facade_pulls_in_no_http_stack_by_default() {
 }
 
 /// And the check must be capable of finding something, or it passes vacuously.
-/// `verus-rpc` itself *does* carry an HTTP client, by design.
+/// `verus-rpc` and `verus-light` *do* carry an HTTP client, by design.
 #[test]
 fn the_check_can_actually_detect_an_http_stack() {
-    let tree = dependency_tree("verus-rpc");
-    assert!(
-        tree.lines()
-            .any(|line| line.split_whitespace().next() == Some("ureq")),
-        "verus-rpc should carry ureq under --all-features; the check found nothing:\n{tree}"
-    );
+    for package in ["verus-rpc", "verus-light"] {
+        let tree = dependency_tree(package);
+        assert!(
+            tree.lines()
+                .any(|line| line.split_whitespace().next() == Some("ureq")),
+            "{package} should carry ureq under --all-features; the check found nothing:\n{tree}"
+        );
+    }
 }

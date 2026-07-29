@@ -1547,6 +1547,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "verus-light"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "thiserror 2.0.19",
+ "ureq",
+ "verus-wire",
+]
+
+[[package]]
 name = "verus-rpc"
 version = "0.0.0"
 dependencies = [
