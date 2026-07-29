@@ -18,6 +18,10 @@ pub enum FlowError {
     #[error(transparent)]
     Key(#[from] verus_keys::KeyError),
 
+    /// An offer could not be read, or does not describe what it claims.
+    #[error("offer: {0}")]
+    Offer(String),
+
     /// A shielded lookup could not be trusted to position or witness a note.
     ///
     /// Almost every case here is a *continuity* failure — a reorg under a scan,

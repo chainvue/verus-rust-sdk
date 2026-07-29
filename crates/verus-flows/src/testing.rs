@@ -395,7 +395,16 @@ impl ChainReader for ScriptedReader {
             .map(|hex| decode_outputs(hex))
             .unwrap_or_default()
             .into_iter()
-            .map(|(value, script)| json!({ "value": value, "scriptPubKey": { "hex": script } }))
+            // A daemon reports `value` in COINS and `valueSat` in satoshis.
+            // Emitting satoshis under `value` would let a reader that confuses
+            // the two pass here and misread real chain data by 10^8.
+            .map(|(value, script)| {
+                json!({
+                    "value": verus_tx::Amount::from_sat(value).to_coins_string(),
+                    "valueSat": value,
+                    "scriptPubKey": { "hex": script },
+                })
+            })
             .collect();
 
         match confirmations {

@@ -69,6 +69,7 @@ pub mod error;
 pub mod funding;
 pub mod identity;
 pub mod login;
+pub mod offer;
 pub mod send;
 
 #[cfg(feature = "shielded")]
@@ -86,6 +87,7 @@ pub use identity::{
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
+pub use offer::{inspect, Demand, OfferTerms, Taken, Taking};
 pub use send::{prepare_send, send, send_token, Sent};
 
 #[cfg(feature = "shielded")]
