@@ -54,6 +54,7 @@ use crate::Utxo;
 
 /// What a revocation needs.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RevocationParams<'a> {
     /// The output currently holding the identity.
     pub identity_output: &'a Utxo,
@@ -82,6 +83,12 @@ impl<'a> RevocationParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 
@@ -132,6 +139,7 @@ pub fn build_identity_revocation(
 
 /// What a recovery needs.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RecoveryParams<'a> {
     /// The output currently holding the revoked identity.
     pub identity_output: &'a Utxo,
@@ -170,6 +178,12 @@ impl<'a> RecoveryParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 

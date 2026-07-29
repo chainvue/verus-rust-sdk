@@ -88,13 +88,8 @@ fn main() -> Result<(), Error> {
         Some("revoke") => build_identity_revocation(
             &key,
             &authority_keys,
-            &RevocationParams {
-                identity_output: &identity_output,
-                utxos: &utxos,
-                change_address,
-                expiry,
-                fee_per_kb: 10_000,
-            },
+            &RevocationParams::new(&identity_output, &utxos, change_address, expiry)
+                .with_fee_per_kb(10_000),
         )?,
         Some("recover") => {
             // Recovery restates the whole identity, like an update — but it is
@@ -114,14 +109,8 @@ fn main() -> Result<(), Error> {
             build_identity_recovery(
                 &key,
                 &authority_keys,
-                &RecoveryParams {
-                    identity_output: &identity_output,
-                    identity: &recovered,
-                    utxos: &utxos,
-                    change_address,
-                    expiry,
-                    fee_per_kb: 10_000,
-                },
+                &RecoveryParams::new(&identity_output, &recovered, &utxos, change_address, expiry)
+                    .with_fee_per_kb(10_000),
             )?
         }
         _ => return Err("spec.action must be \"revoke\" or \"recover\"".into()),

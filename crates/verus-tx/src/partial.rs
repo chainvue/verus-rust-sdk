@@ -52,6 +52,7 @@ use crate::{Txid, Utxo};
 
 /// How an input is unlocked, which decides what a signature over it looks like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InputKind {
     /// A plain key-hash output: one DER signature and its public key.
     PubKeyHash,
@@ -61,6 +62,7 @@ pub enum InputKind {
 
 /// One signature already gathered.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CollectedSignature {
     /// The public key it was made with.
     pub pubkey: Vec<u8>,
@@ -70,6 +72,7 @@ pub struct CollectedSignature {
 
 /// An input being signed, and what it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PartialInput {
     /// The output being spent.
     pub outpoint: (Txid, u32),
@@ -84,6 +87,11 @@ pub struct PartialInput {
 }
 
 /// A transaction and the signatures gathered for it so far.
+///
+/// Deliberately not `serde`-derived, unlike the other persisted types: it has
+/// its own tagged, versioned, bounds-checked format in
+/// [`to_bytes`](Self::to_bytes), which is what should cross a trust boundary. A
+/// second representation would be a second parser to get right.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartialTransaction {
     /// The outputs, fixed when the transaction was started.
@@ -773,6 +781,25 @@ mod tests {
             "partial and direct paths diverged"
         );
         assert_eq!(assembled.txid, direct.txid);
+    }
+
+    /// The persisted types survive a JSON round trip, so a wallet can store
+    /// pending state without inventing its own encoding.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_persisted_types_round_trip_through_serde() {
+        let utxo = Utxo {
+            txid: Txid::from_internal([0x5a; 32]),
+            vout: 3,
+            satoshis: Amount::from_sat(12_345_678),
+            script_pubkey: vec![0x76, 0xa9],
+        };
+        let json = serde_json::to_string(&utxo).unwrap();
+        assert_eq!(serde_json::from_str::<Utxo>(&json).unwrap(), utxo);
+
+        let expiry = Expiry::AtHeight(1_167_220);
+        let json = serde_json::to_string(&expiry).unwrap();
+        assert_eq!(serde_json::from_str::<Expiry>(&json).unwrap(), expiry);
     }
 
     /// What a co-signer looks at before deciding.

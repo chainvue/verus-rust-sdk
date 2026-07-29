@@ -84,6 +84,7 @@ pub use update::{build_identity_update, UpdateParams};
 
 /// An unspent output available to spend.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Utxo {
     /// Transaction that created it.
     pub txid: Txid,

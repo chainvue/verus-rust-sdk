@@ -113,17 +113,8 @@ fn main() -> Result<(), Error> {
     let signed = build_identity_update(
         &key,
         &identity_keys,
-        &UpdateParams {
-            identity_output: &identity_output,
-            identity: &identity,
-            utxos: &utxos,
-            change_address,
-            expiry,
-            fee_per_kb: 10_000,
-            // Never set from an example: an authority change is the one VerusID
-            // mistake with no remedy.
-            allow_authority_change: false,
-        },
+        &UpdateParams::new(&identity_output, &identity, &utxos, change_address, expiry)
+            .with_fee_per_kb(10_000),
     )?;
 
     println!(

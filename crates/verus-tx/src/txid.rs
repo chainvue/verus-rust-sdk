@@ -13,6 +13,7 @@ use crate::error::TxError;
 
 /// A transaction id, stored in internal (wire) order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Txid([u8; 32]);
 
 impl Txid {

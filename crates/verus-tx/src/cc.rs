@@ -124,6 +124,7 @@ pub fn var_int(mut value: u64) -> Vec<u8> {
 /// `verus-typescript-primitives` and against live pay-to-identity outputs on
 /// VRSCTEST (`fixtures/daemon/identity_outputs.json`).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Destination {
     /// A transparent `R` address.
     PubKeyHash([u8; 20]),

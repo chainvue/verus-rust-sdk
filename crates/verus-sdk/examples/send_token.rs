@@ -100,16 +100,9 @@ fn main() -> Result<(), Error> {
         }
     }
 
-    let signed = build_token_send(
-        &key,
-        &TokenSendParams {
-            utxos: &utxos,
-            recipients: &recipients,
-            change_address,
-            expiry,
-            fee_per_kb: 10_000,
-        },
-    )?;
+    let params =
+        TokenSendParams::new(&utxos, &recipients, change_address, expiry).with_fee_per_kb(10_000);
+    let signed = build_token_send(&key, &params)?;
 
     println!(
         "{:#}",

@@ -178,33 +178,39 @@ fn main() -> Result<(), Error> {
                 .ok_or("spec.system_id")?
                 .parse()?;
 
-            let registered = build_identity_registration(
-                &key,
-                &RegistrationParams {
-                    commitment: &commitment,
-                    reservation: &reservation,
-                    utxos: &utxos,
-                    primary_addresses: &primary_addresses,
-                    min_sigs: u32::try_from(spec["min_sigs"].as_u64().unwrap_or(1))?,
-                    system_id: system_id.hash(),
-                    // Default to the identity itself. Pointing recovery at
-                    // ANOTHER identity is what makes revocation usable later:
-                    // an identity that is its own recovery authority cannot be
-                    // recovered once revoked, and the daemon refuses to revoke
-                    // it at all.
-                    revocation_authority: authority(&spec["revocation_authority"])?,
-                    recovery_authority: authority(&spec["recovery_authority"])?,
-                    registration_fee: spec["registration_fee"]
+            let registered = build_identity_registration(&key, &{
+                let mut params = RegistrationParams::new(
+                    &commitment,
+                    &reservation,
+                    &utxos,
+                    &primary_addresses,
+                    system_id.hash(),
+                    spec["registration_fee"]
                         .as_u64()
                         .ok_or("spec.registration_fee")?,
-                    referral_levels: u32::try_from(spec["referral_levels"].as_u64().unwrap_or(3))?,
-                    referral_chain: &referral_chain,
-                    parent_currency,
                     change_address,
                     expiry,
-                    fee_per_kb: 10_000,
-                },
-            )?;
+                )
+                .with_min_sigs(u32::try_from(spec["min_sigs"].as_u64().unwrap_or(1))?)
+                // Authorities default to the identity itself, which is what
+                // the daemon does — and which makes the identity
+                // unrevokable, since an identity that is its own recovery
+                // authority can never be recovered. Point recovery at
+                // another identity here if revocation is meant to be usable.
+                .with_authorities(
+                    authority(&spec["revocation_authority"])?,
+                    authority(&spec["recovery_authority"])?,
+                )
+                .with_referrals(
+                    u32::try_from(spec["referral_levels"].as_u64().unwrap_or(3))?,
+                    &referral_chain,
+                )
+                .with_fee_per_kb(10_000);
+                if let Some(parent) = parent_currency {
+                    params = params.with_parent_currency(parent);
+                }
+                params
+            })?;
             println!(
                 "{:#}",
                 json!({
