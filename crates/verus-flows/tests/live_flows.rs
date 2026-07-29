@@ -22,12 +22,15 @@
 //! It is never given a key, and never asked to build or sign anything.
 
 use verus_flows::{
-    prepare_registration, prepare_send, send, sign_login, spendable, verify_login,
-    CommitmentStatus, LoginPolicy, LoginRequest, RegistrationOptions, WaitPolicy,
+    convert, estimate, plan_conversion, prepare_registration, prepare_send, send, sign_login,
+    spendable, verify_login, CommitmentStatus, LoginPolicy, LoginRequest, RegistrationOptions,
+    WaitPolicy,
 };
 use verus_keys::PrivateKey;
 use verus_rpc::{ChainReader, HttpTransport, RpcClient};
+use verus_tx::convert::ConversionKind;
 use verus_tx::Amount;
+use verus_tx::CurrencyId;
 
 const ENDPOINT: &str = "https://api.verustest.net";
 
@@ -308,4 +311,103 @@ fn a_daemon_accepts_a_signature_we_produced() {
         "we verified it too: {} signed by {:?} at {}",
         logged_in.name, logged_in.signers, logged_in.signed_at
     );
+}
+
+/// `shylock` — a fractional currency on VRSCTEST whose only reserve is the
+/// chain's own, which makes it the simplest possible conversion target.
+const SHYLOCK: &str = "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR";
+const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+
+/// Pricing a conversion needs no key and changes nothing.
+#[test]
+fn a_conversion_can_be_priced() {
+    if std::env::var("VERUS_LIVE_RPC").is_err() && std::env::var("VERUS_LIVE_BROADCAST").is_err() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1");
+        return;
+    }
+    let client = client();
+    let quote = estimate(
+        &client,
+        VRSCTEST,
+        SHYLOCK,
+        Amount::from_sat(1_50000000),
+        None,
+    )
+    .expect("estimateconversion");
+
+    eprintln!(
+        "1.5 VRSCTEST -> {} shylock",
+        quote.estimated_out.to_coins_string()
+    );
+    assert!(quote.estimated_out.to_sat() > 0);
+    // A fractional near parity: the estimate should be the same order of
+    // magnitude, not a units mix-up by a factor of 1e8.
+    assert!(quote.estimated_out.to_sat() > 1_00000000);
+    assert!(quote.estimated_out.to_sat() < 3_00000000);
+}
+
+/// The whole thing, on chain: convert native VRSCTEST into a fractional
+/// currency through the public node.
+///
+/// This is what proves the `CReserveTransfer` encoding is right. The unit tests
+/// reproduce the daemon's scripts byte-for-byte, which is strong; only a
+/// transaction the network accepts settles it.
+#[test]
+fn a_conversion_reaches_the_chain() {
+    let Some(key) = live_key() else { return };
+    let client = client();
+    let address = key.address().to_string();
+
+    let amount = Amount::from_sat(1_00000000);
+    let fee = Amount::from_sat(20_010);
+
+    let plan = plan_conversion(
+        &client,
+        VRSCTEST,
+        amount,
+        ConversionKind::IntoFractional {
+            fractional: CurrencyId::from_bytes(address_hash(SHYLOCK)),
+        },
+        &address,
+        fee,
+        None,
+    )
+    .expect("plan");
+    eprintln!(
+        "converting 1 VRSCTEST, node expects {} shylock",
+        plan.estimated_out.to_coins_string()
+    );
+
+    let sent = convert(
+        &client,
+        &client,
+        &key,
+        VRSCTEST,
+        amount,
+        ConversionKind::IntoFractional {
+            fractional: CurrencyId::from_bytes(address_hash(SHYLOCK)),
+        },
+        &address,
+        fee,
+        // Accept a wide band: this is a live market and the point is the
+        // encoding, not the price.
+        Some(Amount::from_sat(50_000_000)),
+        &[],
+    )
+    .expect("the network must accept a conversion this SDK built");
+
+    eprintln!(
+        "broadcast {} — fee {}",
+        sent.txid,
+        sent.fee.to_coins_string()
+    );
+    assert!(client
+        .confirmations(&sent.txid)
+        .expect("confirmations")
+        .is_some());
+}
+
+/// The 20 bytes of an i-address.
+fn address_hash(text: &str) -> [u8; 20] {
+    text.parse::<verus_keys::Address>().expect("address").hash()
 }

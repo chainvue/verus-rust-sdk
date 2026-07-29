@@ -19,6 +19,7 @@
 //! # What is here
 //!
 //! * [`send()`] and [`send_token()`] — pay someone.
+//! * [`convert`](mod@convert) — turn one currency into another, or burn one.
 //! * [`login`] — sign in with a VerusID, verified against the identity as it
 //!   stood when the signature was made.
 //! * [`identity`] — the VerusID lifecycle. Registration is two transactions with
@@ -58,6 +59,7 @@
 #![doc(html_no_source)]
 
 pub mod broadcast;
+pub mod convert;
 pub mod error;
 pub mod funding;
 pub mod identity;
@@ -68,6 +70,7 @@ pub mod send;
 pub mod testing;
 
 pub use broadcast::broadcast;
+pub use convert::{burn, convert, estimate, plan_conversion, ConversionPlan};
 pub use error::FlowError;
 pub use funding::{spendable, Funding};
 pub use identity::{

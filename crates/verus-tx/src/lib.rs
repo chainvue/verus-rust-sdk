@@ -47,6 +47,7 @@
 mod amount;
 mod assemble;
 pub mod cc;
+pub mod convert;
 mod currency;
 pub mod decode;
 mod error;
@@ -64,6 +65,10 @@ pub mod update;
 
 pub use amount::{Amount, SATS_PER_COIN};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
+pub use convert::{
+    build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,
+    ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
+};
 pub use currency::CurrencyId;
 pub use decode::{decode_output_script, OutputKind};
 pub use error::TxError;

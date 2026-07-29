@@ -1,0 +1,67 @@
+{
+  "_comment": "CReserveTransfer output scripts produced by verusd 1.2.17-2 on VRSCTEST, 2026-07-29, via sendcurrency with returntxtemplate=true so nothing was spent. crates/verus-tx/src/convert.rs reproduces every one byte-for-byte.",
+  "_layout": {
+    "script": "PUSH(master: version3, EVAL_NONE, 1-of-1, dest=RESERVE_TRANSFER_ADDRESS) OP_CHECKCRYPTOCONDITION PUSH(params: version3, EVAL_RESERVE_TRANSFER=8, 1-of-1, same dest, vdata=[CReserveTransfer]) OP_DROP",
+    "payload": "tokenOutput(version=1 || sourceCurrency(20) || varint(amount)) || varint(flags) || feeCurrency(20) || varint(fee) || destination || destCurrency(20) || [secondReserve(20) if RESERVE_TO_RESERVE]",
+    "destination": "varint(type) || compactSize(len) || bytes || [if type&64: compactSize(count), then per aux compactSize(len) || (varint(type) || compactSize(len) || bytes)]",
+    "_note": "amounts and flags use the Satoshi VARINT (7 bits per byte, high bit continues, minus-one adjustment), NOT compact size; the crate's existing cc::var_int is exactly this"
+  },
+  "reserve_transfer_address": {
+    "address": "RTqQe58LSj2yr5CrwYFwcsAQ1edQwmrkUU",
+    "hash160": "cb8a0f7f651b484a81e2312c3438deb601e27368",
+    "_why_constant": "It is NOT derived from the system or destination currency. Verified by observing the same address in every template, and by balance: it has received 84,248,804 VRSC on mainnet and 3,678,445 VRSCTEST on testnet. It is a protocol constant on both chains.",
+    "_important": "The output pays THIS address, not the recipient. The recipient is inside the payload."
+  },
+  "currencies": {
+    "VRSCTEST": "a6ef9ea235635e328124ff3429db9f9e91b64e2d",
+    "shylock": "e908e3e5c373389fa7ae5d4b22a87ffc204a74ff",
+    "sdkdiscount": "29c5b458d298301d3da78b1dd9b000c679c2a7c6",
+    "target_reserve": "6c4d1ff569d46ff39270b2b7059cbeaf44d8203f",
+    "recipient": "RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP = 6299813ef10e47ac626d3c87257308b7d25a204c"
+  },
+  "vectors": [
+    {
+      "name": "reserve into fractional",
+      "request": "1.5 VRSCTEST convertto shylock",
+      "flags": 3,
+      "flags_meaning": "VALID | CONVERT",
+      "script": "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4c8f040308010114cb8a0f7f651b484a81e2312c3438deb601e273684c7301a6ef9ea235635e328124ff3429db9f9e91b64e2dc6c2a20003a6ef9ea235635e328124ff3429db9f9e91b64e2d809b2a42146299813ef10e47ac626d3c87257308b7d25a204c011602146299813ef10e47ac626d3c87257308b7d25a204ce908e3e5c373389fa7ae5d4b22a87ffc204a74ff75",
+      "native_value": 150020010,
+      "fee": 20010
+    },
+    {
+      "name": "fractional into reserve",
+      "request": "1.0 shylock convertto VRSCTEST",
+      "flags": 515,
+      "flags_meaning": "VALID | CONVERT | IMPORT_TO_SOURCE",
+      "script": "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4c90040308010114cb8a0f7f651b484a81e2312c3438deb601e273684c7401e908e3e5c373389fa7ae5d4b22a87ffc204a74ffaed6c1008303a6ef9ea235635e328124ff3429db9f9e91b64e2d809b2a42146299813ef10e47ac626d3c87257308b7d25a204c011602146299813ef10e47ac626d3c87257308b7d25a204ca6ef9ea235635e328124ff3429db9f9e91b64e2d75",
+      "native_value": 20010,
+      "fee": 20010
+    },
+    {
+      "name": "burn",
+      "request": "1.0 shylock burn",
+      "flags": 641,
+      "flags_meaning": "VALID | BURN_CHANGE_PRICE | IMPORT_TO_SOURCE",
+      "_note": "no auxiliary destination: type byte 2 rather than 66. destCurrency is the currency being burned.",
+      "script": "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4c78040308010114cb8a0f7f651b484a81e2312c3438deb601e273684c5c01e908e3e5c373389fa7ae5d4b22a87ffc204a74ffaed6c1008401a6ef9ea235635e328124ff3429db9f9e91b64e2d809b2002146299813ef10e47ac626d3c87257308b7d25a204ce908e3e5c373389fa7ae5d4b22a87ffc204a74ff75",
+      "native_value": 20000,
+      "fee": 20000
+    },
+    {
+      "name": "reserve to reserve via a fractional",
+      "request": "1.0 VRSCTEST convertto target_reserve via sdkdiscount",
+      "flags": 1027,
+      "flags_meaning": "VALID | CONVERT | RESERVE_TO_RESERVE",
+      "_note": "TWO trailing currency ids: destCurrency is the via fractional, then secondReserve is the final target.",
+      "script": "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4ca4040308010114cb8a0f7f651b484a81e2312c3438deb601e273684c8801a6ef9ea235635e328124ff3429db9f9e91b64e2daed6c1008703a6ef9ea235635e328124ff3429db9f9e91b64e2d809b2a42146299813ef10e47ac626d3c87257308b7d25a204c011602146299813ef10e47ac626d3c87257308b7d25a204c29c5b458d298301d3da78b1dd9b000c679c2a7c66c4d1ff569d46ff39270b2b7059cbeaf44d8203f75",
+      "native_value": 100020010,
+      "fee": 20010
+    }
+  ],
+  "_proven_on_chain": {
+    "txid": "f56eb3cfbfe1feb0eddf864c26e8434690a00d705aef8f4308cb077ab133cc83",
+    "_what": "A conversion built, signed and broadcast entirely by this SDK through api.verustest.net: 1.0 VRSCTEST into shylock. The node estimated 0.99443551 and exactly 0.99443551 shylock arrived at RJKGReAJv5qUZJvhVeaGB8exY1ku58D1n7 two blocks later.",
+    "_not_covered": "preconvert (only valid before a currency launches), mint (needs the currency's controlling identity), and cross-chain export (needs a second system). Those remain unbuilt."
+  }
+}

@@ -201,6 +201,10 @@ pub enum TxError {
     #[error("invalid message signature: {0}")]
     MessageSignature(String),
 
+    /// A conversion this crate will not build.
+    #[error("invalid conversion: {0}")]
+    InvalidConversion(String),
+
     /// A partial transaction that could not be read.
     #[error("malformed partial transaction: {0}")]
     MalformedPartialTransaction(String),

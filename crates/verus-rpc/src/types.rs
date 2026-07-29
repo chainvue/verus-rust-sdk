@@ -112,6 +112,21 @@ pub struct AddressBalance {
     pub currency_balance: BTreeMap<String, Amount>,
 }
 
+/// What a conversion is expected to yield.
+///
+/// **An estimate, and nothing more.** A conversion executes at the price
+/// prevailing when it is imported, which is at least a block after it is signed.
+/// Nothing in the transaction enforces this figure — see
+/// [`verus_tx::convert`](https://docs.rs/verus-tx) on why there is no slippage
+/// bound in the protocol.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionEstimate {
+    /// How much of the destination currency the node expects to be produced.
+    pub estimated_out: Amount,
+    /// The conversion fee the node calculated, when it reported one.
+    pub fee: Option<Amount>,
+}
+
 /// A VerusID as a node reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityRecord {
@@ -227,6 +242,22 @@ impl RawCurrency<'_> {
             id_referral_levels: self.idreferrallevels,
             id_import_fee: json::coins(self.idimportfees, "idimportfees")?,
             proof_protocol: self.proofprotocol,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawConversionEstimate<'a> {
+    #[serde(borrow)]
+    pub estimatedcurrencyout: &'a RawValue,
+}
+
+impl RawConversionEstimate<'_> {
+    pub(crate) fn into_typed(self) -> Result<ConversionEstimate, RpcError> {
+        Ok(ConversionEstimate {
+            // Coins, like every other human-facing amount the daemon prints.
+            estimated_out: json::coins(self.estimatedcurrencyout, "estimatedcurrencyout")?,
+            fee: None,
         })
     }
 }
