@@ -34,6 +34,7 @@
 #[cfg(feature = "prover")]
 pub mod build;
 pub mod derive;
+pub mod diversified;
 mod error;
 #[cfg(feature = "prover")]
 pub mod params;
