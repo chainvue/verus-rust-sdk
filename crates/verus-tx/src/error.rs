@@ -214,15 +214,6 @@ pub enum TxError {
     #[error("a referral chain was supplied but the reservation committed to no referral")]
     ReferralNotCommitted,
 
-    /// A referral on a sub-identity registration.
-    ///
-    /// The registration fee of a sub-identity is denominated in the parent's
-    /// currency, so its referral payouts presumably are too — but no daemon
-    /// vector for one has been seen, and paying them natively would be a guess
-    /// about where real money goes.
-    #[error("referrals on a sub-identity registration are not supported yet")]
-    ReferredSubIdentityUnsupported,
-
     /// More referrers than the chain pays out.
     #[error("referral chain has {entries} entries but only {levels} levels are paid")]
     ReferralChainTooLong {

@@ -89,10 +89,32 @@ pub const EVAL_IDENTITY_COMMITMENT: u8 = 17;
 /// VRSCTEST against one this crate built for the same name.
 pub const EVAL_IDENTITY_ADVANCEDRESERVATION: u8 = 10;
 
-/// The only parent `proofprotocol` whose fee output this crate builds: a
-/// centralized or token currency, which takes a plain reserve output. A
-/// fractional parent takes a `CReserveTransfer` instead.
-const CENTRALIZED_PROOF_PROTOCOL: u32 = 2;
+/// The only parent `proofprotocol` whose fee output this crate has a reference
+/// transaction for: 2, `PROOF_CHAINID`, where the parent's own identity
+/// authorises issuance. Its fee is a plain reserve output to the parent.
+///
+/// The earlier reasoning here — that a *fractional* parent would need a
+/// `CReserveTransfer` instead — was a guess, and probing VRSCTEST on 2026-07-29
+/// showed it does not survive contact:
+///
+/// * **VRSCTEST itself is `proofprotocol` 1.** So an ordinary chain-level
+///   registration already registers under a `proofprotocol` 1 parent, on the
+///   path this crate has always built and golden-tested. The number alone
+///   clearly does not decide the output shape.
+/// * `Royal1` is `proofprotocol` 1, **not** fractional (options 40 = token plus
+///   referrals), and accepts a name commitment as a parent. So "not 2" does not
+///   mean "fractional" either.
+/// * A currency can also refuse outright: `kmerg` is `proofprotocol` 1 and
+///   answers `kmerg is unable to issue currencies`, so the gate is the
+///   currency's options, not its proof protocol.
+///
+/// What is still missing is a reference transaction for a sub-identity under a
+/// `proofprotocol` 1 *token* parent, which needs that parent's tokens to pay the
+/// fee — none are held on any node available here. Until one exists this stays a
+/// refusal, because the alternative is guessing where a real fee goes. What it
+/// is **not** is a claim that such a parent needs a different output; that claim
+/// has been withdrawn.
+pub const CENTRALIZED_PROOF_PROTOCOL: u32 = 2;
 
 /// The identity version a fresh registration publishes: PBaaS, which carries
 /// `system_id` and a content multimap.
@@ -456,9 +478,10 @@ pub struct RegistrationParams<'a> {
 /// sub-identity of `ownora-nft`: a 1.0 reserve output to the parent, and exactly
 /// 0.02 native burned.
 ///
-/// Only `proofprotocol` 2 — a centralized or token parent — is built here. A
-/// fractional or PBaaS parent pays through a `CReserveTransfer` instead, which
-/// is a different output this crate has not tested, so it is refused.
+/// Only `proofprotocol` 2 is built here, because that is the only parent kind
+/// this crate has a daemon reference transaction for. See
+/// [`CENTRALIZED_PROOF_PROTOCOL`] for what was actually established about the
+/// other values, and what would be needed to lift the restriction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParentCurrencyFee<'a> {
     /// `idregistrationfees`, in the parent currency's smallest unit.
@@ -468,7 +491,8 @@ pub struct ParentCurrencyFee<'a> {
     /// Token-bearing inputs paying the fee. Every one is spent in full and the
     /// surplus comes back as token change, so a token left out is a token burned.
     pub token_funding: &'a [Utxo],
-    /// The parent's `proofprotocol`. Anything but 2 is refused.
+    /// The parent's `proofprotocol`. Anything but 2 is refused — see
+    /// [`CENTRALIZED_PROOF_PROTOCOL`].
     pub proof_protocol: u32,
 }
 
@@ -683,28 +707,37 @@ pub fn build_identity_registration(
         unlock_after: 0,
     };
 
-    // A referral on a sub-identity would presumably pay the referrers in the
-    // PARENT's currency, since that is what the registration fee itself is
-    // denominated in — but nothing here has seen one, and paying them natively
-    // (which is what the code below would do) is a guess about where real money
-    // goes. Currencies that would exercise it exist, so this is a gap to close
-    // with a daemon vector rather than an impossibility.
-    if params.parent_currency.is_some() && params.reservation.referral.is_some() {
-        return Err(TxError::ReferredSubIdentityUnsupported);
-    }
-
-    // Referral payouts sit between the identity and the reservation, which is
-    // where the daemon puts them.
+    // A referral on a sub-identity is RECORDED and PAID NOTHING.
+    //
+    // That is not what the chain-level rule would suggest, so it was settled
+    // against the daemon rather than reasoned about: two `registeridentity`
+    // transactions were built under the same parent (`sdkcuralpha`, which
+    // publishes 3 referral levels), one naming a referrer and one not. They are
+    // structurally identical — four outputs, the *full* fee to the parent as a
+    // reserve output, no payout output, and exactly `idimportfees` burned
+    // natively in both. The referrer appears only in the reservation.
+    //
+    // So a sub-identity gets no discount and its referrer gets no money. Paying
+    // them natively — which the chain-level path below does — would send real
+    // coins somewhere the daemon sends none.
+    let is_sub_identity = params.parent_currency.is_some();
     let fees = registration_fees(
         params.registration_fee,
         params.referral_levels,
-        params.reservation.referral.is_some(),
+        // Not `referral.is_some()`: for a sub-identity the discount does not
+        // apply, and claiming it would underpay the parent.
+        !is_sub_identity && params.reservation.referral.is_some(),
     );
-    let referrers: Vec<[u8; 20]> = match (params.reservation.referral, params.referral_chain) {
-        (None, []) => Vec::new(),
-        (None, _) => return Err(TxError::ReferralNotCommitted),
-        (Some(referrer), []) => vec![referrer],
-        (Some(_), chain) => chain.to_vec(),
+    let referrers: Vec<[u8; 20]> = if is_sub_identity {
+        // Recorded in the reservation, paid nothing. See above.
+        Vec::new()
+    } else {
+        match (params.reservation.referral, params.referral_chain) {
+            (None, []) => Vec::new(),
+            (None, _) => return Err(TxError::ReferralNotCommitted),
+            (Some(referrer), []) => vec![referrer],
+            (Some(_), chain) => chain.to_vec(),
+        }
     };
     if referrers.len() > params.referral_levels as usize {
         return Err(TxError::ReferralChainTooLong {
@@ -1038,11 +1071,15 @@ mod tests {
         assert_eq!(fees.outlay, Amount::from_sat(100_00000000));
     }
 
-    /// A referral on a sub-identity is refused rather than guessed: the fee is
-    /// denominated in the parent's currency, so the payouts presumably are too,
-    /// and paying them natively would move real money on a guess.
+    /// A referral on a sub-identity is recorded and paid nothing.
+    ///
+    /// The daemon builds the referred and unreferred registrations under the
+    /// same parent identically: the full fee to the parent, no payout output,
+    /// `idimportfees` burned natively in both. So the two must come out of this
+    /// builder identical too, apart from the reservation that records the
+    /// referrer.
     #[test]
-    fn refuses_a_referred_sub_identity() {
+    fn a_referred_sub_identity_pays_no_referrer_and_gets_no_discount() {
         let key =
             PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap();
         let parent = [0x9a; 20];
@@ -1064,6 +1101,19 @@ mod tests {
             satoshis: Amount::from_sat(100_000_000),
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }];
+        // The fee is paid in the parent's currency, so the registration has to
+        // be funded with a token-bearing input.
+        let token = [Utxo {
+            txid: Txid::from_internal([0x70; 32]),
+            vout: 0,
+            satoshis: Amount::ZERO,
+            script_pubkey: crate::cc::reserve_output_script(
+                key.address().hash(),
+                CurrencyId::of_identity(parent),
+                3_00000000,
+            )
+            .unwrap(),
+        }];
         let primaries = [key.address()];
         let params = RegistrationParams {
             commitment: &commitment,
@@ -1078,7 +1128,7 @@ mod tests {
             parent_currency: Some(ParentCurrencyFee {
                 fee: Amount::from_sat(100_000_000),
                 native_import_fee: Amount::from_sat(2_000_000),
-                token_funding: &[],
+                token_funding: &token,
                 proof_protocol: 2,
             }),
             referral_levels: 3,
@@ -1087,10 +1137,97 @@ mod tests {
             expiry: Expiry::Never,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         };
-        assert!(matches!(
-            build_identity_registration(&key, &params),
-            Err(TxError::ReferredSubIdentityUnsupported)
-        ));
+        let referred = build_identity_registration(&key, &params).expect("referred sub-identity");
+
+        // The same registration with no referrer at all.
+        let plain_reservation = NameReservation::new("sub", parent, None, [0x11; 32]).unwrap();
+        let plain_commitment = Utxo {
+            txid: Txid::from_internal([0xaa; 32]),
+            vout: 0,
+            satoshis: Amount::ZERO,
+            script_pubkey: commitment_script(
+                &plain_reservation.commitment_hash().unwrap(),
+                key.address().hash(),
+            )
+            .unwrap(),
+        };
+        let mut plain_params = params.clone();
+        plain_params.reservation = &plain_reservation;
+        plain_params.commitment = &plain_commitment;
+        let plain = build_identity_registration(&key, &plain_params).expect("plain sub-identity");
+
+        // Same number of outputs: no payout was added for the referrer.
+        let referred_tx = decode_outputs(&referred.transaction.hex);
+        let plain_tx = decode_outputs(&plain.transaction.hex);
+        assert_eq!(
+            referred_tx.len(),
+            plain_tx.len(),
+            "a referral added or removed an output"
+        );
+
+        // Same native values throughout: no discount, and nothing paid out.
+        let referred_values: Vec<u64> = referred_tx.iter().map(|(value, _)| *value).collect();
+        let plain_values: Vec<u64> = plain_tx.iter().map(|(value, _)| *value).collect();
+        assert_eq!(
+            referred_values, plain_values,
+            "a referral changed the native value of an output"
+        );
+
+        // The only difference is the reservation, which records the referrer.
+        let differing: Vec<usize> = referred_tx
+            .iter()
+            .zip(&plain_tx)
+            .enumerate()
+            .filter(|(_, (a, b))| a.1 != b.1)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            differing.len(),
+            1,
+            "expected only the reservation to differ, got outputs {differing:?}"
+        );
+    }
+
+    /// Split a signed transaction into its outputs as `(value, script)`.
+    fn decode_outputs(hex_text: &str) -> Vec<(u64, Vec<u8>)> {
+        let bytes: Vec<u8> = (0..hex_text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex_text[i..i + 2], 16).expect("hex"))
+            .collect();
+        let mut at = 8usize; // header + versionGroupId
+        let varint = |at: &mut usize| -> u64 {
+            let first = bytes[*at];
+            *at += 1;
+            match first {
+                0xfd => {
+                    let n = u64::from(u16::from_le_bytes([bytes[*at], bytes[*at + 1]]));
+                    *at += 2;
+                    n
+                }
+                0xfe => {
+                    let n = u64::from(u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap()));
+                    *at += 4;
+                    n
+                }
+                n => u64::from(n),
+            }
+        };
+        let inputs = varint(&mut at);
+        for _ in 0..inputs {
+            at += 36;
+            let script = usize::try_from(varint(&mut at)).expect("a test script fits");
+            at += script + 4;
+        }
+        let count = varint(&mut at);
+        let mut outputs = Vec::new();
+        for _ in 0..count {
+            let value = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+            at += 8;
+            let length = usize::try_from(varint(&mut at)).expect("a test script fits");
+            outputs.push((value, bytes[at..at + length].to_vec()));
+            at += length;
+        }
+        outputs
     }
 
     /// A fractional parent pays its fee through a CReserveTransfer, not a plain

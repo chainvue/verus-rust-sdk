@@ -73,7 +73,7 @@ pub use identity::{Identity, EVAL_IDENTITY_PRIMARY};
 pub use partial::{InputKind, PartialTransaction};
 pub use register::{
     build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
-    NameReservation, RegistrationParams, SignedRegistration,
+    NameReservation, RegistrationParams, SignedRegistration, CENTRALIZED_PROOF_PROTOCOL,
 };
 pub use revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
