@@ -26,6 +26,7 @@ pub(crate) enum Method {
     // Policy
     GetCurrency,
     GetIdentity,
+    VerifyMessage,
     // Transactions
     GetRawTransaction,
     DecodeRawTransaction,
@@ -47,6 +48,7 @@ impl Method {
             Method::GetAddressBalance => "getaddressbalance",
             Method::GetCurrency => "getcurrency",
             Method::GetIdentity => "getidentity",
+            Method::VerifyMessage => "verifymessage",
             Method::GetRawTransaction => "getrawtransaction",
             Method::DecodeRawTransaction => "decoderawtransaction",
             Method::SendRawTransaction => "sendrawtransaction",
@@ -72,6 +74,7 @@ impl Method {
         Method::GetAddressBalance,
         Method::GetCurrency,
         Method::GetIdentity,
+        Method::VerifyMessage,
         Method::GetRawTransaction,
         Method::DecodeRawTransaction,
         Method::SendRawTransaction,

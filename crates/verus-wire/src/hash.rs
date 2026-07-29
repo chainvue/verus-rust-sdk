@@ -16,6 +16,17 @@ pub fn blake2b_personal(personal: &[u8; 16], data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// SHA-256, once.
+///
+/// Rare in this codebase — a transaction id, a sighash and a merkle node are all
+/// double-SHA256. Signed *messages* are the exception: Verus hashes those with a
+/// single pass, and using the double here produces a signature nothing accepts.
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&Sha256::digest(data));
+    out
+}
+
 /// SHA-256 applied twice — the transaction id, in internal byte order.
 ///
 /// Explorers and RPC display txids byte-REVERSED; see [`txid_display`].

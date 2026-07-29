@@ -19,6 +19,8 @@
 //! # What is here
 //!
 //! * [`send()`] and [`send_token()`] — pay someone.
+//! * [`login`] — sign in with a VerusID, verified against the identity as it
+//!   stood when the signature was made.
 //! * [`identity`] — the VerusID lifecycle. Registration is two transactions with
 //!   a wait in between, and its API is shaped around the fact that the salt
 //!   joining them cannot be recovered from the chain.
@@ -59,6 +61,7 @@ pub mod broadcast;
 pub mod error;
 pub mod funding;
 pub mod identity;
+pub mod login;
 pub mod send;
 
 #[cfg(any(test, feature = "testing"))]
@@ -71,6 +74,7 @@ pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
+pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use send::{prepare_send, send, send_token, Sent};
 
 // The whole stack, so a consumer takes one dependency rather than three.

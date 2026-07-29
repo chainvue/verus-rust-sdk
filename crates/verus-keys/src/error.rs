@@ -56,6 +56,15 @@ pub enum KeyError {
     #[error("seed phrase is empty")]
     EmptySeedPhrase,
 
+    /// A signature that is not the 65-byte recoverable form, or whose header
+    /// byte is outside `27..=34`.
+    ///
+    /// Recovery would otherwise "succeed" and return an unrelated public key,
+    /// which fails later as a mismatched address and reads like the wrong signer
+    /// rather than a malformed signature.
+    #[error("not a valid recoverable signature")]
+    InvalidSignature,
+
     /// A WIF passed where a seed phrase was expected.
     ///
     /// Hashing it would silently derive a *different* key, stranding funds.
