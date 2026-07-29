@@ -25,6 +25,8 @@ pub(crate) enum Method {
     GetAddressBalance,
     // Policy
     GetCurrency,
+    GetCurrencyState,
+    EstimateConversion,
     GetIdentity,
     VerifyMessage,
     // Transactions
@@ -47,6 +49,8 @@ impl Method {
             Method::GetAddressUtxos => "getaddressutxos",
             Method::GetAddressBalance => "getaddressbalance",
             Method::GetCurrency => "getcurrency",
+            Method::GetCurrencyState => "getcurrencystate",
+            Method::EstimateConversion => "estimateconversion",
             Method::GetIdentity => "getidentity",
             Method::VerifyMessage => "verifymessage",
             Method::GetRawTransaction => "getrawtransaction",
@@ -73,6 +77,8 @@ impl Method {
         Method::GetAddressUtxos,
         Method::GetAddressBalance,
         Method::GetCurrency,
+        Method::GetCurrencyState,
+        Method::EstimateConversion,
         Method::GetIdentity,
         Method::VerifyMessage,
         Method::GetRawTransaction,

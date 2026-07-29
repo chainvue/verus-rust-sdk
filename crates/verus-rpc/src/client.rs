@@ -8,8 +8,9 @@ use crate::error::RpcError;
 use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
-    AddressBalance, AddressUtxo, ChainInfo, CurrencyPolicy, IdentityRecord, RawAddressBalance,
-    RawAddressUtxo, RawChainInfo, RawCurrency, RawIdentity,
+    AddressBalance, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy, IdentityRecord,
+    RawAddressBalance, RawAddressUtxo, RawChainInfo, RawConversionEstimate, RawCurrency,
+    RawIdentity,
 };
 
 /// Asking a node questions.
@@ -72,6 +73,20 @@ pub trait ChainReader {
     /// Registration policy for a currency: the fee, referral levels and
     /// proofprotocol a registration under it needs.
     fn currency(&self, name_or_id: &str) -> Result<CurrencyPolicy, RpcError>;
+    /// What a conversion is expected to yield.
+    ///
+    /// Ask before signing, and treat the answer as advisory: the conversion runs
+    /// at the price when it is imported, and no part of the transaction commits
+    /// to this number.
+    fn estimate_conversion(
+        &self,
+        from: &str,
+        to: &str,
+        amount: &str,
+        via: Option<&str>,
+    ) -> Result<ConversionEstimate, RpcError>;
+    /// The current reserves, weights and prices of a fractional currency.
+    fn currency_state(&self, name_or_id: &str) -> Result<serde_json::Value, RpcError>;
     /// A VerusID, including the output that holds it.
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError>;
     /// A VerusID **as it stood at `height`**.
@@ -251,6 +266,35 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         let raw: RawCurrency<'_> = serde_json::from_str(result.get())
             .map_err(|e| RpcError::Unexpected(format!("getcurrency: {e}")))?;
         raw.into_typed()
+    }
+
+    fn estimate_conversion(
+        &self,
+        from: &str,
+        to: &str,
+        amount: &str,
+        via: Option<&str>,
+    ) -> Result<ConversionEstimate, RpcError> {
+        // The amount is passed as the caller's exact decimal text, not a float
+        // built from it — the same reason money is read back through `json`.
+        let amount: serde_json::Value =
+            serde_json::from_str(amount).map_err(|_| RpcError::LossyNumber {
+                field: "amount",
+                value: amount.to_string(),
+            })?;
+        let mut request = json!({ "currency": from, "convertto": to, "amount": amount });
+        if let Some(via) = via {
+            request["via"] = json!(via);
+        }
+        let body = self.call_raw(Method::EstimateConversion, json!([request]))?;
+        let result = result_of(&body, Method::EstimateConversion)?;
+        let raw: RawConversionEstimate<'_> = serde_json::from_str(result.get())
+            .map_err(|e| RpcError::Unexpected(format!("estimateconversion: {e}")))?;
+        raw.into_typed()
+    }
+
+    fn currency_state(&self, name_or_id: &str) -> Result<serde_json::Value, RpcError> {
+        self.call(Method::GetCurrencyState, json!([name_or_id]))
     }
 
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {

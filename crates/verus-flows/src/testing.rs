@@ -37,6 +37,7 @@ pub struct ScriptedReader {
     requests: RefCell<usize>,
     broadcasts: RefCell<Vec<String>>,
     broadcast_failure: RefCell<Option<RpcError>>,
+    estimate: RefCell<Option<verus_rpc::ConversionEstimate>>,
 }
 
 impl ScriptedReader {
@@ -54,6 +55,7 @@ impl ScriptedReader {
             requests: RefCell::new(0),
             broadcasts: RefCell::new(Vec::new()),
             broadcast_failure: RefCell::new(None),
+            estimate: RefCell::new(None),
         }
     }
 
@@ -122,6 +124,12 @@ impl ScriptedReader {
         self.identities
             .borrow_mut()
             .push((name.to_string(), record));
+        self
+    }
+
+    /// What `estimate_conversion` answers.
+    pub fn with_estimate(self, estimate: verus_rpc::ConversionEstimate) -> Self {
+        *self.estimate.borrow_mut() = Some(estimate);
         self
     }
 
@@ -255,6 +263,29 @@ impl ChainReader for ScriptedReader {
             code: -5,
             message: format!("currency {name_or_id} not found"),
         })
+    }
+
+    fn estimate_conversion(
+        &self,
+        _from: &str,
+        _to: &str,
+        _amount: &str,
+        _via: Option<&str>,
+    ) -> Result<verus_rpc::ConversionEstimate, RpcError> {
+        self.count();
+        Ok(self
+            .estimate
+            .borrow()
+            .clone()
+            .unwrap_or(verus_rpc::ConversionEstimate {
+                estimated_out: Amount::ZERO,
+                fee: None,
+            }))
+    }
+
+    fn currency_state(&self, _name_or_id: &str) -> Result<serde_json::Value, RpcError> {
+        self.count();
+        Ok(json!({}))
     }
 
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
