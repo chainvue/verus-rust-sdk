@@ -136,7 +136,105 @@ pub struct Identity {
     pub unlock_after: u32,
 }
 
+/// How an identity's funds are timelocked.
+///
+/// # One field, two meanings
+///
+/// `unlock_after` on an [`Identity`] is **either an absolute height or a
+/// relative delay**, and which one it is depends on [`FLAG_LOCKED`]. Writing the
+/// wrong pairing produces an identity that looks locked and is not, or one that
+/// unlocks 500 blocks after it was meant to. That is why this is a type rather
+/// than two fields a caller sets by hand.
+///
+/// Both forms were taken from `setidentitytimelock` on VRSCTEST:
+///
+/// | request | flags | `timelock` |
+/// |---|---|---|
+/// | `{"unlockatblock": 1168230}` | `0` | `1168230` — an absolute height |
+/// | `{"setunlockdelay": 100}` | `2` (`FLAG_LOCKED`) | `100` — a delay in blocks |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Timelock {
+    /// No timelock. Funds are spendable now.
+    None,
+    /// Unlocks automatically once the chain passes this height.
+    ///
+    /// The countdown starts as soon as it is mined and cannot be paused. Note
+    /// that [`FLAG_LOCKED`] is **clear** for this form — an identity with an
+    /// absolute unlock height does not report itself as locked.
+    UntilBlock(u32),
+    /// Locked now; unlocks this many blocks after an unlock is *requested*.
+    ///
+    /// The delay does not start counting until then, so this locks the identity
+    /// indefinitely until someone asks. Only revoke/recover can circumvent it.
+    DelayAfterUnlock(u32),
+}
+
+impl Timelock {
+    /// Read the timelock out of an identity.
+    pub fn of(identity: &Identity) -> Self {
+        if identity.flags & FLAG_LOCKED != 0 {
+            Timelock::DelayAfterUnlock(identity.unlock_after)
+        } else if identity.unlock_after != 0 {
+            Timelock::UntilBlock(identity.unlock_after)
+        } else {
+            Timelock::None
+        }
+    }
+
+    /// Write this timelock onto an identity, setting the flag to match.
+    ///
+    /// Leaves every other flag alone: an identity update restates the whole
+    /// object, so clobbering the flags would silently un-revoke it or drop its
+    /// tokenized control.
+    pub fn apply_to(self, identity: &mut Identity) {
+        match self {
+            Timelock::None => {
+                identity.flags &= !FLAG_LOCKED;
+                identity.unlock_after = 0;
+            }
+            Timelock::UntilBlock(height) => {
+                identity.flags &= !FLAG_LOCKED;
+                identity.unlock_after = height;
+            }
+            Timelock::DelayAfterUnlock(blocks) => {
+                identity.flags |= FLAG_LOCKED;
+                identity.unlock_after = blocks;
+            }
+        }
+    }
+
+    /// Whether funds are spendable at `height`.
+    ///
+    /// A [`Timelock::DelayAfterUnlock`] is never spendable by this measure: the
+    /// delay has not started, because no unlock has been requested. That is the
+    /// honest answer — "when does this unlock" has no height until someone asks.
+    pub fn spendable_at(self, height: u32) -> bool {
+        match self {
+            Timelock::None => true,
+            Timelock::UntilBlock(unlock) => height >= unlock,
+            Timelock::DelayAfterUnlock(_) => false,
+        }
+    }
+}
+
 impl Identity {
+    /// The identity's timelock, with the flag and the field read together.
+    pub fn timelock(&self) -> Timelock {
+        Timelock::of(self)
+    }
+
+    /// Whether revocation and recovery are controlled by the identity's token
+    /// rather than by its revocation and recovery authorities.
+    ///
+    /// When this is set the authority fields still exist and are still
+    /// serialized, but consensus ignores them: whoever holds the token decides.
+    /// A wallet that shows the recovery authority of a tokenized identity as
+    /// "who can recover this" is showing something untrue.
+    pub fn has_tokenized_control(&self) -> bool {
+        self.flags & FLAG_TOKENIZED_CONTROL != 0
+    }
+
     /// Whether the identity has been revoked.
     pub fn is_revoked(&self) -> bool {
         self.flags & FLAG_REVOKED != 0
@@ -398,4 +496,142 @@ fn write_compact_size(out: &mut Vec<u8>, value: usize) {
 fn write_var_slice(out: &mut Vec<u8>, bytes: &[u8]) {
     write_compact_size(out, bytes.len());
     out.extend_from_slice(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Identity, Timelock, FLAG_LOCKED, FLAG_REVOKED, FLAG_TOKENIZED_CONTROL};
+
+    fn blank() -> Identity {
+        Identity {
+            version: 3,
+            flags: 0,
+            primary_addresses: Vec::new(),
+            min_sigs: 1,
+            parent: [0; 20],
+            name: "t".into(),
+            content_multimap: Vec::new(),
+            content_map: Vec::new(),
+            revocation_authority: [0; 20],
+            recovery_authority: [0; 20],
+            private_addresses: Vec::new(),
+            system_id: [0; 20],
+            unlock_after: 0,
+        }
+    }
+
+    /// The exact pairings `setidentitytimelock` produced on VRSCTEST.
+    ///
+    /// `{"unlockatblock": 1168230}` gave flags 0 and timelock 1168230;
+    /// `{"setunlockdelay": 100}` gave flags 2 and timelock 100. The field is the
+    /// same in both, which is precisely why the flag has to be read with it.
+    #[test]
+    fn the_two_timelock_forms_match_the_daemon() {
+        let mut absolute = blank();
+        Timelock::UntilBlock(1_168_230).apply_to(&mut absolute);
+        assert_eq!(absolute.flags, 0);
+        assert_eq!(absolute.unlock_after, 1_168_230);
+
+        let mut delayed = blank();
+        Timelock::DelayAfterUnlock(100).apply_to(&mut delayed);
+        assert_eq!(delayed.flags, FLAG_LOCKED);
+        assert_eq!(delayed.unlock_after, 100);
+    }
+
+    /// The same stored value reads as two different things. An identity with
+    /// `unlock_after = 100` is either "unlocks at block 100" or "unlocks 100
+    /// blocks after asked", and only the flag says which.
+    #[test]
+    fn the_same_field_means_different_things_under_the_flag() {
+        let mut identity = blank();
+        identity.unlock_after = 100;
+        assert_eq!(Timelock::of(&identity), Timelock::UntilBlock(100));
+        identity.flags |= FLAG_LOCKED;
+        assert_eq!(Timelock::of(&identity), Timelock::DelayAfterUnlock(100));
+    }
+
+    #[test]
+    fn a_timelock_round_trips_through_an_identity() {
+        for timelock in [
+            Timelock::None,
+            Timelock::UntilBlock(1_168_230),
+            Timelock::DelayAfterUnlock(100),
+        ] {
+            let mut identity = blank();
+            timelock.apply_to(&mut identity);
+            assert_eq!(Timelock::of(&identity), timelock);
+        }
+    }
+
+    /// Applying a timelock must not disturb the other flags. An update restates
+    /// the whole identity, so clobbering them would silently un-revoke it or
+    /// drop its tokenized control.
+    #[test]
+    fn applying_a_timelock_leaves_other_flags_alone() {
+        let mut identity = blank();
+        identity.flags = FLAG_REVOKED | FLAG_TOKENIZED_CONTROL;
+        Timelock::DelayAfterUnlock(50).apply_to(&mut identity);
+        assert!(identity.is_revoked());
+        assert!(identity.has_tokenized_control());
+        assert!(identity.is_locked());
+
+        Timelock::None.apply_to(&mut identity);
+        assert!(identity.is_revoked(), "clearing the timelock un-revoked it");
+        assert!(identity.has_tokenized_control());
+        assert!(!identity.is_locked());
+    }
+
+    /// An absolute lock opens at its height. A delay never opens on its own,
+    /// because the countdown has not started — reporting a height for it would
+    /// be an invention.
+    #[test]
+    fn spendability_follows_the_form() {
+        assert!(Timelock::None.spendable_at(0));
+        assert!(!Timelock::UntilBlock(100).spendable_at(99));
+        assert!(Timelock::UntilBlock(100).spendable_at(100));
+        assert!(Timelock::UntilBlock(100).spendable_at(101));
+        assert!(!Timelock::DelayAfterUnlock(1).spendable_at(u32::MAX));
+    }
+
+    /// An absolute timelock does NOT set FLAG_LOCKED, so `is_locked` is false
+    /// for an identity whose funds are not yet spendable. Both are correct and
+    /// they answer different questions.
+    #[test]
+    fn an_absolute_timelock_does_not_report_as_locked() {
+        let mut identity = blank();
+        Timelock::UntilBlock(1_000).apply_to(&mut identity);
+        assert!(!identity.is_locked());
+        assert!(!identity.timelock().spendable_at(999));
+    }
+
+    /// A timelock must survive the serialization an update publishes, or the
+    /// lock is silently dropped by the very transaction meant to set it.
+    #[test]
+    fn a_timelock_survives_serialization() {
+        for timelock in [
+            Timelock::None,
+            Timelock::UntilBlock(1_168_230),
+            Timelock::DelayAfterUnlock(100),
+        ] {
+            let mut identity = blank();
+            identity.primary_addresses = vec![crate::cc::Destination::PubKeyHash([7; 20])];
+            timelock.apply_to(&mut identity);
+            let bytes = identity.to_bytes().expect("serialize");
+            let read = Identity::from_bytes(&bytes).expect("parse");
+            assert_eq!(read.timelock(), timelock);
+            assert_eq!(read.flags, identity.flags);
+        }
+    }
+
+    /// Tokenized control is read from the flag, and the authority fields stay
+    /// populated even though consensus ignores them.
+    #[test]
+    fn tokenized_control_is_visible_and_does_not_erase_the_authorities() {
+        let mut identity = blank();
+        identity.revocation_authority = [0x11; 20];
+        assert!(!identity.has_tokenized_control());
+        identity.flags |= FLAG_TOKENIZED_CONTROL;
+        assert!(identity.has_tokenized_control());
+        assert_eq!(identity.revocation_authority, [0x11; 20]);
+    }
 }

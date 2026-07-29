@@ -411,3 +411,30 @@ fn a_conversion_reaches_the_chain() {
 fn address_hash(text: &str) -> [u8; 20] {
     text.parse::<verus_keys::Address>().expect("address").hash()
 }
+
+/// VDXF keys, and the two things about them that catch people out.
+#[test]
+fn vdxf_keys_resolve_and_are_chain_qualified() {
+    if std::env::var("VERUS_LIVE_RPC").is_err() && std::env::var("VERUS_LIVE_BROADCAST").is_err() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1");
+        return;
+    }
+    let client = client();
+
+    let key = client.vdxf_id("vrsc::identity.profile").expect("getvdxfid");
+    eprintln!("vrsc::identity.profile -> {}", hex::encode(key));
+
+    // Returned in content-map order, which is the reverse of what the daemon
+    // prints. Pinning it catches a silent flip in either direction.
+    assert_eq!(
+        hex::encode(key),
+        "9f5e5551ea87ed0a94dc9fdd4c54a0323bdbd76a",
+        "the byte order of a VDXF key changed"
+    );
+
+    // A qualified name names its own namespace, so it is the same everywhere.
+    // A bare one resolves against the node's chain and is not portable — the
+    // reason to prefer the qualified form.
+    let bare = client.vdxf_id("profile").expect("getvdxfid");
+    assert_ne!(bare, key, "a bare name resolved to the qualified key");
+}
