@@ -175,6 +175,28 @@ pub enum TxError {
         ceiling: u64,
     },
 
+    /// An input with no signature at all.
+    #[error("input {index} has no signature")]
+    MissingSignature {
+        /// Which input.
+        index: usize,
+    },
+
+    /// A gathered signature that does not verify against the hash it covers.
+    ///
+    /// Either the partial transaction was altered after signing — changing an
+    /// output or a value changes the sighash — or it was assembled with a script
+    /// or value that does not match the output being spent.
+    #[error("the signature on input {index} does not verify against this transaction")]
+    InvalidSignature {
+        /// Which input.
+        index: usize,
+    },
+
+    /// A partial transaction that could not be read.
+    #[error("malformed partial transaction: {0}")]
+    MalformedPartialTransaction(String),
+
     /// Amounts that overflow a u64 when summed.
     #[error("transaction value overflows a 64-bit integer")]
     ValueOverflow,
