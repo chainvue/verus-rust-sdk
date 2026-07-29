@@ -16,18 +16,18 @@ default = ["http"]
 # Re-exported from verus-rpc so a consumer can take the whole stack in one line.
 http = ["verus-rpc/http"]
 # The scripted chain the flow tests use, for wallets that need the same thing.
-testing = ["dep:hex", "dep:sha2"]
+testing = ["dep:sha2"]
 # Find, value and witness shielded notes through a lightwalletd server. Off by
 # default: it pulls the Sapling stack, which is a much heavier tree than the
 # transparent path needs.
-shielded = ["dep:verus-light", "dep:verus-sapling", "dep:verus-wire"]
+shielded = ["dep:verus-light", "dep:verus-sapling"]
 # Additionally BUILD shielded spends. Separately priced from `shielded` because
 # it drags in bellman and needs the ~50 MB Sapling parameters at runtime, which
 # a balance-only wallet has no use for.
 prover = ["shielded", "verus-sapling/prover"]
 
 [dependencies]
-hex = { workspace = true, optional = true }
+hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -37,7 +37,7 @@ verus-keys = { path = "../verus-keys" }
 verus-light = { path = "../verus-light", optional = true }
 verus-rpc = { path = "../verus-rpc", default-features = false }
 verus-sapling = { path = "../verus-sapling", optional = true }
-verus-wire = { path = "../verus-wire", optional = true }
+verus-wire = { path = "../verus-wire" }
 verus-tx = { path = "../verus-tx", features = ["serde"] }
 
 [dev-dependencies]
