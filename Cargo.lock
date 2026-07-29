@@ -1529,6 +1529,7 @@ dependencies = [
  "verus-keys",
  "verus-rpc",
  "verus-tx",
+ "verus-wire",
 ]
 
 [[package]]

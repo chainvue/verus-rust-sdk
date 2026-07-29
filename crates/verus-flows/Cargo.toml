@@ -30,6 +30,7 @@ verus-rpc = { path = "../verus-rpc", default-features = false }
 verus-tx = { path = "../verus-tx", features = ["serde"] }
 
 [dev-dependencies]
+verus-wire = { path = "../verus-wire" }
 serde_json = "1"
 verus-flows = { path = ".", features = ["testing", "http"] }
 verus-keys = { path = "../verus-keys" }

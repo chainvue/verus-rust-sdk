@@ -83,6 +83,33 @@ impl ScriptedReader {
         self
     }
 
+    /// A CryptoCondition reserve output — a token, not spendable as native
+    /// funding.
+    pub fn with_reserve_utxo(self, address: &str, height: u32) -> Self {
+        let index = u32::try_from(self.utxos.borrow().len()).expect("few utxos");
+        let mut txid = [0u8; 32];
+        txid[0] = (index + 1).to_le_bytes()[0];
+        txid[1] = height.to_le_bytes()[0];
+        let script = verus_tx::cc::reserve_output_script(
+            [0x11; 20],
+            verus_tx::CurrencyId::from_bytes([0x22; 20]),
+            1_000_000,
+        )
+        .expect("reserve script");
+        self.utxos.borrow_mut().push(AddressUtxo {
+            utxo: Utxo {
+                txid: Txid::from_internal(txid),
+                vout: index,
+                satoshis: Amount::ZERO,
+                script_pubkey: script,
+            },
+            address: address.to_string(),
+            height,
+            is_spendable: true,
+        });
+        self
+    }
+
     /// Mark outputs at `height` as coming from a coinbase.
     pub fn with_coinbase_at(self, height: u32) -> Self {
         self.coinbase_heights.borrow_mut().push(height);
