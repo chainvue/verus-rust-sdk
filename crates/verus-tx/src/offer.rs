@@ -318,6 +318,13 @@ impl<'a> TakeParams<'a> {
 /// either voids their signature — and the taker's inputs and outputs are
 /// appended after them.
 ///
+/// Native and token demands are both funded. A token demand is paid from
+/// reserve inputs among `utxos`, with surplus returned as token change — and a
+/// reserve input is unlocked by a CryptoCondition fulfillment rather than a
+/// P2PKH `scriptSig`, which this handles. Supplying no tokens for a token demand
+/// is refused with the shortfall named, rather than built into a transaction
+/// that fails to conserve them.
+///
 /// # What a taker must check first
 ///
 /// This builds what the maker asked for. It does not judge whether the trade is
@@ -374,20 +381,49 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     // What the taker pays: whatever output 0 demands, funded from their own
     // coins.
     //
-    // A maker who asked for a TOKEN is refused here rather than half-funded. A
-    // reserve output carries its value in the payload and zero natively, so the
-    // arithmetic below would see a demand of nothing, fund nothing, and produce
-    // a transaction that does not conserve the token — rejected on chain after
-    // the work is done. Paying a token needs reserve inputs and token change,
-    // which this path does not build.
-    if crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey)
-        .map(|kind| matches!(kind, crate::decode::OutputKind::ReserveOutput { .. }))
-        .unwrap_or(false)
-    {
-        return Err(TxError::InvalidOffer(
-            "this offer asks to be paid in a token, which taking does not fund yet".into(),
-        ));
+    // A reserve output carries its value in the payload and nothing natively,
+    // so the native arithmetic below sees a demand of zero. The token side is
+    // accounted separately.
+    let token_demand =
+        match crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey) {
+            Ok(crate::decode::OutputKind::ReserveOutput { tokens, .. }) => tokens,
+            _ => Vec::new(),
+        };
+
+    let mut balances = crate::token::Balances::default();
+    for (currency, amount) in &token_demand {
+        balances.add_required(*currency, *amount);
     }
+
+    // Decode the taker's coins once: their tokens fund the demand, and whether
+    // each is a CryptoCondition decides how it must be signed.
+    let mut taker_inputs = Vec::with_capacity(params.utxos.len());
+    for utxo in params.utxos {
+        let (tokens, is_cryptocondition) =
+            match crate::decode::decode_output_script(&utxo.script_pubkey)? {
+                crate::decode::OutputKind::ReserveOutput { tokens, .. } => (tokens, true),
+                _ => (Vec::new(), false),
+            };
+        // Tokens riding on a coin pulled in for its native value have to come
+        // back as change, or they are handed to the miner.
+        for (currency, amount) in &tokens {
+            balances.sub(*currency, *amount);
+        }
+        taker_inputs.push((utxo, is_cryptocondition));
+    }
+
+    let shortfalls = balances.shortfalls();
+    if !shortfalls.is_empty() {
+        let missing = shortfalls
+            .iter()
+            .map(|(currency, amount)| format!("{amount} of {}", currency))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(TxError::InvalidOffer(format!(
+            "this offer asks to be paid in a token, and the coins supplied are short by {missing}"
+        )));
+    }
+
     let owed = Amount::from_sat(transaction.outputs[0].value);
     let available = Amount::checked_sum(params.utxos.iter().map(|u| u.satoshis))
         .ok_or(TxError::ValueOverflow)?;
@@ -411,6 +447,16 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
         ));
     }
 
+    // Token change first, then native change — the same order `build_token_send`
+    // emits, so a reader comparing the two sees one convention.
+    let change_hash = params.change_address.hash();
+    for (currency, amount) in balances.change() {
+        transaction.outputs.push(TxOut {
+            value: 0,
+            script_pubkey: crate::cc::reserve_output_script(change_hash, currency, amount)?,
+        });
+    }
+
     let change = available
         .checked_sub(needed)
         .ok_or_else(|| TxError::InvalidOffer("change underflowed".into()))?;
@@ -427,7 +473,8 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     // The taker signs with SIGHASH_ALL, committing to the whole completed
     // transaction — including the maker's side, which is what stops anyone
     // altering it in flight.
-    for (offset, utxo) in params.utxos.iter().enumerate() {
+    let pubkey = key.public_key().to_bytes();
+    for (offset, (utxo, is_cryptocondition)) in taker_inputs.iter().enumerate() {
         let index = first_taker_input + offset;
         let sighash = transaction
             .transparent_sighash(
@@ -438,11 +485,21 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
                 SIGHASH_ALL,
             )
             .map_err(TxError::from)?;
-        let signature = key.sign_prehash_der(&sighash, 1)?;
-        let mut script_sig = Vec::new();
-        push_data(&mut script_sig, &signature)?;
-        push_data(&mut script_sig, &key.public_key().to_bytes())?;
-        transaction.inputs[index].script_sig = script_sig;
+        transaction.inputs[index].script_sig = if *is_cryptocondition {
+            // A reserve output is unlocked by a fulfillment carrying a compact
+            // r||s signature, not a DER one in a P2PKH scriptSig. Signing a
+            // token input the P2PKH way produces a transaction the daemon
+            // rejects at broadcast.
+            let signature = key.sign_prehash(&sighash)?;
+            let compact: [u8; 64] = signature.to_bytes().into();
+            fulfillment_script_sig(&[(pubkey.clone(), compact)], 1)?
+        } else {
+            let signature = key.sign_prehash_der(&sighash, 1)?;
+            let mut script_sig = Vec::new();
+            push_data(&mut script_sig, &signature)?;
+            push_data(&mut script_sig, &pubkey)?;
+            script_sig
+        };
     }
 
     transaction.serialize().map_err(TxError::from)
@@ -788,27 +845,63 @@ mod tests {
         .is_err());
     }
 
-    /// An offer asking to be paid in a token cannot be funded by this taker
-    /// path: a reserve output carries zero native value, so the demand would
-    /// read as nothing and the token side would go unfunded.
-    #[test]
-    fn an_offer_wanting_a_token_is_refused_rather_than_underfunded() {
+    const TOKEN: [u8; 20] = [0x2b; 20];
+
+    /// A reserve output holding `amount` of [`TOKEN`], spendable by the taker.
+    fn taker_token_utxo(amount: u64, native: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([0x72; 32]),
+            vout: 1,
+            satoshis: Amount::from_sat(native),
+            script_pubkey: crate::cc::reserve_output_script(
+                taker().address().hash(),
+                CurrencyId::from_bytes(TOKEN),
+                amount,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn token_offer(wanted: u64) -> (Utxo, SignedOffer) {
         let funding = funding(1_00000000);
         let offer = make_offer(
             &key(),
             &OfferParams::new(
                 &funding,
                 Wanted::Token {
-                    currency: CurrencyId::from_bytes([0x2b; 20]),
-                    amount: Amount::from_sat(2_00000000),
+                    currency: CurrencyId::from_bytes(TOKEN),
+                    amount: Amount::from_sat(wanted),
                     recipient: key().address().hash(),
                 },
                 Expiry::AtHeight(1_167_992),
             ),
         )
         .unwrap();
-        let utxos = [taker_utxo(3_00000000)];
-        let result = take_offer(
+        (funding, offer)
+    }
+
+    fn tokens_in(script: &[u8]) -> u64 {
+        match crate::decode::decode_output_script(script) {
+            Ok(crate::decode::OutputKind::ReserveOutput { tokens, .. }) => tokens
+                .iter()
+                .filter(|(id, _)| *id == CurrencyId::from_bytes(TOKEN))
+                .map(|(_, amount)| *amount)
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    /// A token demand funded from reserve inputs — the case that used to be
+    /// refused outright.
+    #[test]
+    fn a_token_demand_is_funded_from_reserve_inputs() {
+        let (funding, offer) = token_offer(2_00000000);
+        // Three tokens in, two demanded: one must come back as change.
+        let utxos = [
+            taker_token_utxo(3_00000000, 0),
+            taker_utxo(1_00000000), // native, to pay the fee
+        ];
+        let raw = take_offer(
             &taker(),
             &TakeParams::new(
                 &offer.hex,
@@ -818,8 +911,89 @@ mod tests {
                 funding.satoshis,
                 10_000,
             ),
+        )
+        .unwrap();
+        let tx = TxV4::deserialize(&raw).unwrap();
+
+        // Tokens in must equal tokens out, or the difference is burned. This is
+        // the check the old refusal existed to avoid needing.
+        let token_out: u64 = tx.outputs.iter().map(|o| tokens_in(&o.script_pubkey)).sum();
+        assert_eq!(
+            token_out, 3_00000000,
+            "three tokens went in, so three must come out: two to the maker, one as change"
         );
-        assert!(result.is_err(), "a token demand was silently unfunded");
+
+        // The maker's demand is still output 0, untouched — moving it would void
+        // their signature.
+        assert_eq!(tokens_in(&tx.outputs[0].script_pubkey), 2_00000000);
+    }
+
+    /// Signing a reserve input the P2PKH way produces a transaction the daemon
+    /// rejects at broadcast, so the fulfillment path must actually be taken.
+    #[test]
+    fn a_reserve_input_is_signed_with_a_fulfillment() {
+        let (funding, offer) = token_offer(2_00000000);
+        let utxos = [taker_token_utxo(2_00000000, 0), taker_utxo(1_00000000)];
+        let raw = take_offer(
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
+        )
+        .unwrap();
+        let tx = TxV4::deserialize(&raw).unwrap();
+
+        // Input 0 is the maker's. Then the token input, then the native one.
+        let token_input = &tx.inputs[1].script_sig;
+        let native_input = &tx.inputs[2].script_sig;
+
+        // A P2PKH scriptSig opens with a DER signature push (0x47/0x48). A
+        // fulfillment opens with PUSHDATA1 of the CryptoCondition structure,
+        // then version and hash type.
+        //
+        // Length is NOT the discriminator: the fulfillment here is 105 bytes and
+        // the P2PKH scriptSig 106, so a "fulfillments are longer" check passes
+        // and fails for the wrong reasons.
+        assert_eq!(
+            native_input[0], 0x47,
+            "the native input should carry a DER signature push"
+        );
+        assert_eq!(
+            token_input[0], 0x4c,
+            "the reserve input got a P2PKH scriptSig instead of a fulfillment"
+        );
+        // Inside the fulfillment: version 1, then the hash type the taker signs
+        // under, which is SIGHASH_ALL and not the maker's 0x83.
+        assert_eq!(&token_input[2..4], &[0x01, 0x01]);
+    }
+
+    /// Asking for a token and supplying none must say so, rather than build a
+    /// transaction that quietly fails to conserve it.
+    #[test]
+    fn a_token_demand_with_no_tokens_supplied_is_refused() {
+        let (funding, offer) = token_offer(2_00000000);
+        let utxos = [taker_utxo(3_00000000)];
+        let err = take_offer(
+            &taker(),
+            &TakeParams::new(
+                &offer.hex,
+                &utxos,
+                taker().address().hash(),
+                taker().address(),
+                funding.satoshis,
+                10_000,
+            ),
+        )
+        .unwrap_err();
+        match err {
+            TxError::InvalidOffer(ref text) => assert!(text.contains("short by"), "{text}"),
+            other => panic!("expected a shortfall, got {other:?}"),
+        }
     }
 
     /// The funding step produces an output an offer can actually be signed over.
