@@ -28,6 +28,11 @@
 //!
 //! Changing any of the four authority fields is refused unless
 //! [`UpdateParams::allow_authority_change`] is set — see that field for why.
+//!
+//! Both thresholds are proven on VRSCTEST: `rustsdk@` (`1-of-1`) updated at
+//! block 1166566, and `rustmulti@` (`2-of-2`) at block 1166732 with both
+//! signatures in one fulfillment
+//! (`9ff188d8fabbb338d11ed1405345783265a02c3afc8b5705ccd9d35e0d802303`).
 
 use verus_keys::{Address, PrivateKey};
 
