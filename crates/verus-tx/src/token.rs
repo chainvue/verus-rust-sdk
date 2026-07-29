@@ -24,6 +24,7 @@ use crate::amount::Amount;
 use crate::cc::{fulfillment_script_sig, reserve_output_script};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use crate::send::SignedTransaction;
 use crate::Utxo;
@@ -58,8 +59,8 @@ pub struct TokenSendParams<'a> {
     pub recipients: &'a [TokenRecipient],
     /// Where both token and native change return.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -70,13 +71,13 @@ impl<'a> TokenSendParams<'a> {
         utxos: &'a [Utxo],
         recipients: &'a [TokenRecipient],
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             utxos,
             recipients,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
     }
@@ -164,9 +165,7 @@ pub fn build_token_send(
     if params.recipients.is_empty() {
         return Err(TxError::NoOutputs);
     }
-    if params.expiry_height >= 500_000_000 {
-        return Err(TxError::ExpiryHeightTooLarge(params.expiry_height));
-    }
+    params.expiry.check()?;
     if params.change_address.kind() != AddressKind::PubKeyHash {
         return Err(TxError::UnsupportedRecipient);
     }
@@ -336,7 +335,7 @@ pub fn build_token_send(
             .collect(),
         outputs,
         lock_time: 0,
-        expiry_height: params.expiry_height,
+        expiry_height: params.expiry.to_height(),
         ..TxV4::default()
     };
 

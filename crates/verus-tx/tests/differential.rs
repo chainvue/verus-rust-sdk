@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use verus_keys::{Address, PrivateKey};
+use verus_tx::Expiry;
 use verus_tx::{build_transparent_send, Amount, Recipient, SendParams, Txid, Utxo};
 
 fn load_vectors() -> Vec<Value> {
@@ -101,7 +102,9 @@ fn reproduces_every_typescript_vector_byte_for_byte() {
             &utxos,
             &recipients,
             change_address,
-            u32::try_from(u64_at(vector, "expiry_height")).expect("expiry fits u32"),
+            Expiry::from_height(
+                u32::try_from(u64_at(vector, "expiry_height")).expect("expiry fits u32"),
+            ),
         );
 
         match build_transparent_send(&key, &params) {

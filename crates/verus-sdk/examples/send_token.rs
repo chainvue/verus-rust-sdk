@@ -38,8 +38,8 @@ use std::io::Read;
 use serde_json::{json, Value};
 use verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::{
-    build_token_send, decode_output_script, Amount, OutputKind, TokenRecipient, TokenSendParams,
-    Txid, Utxo,
+    build_token_send, decode_output_script, Amount, Expiry, OutputKind, TokenRecipient,
+    TokenSendParams, Txid, Utxo,
 };
 
 type Error = Box<dyn std::error::Error>;
@@ -54,7 +54,11 @@ fn main() -> Result<(), Error> {
         .as_str()
         .ok_or("spec.change_address")?
         .parse()?;
-    let expiry_height = u32::try_from(spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?)?;
+    // 0 in a spec means Expiry::Never, which is what these examples have always
+    // sent; a wallet should set a real height.
+    let expiry = Expiry::from_height(u32::try_from(
+        spec["expiry_height"].as_u64().ok_or("spec.expiry_height")?,
+    )?);
 
     let utxos = spec["utxos"]
         .as_array()
@@ -102,7 +106,7 @@ fn main() -> Result<(), Error> {
             utxos: &utxos,
             recipients: &recipients,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: 10_000,
         },
     )?;

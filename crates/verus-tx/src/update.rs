@@ -40,6 +40,7 @@ use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::cc::{identity_primary_script, Destination};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::identity::Identity;
 use crate::register::identity_id;
@@ -59,8 +60,8 @@ pub struct UpdateParams<'a> {
     pub utxos: &'a [Utxo],
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
     /// Permit changing who controls the identity.
@@ -85,14 +86,14 @@ impl<'a> UpdateParams<'a> {
         identity: &'a Identity,
         utxos: &'a [Utxo],
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             identity_output,
             identity,
             utxos,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
             allow_authority_change: false,
         }
@@ -114,7 +115,7 @@ pub fn build_identity_update(
     identity_keys: &[&PrivateKey],
     params: &UpdateParams<'_>,
 ) -> Result<SignedTransaction, TxError> {
-    check_expiry(params.expiry_height)?;
+    check_expiry(params.expiry)?;
     check_p2pkh_funding(params.utxos)?;
 
     let identity = params.identity;
@@ -175,7 +176,7 @@ pub fn build_identity_update(
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: &params.change_address,
-            expiry_height: params.expiry_height,
+            expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
     )
@@ -285,7 +286,7 @@ mod tests {
         let mut proposed = current.clone();
         proposed.content_map = vec![([0x01; 20], [0x02; 32])];
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), Expiry::Never);
         let signed = build_identity_update(&key, &[&key], &params).unwrap();
         assert_eq!(signed.inputs_used[0], (held.txid, held.vout));
         assert_eq!(signed.inputs_used.len(), 2);
@@ -299,7 +300,7 @@ mod tests {
         let current = identity(vec![Destination::PubKeyHash([0x99; 20])], 1);
         let held = identity_utxo(&current);
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &current, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_update(&key, &[&key], &params),
             Err(TxError::NotAPrimaryAddress { .. })
@@ -320,7 +321,7 @@ mod tests {
         );
         let held = identity_utxo(&current);
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &current, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never);
         let signed = build_identity_update(&key, &[&key, &other], &params).unwrap();
 
         // The fulfillment on input 0 carries a count of 2. Its layout is
@@ -349,7 +350,7 @@ mod tests {
         );
         let held = identity_utxo(&current);
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &current, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_update(&key, &[&key], &params),
             Err(TxError::NotEnoughSigners {
@@ -375,7 +376,7 @@ mod tests {
         let utxos = funding(&key);
         let params = UpdateParams {
             allow_authority_change: true,
-            ..UpdateParams::new(&held, &proposed, &utxos, key.address(), 0)
+            ..UpdateParams::new(&held, &proposed, &utxos, key.address(), Expiry::Never)
         };
         // One key, because the CURRENT identity is 1-of-1.
         assert!(build_identity_update(&key, &[&key], &params).is_ok());
@@ -404,7 +405,7 @@ mod tests {
             (revocation, "revocation_authority"),
             (recovery, "recovery_authority"),
         ] {
-            let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), 0);
+            let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), Expiry::Never);
             match build_identity_update(&key, &[&key], &params) {
                 Err(TxError::AuthorityChangeRefused { field }) => assert_eq!(field, expected),
                 other => panic!("{expected} should have been refused, got {other:?}"),
@@ -421,7 +422,7 @@ mod tests {
         let mut proposed = current.clone();
         proposed.content_multimap = vec![([0x03; 20], vec![vec![0x04; 8]])];
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &proposed, &utxos, key.address(), Expiry::Never);
         assert!(build_identity_update(&key, &[&key], &params).is_ok());
     }
 
@@ -436,7 +437,7 @@ mod tests {
         let held = identity_utxo(&someone_else);
         let utxos = funding(&key);
         let ours = simple_identity();
-        let params = UpdateParams::new(&held, &ours, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &ours, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_update(&key, &[&key], &params),
             Err(TxError::IdentityOutputMismatch)
@@ -453,7 +454,7 @@ mod tests {
             ..identity_utxo(&current)
         };
         let utxos = funding(&key);
-        let params = UpdateParams::new(&held, &current, &utxos, key.address(), 0);
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_update(&key, &[&key], &params),
             Err(TxError::IdentityOutputMismatch)

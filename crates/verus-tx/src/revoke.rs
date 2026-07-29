@@ -45,6 +45,7 @@ use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::cc::identity_primary_script;
 use crate::decode::{decode_output_script, OutputKind};
 use crate::error::TxError;
+use crate::expiry::Expiry;
 use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::identity::{Identity, FLAG_REVOKED};
 use crate::register::identity_id;
@@ -60,8 +61,8 @@ pub struct RevocationParams<'a> {
     pub utxos: &'a [Utxo],
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -72,13 +73,13 @@ impl<'a> RevocationParams<'a> {
         identity_output: &'a Utxo,
         utxos: &'a [Utxo],
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             identity_output,
             utxos,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
     }
@@ -98,7 +99,7 @@ pub fn build_identity_revocation(
     authority_keys: &[&PrivateKey],
     params: &RevocationParams<'_>,
 ) -> Result<SignedTransaction, TxError> {
-    check_expiry(params.expiry_height)?;
+    check_expiry(params.expiry)?;
     check_p2pkh_funding(params.utxos)?;
 
     let mut identity = current_identity(params.identity_output)?;
@@ -123,7 +124,7 @@ pub fn build_identity_revocation(
             identity_output: params.identity_output,
             utxos: params.utxos,
             change_address: &params.change_address,
-            expiry_height: params.expiry_height,
+            expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
     )
@@ -146,8 +147,8 @@ pub struct RecoveryParams<'a> {
     pub utxos: &'a [Utxo],
     /// Where change goes.
     pub change_address: Address,
-    /// Block height after which the transaction expires; `0` never expires.
-    pub expiry_height: u32,
+    /// When this transaction stops being minable. See [`Expiry`].
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
     pub fee_per_kb: u64,
 }
@@ -159,14 +160,14 @@ impl<'a> RecoveryParams<'a> {
         identity: &'a Identity,
         utxos: &'a [Utxo],
         change_address: Address,
-        expiry_height: u32,
+        expiry: Expiry,
     ) -> Self {
         Self {
             identity_output,
             identity,
             utxos,
             change_address,
-            expiry_height,
+            expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
     }
@@ -180,7 +181,7 @@ pub fn build_identity_recovery(
     authority_keys: &[&PrivateKey],
     params: &RecoveryParams<'_>,
 ) -> Result<SignedTransaction, TxError> {
-    check_expiry(params.expiry_height)?;
+    check_expiry(params.expiry)?;
     check_p2pkh_funding(params.utxos)?;
 
     let current = current_identity(params.identity_output)?;
@@ -207,7 +208,7 @@ pub fn build_identity_recovery(
             identity_output: params.identity_output,
             utxos: params.utxos,
             change_address: &params.change_address,
-            expiry_height: params.expiry_height,
+            expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
     )
@@ -226,7 +227,7 @@ struct Common<'a> {
     identity_output: &'a Utxo,
     utxos: &'a [Utxo],
     change_address: &'a Address,
-    expiry_height: u32,
+    expiry: Expiry,
     fee_per_kb: u64,
 }
 
@@ -259,7 +260,7 @@ fn republish(
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: common.change_address,
-            expiry_height: common.expiry_height,
+            expiry: common.expiry,
             fee_per_kb: common.fee_per_kb,
         },
     )
@@ -334,7 +335,7 @@ mod tests {
         let identity = identity(id, 0);
         let held = identity_utxo(&identity);
         let utxos = funding(&key);
-        let params = RevocationParams::new(&held, &utxos, key.address(), 0);
+        let params = RevocationParams::new(&held, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_revocation(&key, &[&key], &params),
             Err(TxError::RevocationWouldStrand)
@@ -349,7 +350,7 @@ mod tests {
         let identity = identity([0x42; 20], 0);
         let held = identity_utxo(&identity);
         let utxos = funding(&key);
-        let params = RevocationParams::new(&held, &utxos, key.address(), 0);
+        let params = RevocationParams::new(&held, &utxos, key.address(), Expiry::Never);
         let signed = build_identity_revocation(&key, &[&key], &params).unwrap();
 
         // Re-decode what the transaction publishes.
@@ -371,7 +372,7 @@ mod tests {
         let identity = identity([0x42; 20], FLAG_REVOKED);
         let held = identity_utxo(&identity);
         let utxos = funding(&key);
-        let params = RevocationParams::new(&held, &utxos, key.address(), 0);
+        let params = RevocationParams::new(&held, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_revocation(&key, &[&key], &params),
             Err(TxError::AlreadyRevoked)
@@ -384,7 +385,7 @@ mod tests {
         let identity = identity([0x42; 20], 0);
         let held = identity_utxo(&identity);
         let utxos = funding(&key);
-        let params = RecoveryParams::new(&held, &identity, &utxos, key.address(), 0);
+        let params = RecoveryParams::new(&held, &identity, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_recovery(&key, &[&key], &params),
             Err(TxError::NotRevoked)
@@ -399,7 +400,7 @@ mod tests {
         let revoked = identity([0x42; 20], FLAG_REVOKED);
         let held = identity_utxo(&revoked);
         let utxos = funding(&key);
-        let params = RecoveryParams::new(&held, &revoked, &utxos, key.address(), 0);
+        let params = RecoveryParams::new(&held, &revoked, &utxos, key.address(), Expiry::Never);
         assert!(matches!(
             build_identity_recovery(&key, &[&key], &params),
             Err(TxError::StillRevoked)
@@ -416,7 +417,7 @@ mod tests {
         recovered.flags = 0;
         recovered.primary_addresses = vec![Destination::PubKeyHash([0x77; 20])];
         let utxos = funding(&key);
-        let params = RecoveryParams::new(&held, &recovered, &utxos, key.address(), 0);
+        let params = RecoveryParams::new(&held, &recovered, &utxos, key.address(), Expiry::Never);
         let signed = build_identity_recovery(&key, &[&key], &params).unwrap();
 
         let raw = hex::decode(&signed.hex).unwrap();
