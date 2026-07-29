@@ -157,6 +157,66 @@ fn the_mapped_header_fields_decode_correctly() {
     }
 }
 
+/// Weights are little-endian, and that is the one fact worth a test of its own.
+///
+/// Every other amount in this codebase is the Satoshi VARINT — reserve
+/// transfers, and the fee fields inside this very object. A currency definition
+/// mixes both forms, so reading one as the other is a silent money bug rather
+/// than a parse failure. Settled with asymmetric weights so the two encodings
+/// could not be confused for one another.
+#[test]
+fn weights_are_little_endian_not_varint() {
+    let fixture = fixture();
+    let vector = &fixture["vectors"]["fractional_asym_weights"];
+    let payload = hex::encode(payload(
+        vector["definition_script"].as_str().expect("script"),
+    ));
+
+    // 0.25 and 0.75 in satoshis, four bytes little-endian.
+    assert!(
+        payload.contains("40787d01"),
+        "0.25 is not LE32 in the payload"
+    );
+    assert!(
+        payload.contains("c0687804"),
+        "0.75 is not LE32 in the payload"
+    );
+    // The eight-byte forms are absent, which is what rules out LE64.
+    assert!(!payload.contains("40787d0100000000"));
+    assert!(!payload.contains("c068780400000000"));
+
+    // And the VARINT encodings of the same amounts appear nowhere.
+    assert!(!payload.contains("8af4ef40"), "0.25 appears as a VARINT");
+    assert!(!payload.contains("a2e0d040"), "0.75 appears as a VARINT");
+
+    // The initial supply, by contrast, is eight bytes: 1234.5678.
+    assert!(
+        payload.contains("e0f698be1c000000"),
+        "initialsupply is not LE64"
+    );
+}
+
+/// A three-reserve definition proves the list shape: a count, then that many
+/// fixed-width elements.
+#[test]
+fn reserve_lists_are_a_count_then_fixed_width_elements() {
+    let fixture = fixture();
+    let vector = &fixture["vectors"]["fractional_three"];
+    let payload = hex::encode(payload(
+        vector["definition_script"].as_str().expect("script"),
+    ));
+    // 0.2, 0.3, 0.5 back to back, four bytes each.
+    assert!(
+        payload.contains("002d310180c3c90180f0fa02"),
+        "three weights are not three contiguous LE32 values"
+    );
+    assert_eq!(
+        vector["definition"]["options"].as_u64(),
+        Some(33),
+        "the three-reserve vector is not fractional"
+    );
+}
+
 /// The fixture must keep saying what is *not* known, or the next person will
 /// assume the mapping is complete.
 #[test]
@@ -165,7 +225,14 @@ fn the_fixture_still_records_what_is_unmapped() {
     let note = fixture["_payload_layout_so_far"]["_incomplete"]
         .as_str()
         .expect("the incompleteness note was removed");
-    assert!(note.contains("NOT yet mapped"));
+    assert!(
+        note.contains("STILL NOT mapped"),
+        "the note stopped saying what is unmapped: {note}"
+    );
+    assert!(
+        note.contains("NOT yet sufficient to encode"),
+        "the note stopped saying the layout cannot be encoded from yet"
+    );
     assert!(
         fixture["_structure"]["launch_transaction_outputs"]
             .as_array()
