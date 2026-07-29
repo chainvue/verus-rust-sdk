@@ -270,6 +270,26 @@ impl ChainReader for ScriptedReader {
             })
     }
 
+    fn verify_message(
+        &self,
+        _identity: &str,
+        _signature: &str,
+        _message: &str,
+    ) -> Result<bool, RpcError> {
+        self.count();
+        // A scripted node has no opinion. Tests verify locally, which is the
+        // path a wallet should use anyway.
+        Err(RpcError::Unexpected(
+            "the scripted chain does not verify signatures".into(),
+        ))
+    }
+
+    fn identity_at(&self, name_or_id: &str, _height: u32) -> Result<IdentityRecord, RpcError> {
+        // The scripted chain has no history, so an identity is the same at
+        // every height. Tests that care about rotation script it explicitly.
+        self.identity(name_or_id)
+    }
+
     fn raw_transaction(&self, txid: &str) -> Result<serde_json::Value, RpcError> {
         self.count();
         // The height encoded into a scripted txid, so `is_coinbase` can be

@@ -22,8 +22,8 @@
 //! It is never given a key, and never asked to build or sign anything.
 
 use verus_flows::{
-    prepare_registration, prepare_send, send, spendable, CommitmentStatus, RegistrationOptions,
-    WaitPolicy,
+    prepare_registration, prepare_send, send, sign_login, spendable, verify_login,
+    CommitmentStatus, LoginPolicy, LoginRequest, RegistrationOptions, WaitPolicy,
 };
 use verus_keys::PrivateKey;
 use verus_rpc::{ChainReader, HttpTransport, RpcClient};
@@ -241,4 +241,71 @@ fn a_verusid_registration_completes_on_chain() {
         }
     }
     panic!("{name}@ never appeared on chain");
+}
+
+/// The identity this session registered, whose primary key is the live one.
+const OUR_IDENTITY: &str = "flow1167608@";
+
+/// A signature we produce must be accepted by a Verus daemon, and a tampered
+/// one must not.
+///
+/// The unit tests reproduce signatures the daemon made; this proves the other
+/// direction, which is the one a "log in with VerusID" integration depends on.
+/// Read-only — nothing is broadcast — but it needs the key that controls the
+/// identity, so it runs under the broadcast gate.
+#[test]
+fn a_daemon_accepts_a_signature_we_produced() {
+    let Some(key) = live_key() else { return };
+    let client = client();
+
+    let request = LoginRequest {
+        audience: "https://example.invalid/login".into(),
+        challenge: "b7f3c1a92e4d8006".into(),
+    };
+
+    let signature = sign_login(&client, &key, OUR_IDENTITY, &request).expect("sign");
+    let encoded = signature.to_base64();
+    eprintln!("signed at height {}: {encoded}", signature.block_height);
+
+    // The message a verifier reconstructs from the same request.
+    let message = request.message_text();
+
+    assert!(
+        client
+            .verify_message(OUR_IDENTITY, &encoded, &message)
+            .expect("verifymessage"),
+        "the daemon rejected a signature we produced"
+    );
+    eprintln!("daemon accepted it");
+
+    // And it must reject one over a different challenge.
+    let other = LoginRequest {
+        audience: request.audience.clone(),
+        challenge: "0000000000000000".into(),
+    };
+    let other_message = other.message_text();
+    assert!(
+        !client
+            .verify_message(OUR_IDENTITY, &encoded, &other_message)
+            .expect("verifymessage"),
+        "the daemon accepted a signature for a different challenge"
+    );
+    eprintln!("daemon rejected a tampered challenge");
+
+    // Our own verifier must reach the same conclusion, against the identity as
+    // it stood at the signature's height.
+    let logged_in = verify_login(
+        &client,
+        OUR_IDENTITY,
+        &signature,
+        &request,
+        &LoginPolicy::default(),
+    )
+    .expect("our own verification");
+    assert_eq!(logged_in.name, "flow1167608.VRSCTEST@");
+    assert_eq!(logged_in.signers, vec![key.address()]);
+    eprintln!(
+        "we verified it too: {} signed by {:?} at {}",
+        logged_in.name, logged_in.signers, logged_in.signed_at
+    );
 }

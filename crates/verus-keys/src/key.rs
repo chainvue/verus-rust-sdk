@@ -143,6 +143,30 @@ impl PrivateKey {
         Ok(out)
     }
 
+    /// Sign a hash and return the 65-byte **recoverable** form: a header byte
+    /// carrying the recovery id, then `r || s`.
+    ///
+    /// This is what a signed *message* carries, as distinct from a transaction.
+    /// A scriptSig can afford to state the public key separately; a message
+    /// signature is checked against an address alone, so the key has to be
+    /// recoverable from the signature itself.
+    ///
+    /// The header is `27 + recovery_id + 4` for a compressed key and
+    /// `27 + recovery_id` for an uncompressed one — the Bitcoin convention Verus
+    /// inherited. Getting the `+ 4` wrong recovers a valid but *different*
+    /// public key, so the signature verifies against nothing and the failure
+    /// looks like a wrong key rather than a wrong encoding.
+    pub fn sign_prehash_recoverable(&self, hash: &[u8; 32]) -> Result<[u8; 65], KeyError> {
+        let (signature, recovery_id) = self
+            .signing_key
+            .sign_prehash_recoverable(hash)
+            .map_err(|_| KeyError::InvalidPrivateKey)?;
+        let mut out = [0u8; 65];
+        out[0] = 27 + recovery_id.to_byte() + if self.is_compressed() { 4 } else { 0 };
+        out[1..].copy_from_slice(&signature.to_bytes());
+        Ok(out)
+    }
+
     /// Sign a hash and return the DER encoding with `hash_type` appended — the
     /// exact bytes that go into a scriptSig.
     pub fn sign_prehash_der(&self, hash: &[u8; 32], hash_type: u8) -> Result<Vec<u8>, KeyError> {
@@ -199,6 +223,34 @@ impl PublicKey {
         Signature::from_slice(&bytes)
             .map(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
             .unwrap_or(false)
+    }
+
+    /// Recover the public key that produced a 65-byte recoverable signature.
+    ///
+    /// The inverse of [`PrivateKey::sign_prehash_recoverable`]. Recovery yields
+    /// *some* key for any well-formed signature, so an `Ok` here proves nothing
+    /// on its own — the caller must compare the result against the address it
+    /// expected, and that comparison is the actual verification.
+    pub fn recover(hash: &[u8; 32], signature: &[u8; 65]) -> Result<Self, KeyError> {
+        use k256::ecdsa::RecoveryId;
+
+        let header = signature[0];
+        // 27..=30 uncompressed, 31..=34 compressed. Anything else is a different
+        // encoding, and guessing would recover an unrelated key.
+        if !(27..=34).contains(&header) {
+            return Err(KeyError::InvalidSignature);
+        }
+        let compressed = header >= 31;
+        let recovery_id =
+            RecoveryId::from_byte((header - 27) & 3).ok_or(KeyError::InvalidSignature)?;
+        let parsed =
+            Signature::from_slice(&signature[1..]).map_err(|_| KeyError::InvalidSignature)?;
+        let verifying_key = VerifyingKey::recover_from_prehash(hash, &parsed, recovery_id)
+            .map_err(|_| KeyError::InvalidSignature)?;
+        Ok(PublicKey {
+            verifying_key,
+            compressed,
+        })
     }
 
     /// HASH160 of the serialized key — the 20 bytes an address carries.

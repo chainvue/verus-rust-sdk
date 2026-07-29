@@ -74,6 +74,31 @@ pub trait ChainReader {
     fn currency(&self, name_or_id: &str) -> Result<CurrencyPolicy, RpcError>;
     /// A VerusID, including the output that holds it.
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError>;
+    /// A VerusID **as it stood at `height`**.
+    ///
+    /// An identity's controlling addresses can change, so verifying a signature
+    /// against today's identity answers a different question from verifying it
+    /// against the identity that existed when the signature was made. A signed
+    /// message carries the height for exactly this reason.
+    ///
+    /// Sent as two arguments and no more: the allowlist in front of
+    /// `api.verustest.net` is arity-sensitive, and a third argument is refused
+    /// as `-32601` — see [the crate docs](crate).
+    fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError>;
+    /// Ask the node whether a signed message checks out.
+    ///
+    /// **A cross-check, not the primary path.** `verus_tx::signature` verifies
+    /// locally, which needs no network and cannot be lied to; this asks a third
+    /// party the same question. Useful to confirm interoperability, or as a
+    /// second opinion when a local check fails unexpectedly.
+    ///
+    /// Read-only, and no key is involved: verification uses public data.
+    fn verify_message(
+        &self,
+        identity: &str,
+        signature: &str,
+        message: &str,
+    ) -> Result<bool, RpcError>;
     /// A transaction, decoded, as JSON.
     fn raw_transaction(&self, txid: &str) -> Result<serde_json::Value, RpcError>;
     /// Parse a transaction the node has never seen, without submitting it.
@@ -231,6 +256,20 @@ impl<T: Transport> ChainReader for RpcClient<T> {
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
         let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id]))?;
         raw.into_typed()
+    }
+
+    fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError> {
+        let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id, height]))?;
+        raw.into_typed()
+    }
+
+    fn verify_message(
+        &self,
+        identity: &str,
+        signature: &str,
+        message: &str,
+    ) -> Result<bool, RpcError> {
+        self.call(Method::VerifyMessage, json!([identity, signature, message]))
     }
 
     fn raw_transaction(&self, txid: &str) -> Result<serde_json::Value, RpcError> {

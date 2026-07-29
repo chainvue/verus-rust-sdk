@@ -57,6 +57,7 @@ pub mod partial;
 pub mod register;
 pub mod revoke;
 mod send;
+pub mod signature;
 mod token;
 mod txid;
 pub mod update;

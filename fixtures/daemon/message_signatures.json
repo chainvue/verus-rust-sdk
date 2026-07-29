@@ -1,0 +1,53 @@
+{
+  "_comment": "Signatures produced by verusd 1.2.17-2 on VRSCTEST, used to reverse-engineer and then pin the VerusID message-signing scheme. Reproduced by crates/verus-tx/src/signature.rs.",
+  "_scheme": {
+    "msgHash": "SHA256( compactSize(len(message)) || message )",
+    "signedHash": "SHA256( compactSize(19) || 'Verus signed data:\\n' || systemID(20) || blockHeight(4 LE) || identityID(20) || msgHash(32) )",
+    "signature": "header(27 + recid + 4 if compressed) || r(32) || s(32)",
+    "wire": "version(1) || blockHeight(4 LE) || compactSize(count) || [ compactSize(65) || sig(65) ]...",
+    "_note": "Single SHA256 at both stages, not the double-SHA256 used for txids and sighashes."
+  },
+  "identity": {
+    "name": "sdk-ref-check@",
+    "identityaddress": "i6bcDs58fRgYZKmZot3XYkqg45qi2AVvhC",
+    "identity_id_hex": "223f497fb6cf167569f39272eb0169f69a3b36e3",
+    "primaryaddresses": ["RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP"],
+    "minimumsignatures": 1
+  },
+  "system": {
+    "name": "VRSCTEST",
+    "currencyid": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+    "system_id_hex": "a6ef9ea235635e328124ff3429db9f9e91b64e2d"
+  },
+  "block_height": 1167655,
+  "vectors": [
+    {
+      "_why": "an ordinary message",
+      "message": "hello verus",
+      "hash": "b215fcc319f75ff4690a9fee11f9d9a3a0572f4ac336035a3ad34e6113743626",
+      "signature": "ASfREQABQSDVPquj1QKfyKo3qO+qwKoqYbKuLouO6lQ3sexMrYK1LnnTdgodl1anv7BfPqaTw12J7UKwvwaw6aQWtgWUPYNI"
+    },
+    {
+      "_why": "empty: catches a length prefix that was skipped entirely",
+      "message": "",
+      "hash": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "signature": "ASfREQABQSAnJxNXF2ZZgoBu01YtgoHiDW+F2A07iPdnaSn0PSP5BkbMV2lMw1GwxqFDrWL0L1P8VbkTEC1cASDv7G/5kWhT"
+    },
+    {
+      "_why": "a second message at the same height, so the height is not the only thing varying",
+      "message": "second message",
+      "hash": "2ca15c3489e07ca4b4686466339e162d408a5d813b75fdad0554abfd24659210",
+      "signature": "ASfREQABQSC2IFbRBb1tJ0jiMhck+5w/4HZBFTWPtpwyxhpfp8bbMl7xwqpvW/J9ruZfzJg6Ci53QXEenDzhcHQoj+K8Oo/C"
+    },
+    {
+      "_why": "300 bytes: the only vector that distinguishes a compact size from a single length byte",
+      "message_repeat": ["A", 300],
+      "hash": "3d325efdc06da8ded89cca0d355fba3020c6c94431a2a6550c55ed85efd6470c",
+      "signature": "ASfREQABQSDFijHWndeURWxyANWvz3sOq9A6004+xK/C9jYIsuhr5AViM9W9ZVzqHwoWUesHFnpSPUPYS9wQ4cyiwrMMQ7eE"
+    }
+  ],
+  "_reverse_direction": {
+    "_comment": "The other direction was checked live: a signature this SDK produced was accepted by verifymessage on api.verustest.net for flow1167608@, and rejected for a modified challenge. See crates/verus-flows/tests/live_flows.rs.",
+    "identity": "flow1167608@"
+  }
+}

@@ -193,6 +193,14 @@ pub enum TxError {
         index: usize,
     },
 
+    /// A signed message that could not be read, or could not be produced.
+    ///
+    /// Distinct from [`TxError::InvalidSignature`], which is about an input of a
+    /// transaction: this one carries no input index because a signed message has
+    /// no inputs.
+    #[error("invalid message signature: {0}")]
+    MessageSignature(String),
+
     /// A partial transaction that could not be read.
     #[error("malformed partial transaction: {0}")]
     MalformedPartialTransaction(String),
