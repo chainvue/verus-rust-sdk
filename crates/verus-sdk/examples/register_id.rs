@@ -164,10 +164,12 @@ fn main() -> Result<(), Error> {
             };
             let parent_currency = match spec["parent_currency"].as_object() {
                 Some(p) => Some(ParentCurrencyFee {
-                    fee: p["fee"].as_u64().ok_or("parent_currency.fee")?,
-                    native_import_fee: p["native_import_fee"]
-                        .as_u64()
-                        .ok_or("parent_currency.native_import_fee")?,
+                    fee: Amount::from_sat(p["fee"].as_u64().ok_or("parent_currency.fee")?),
+                    native_import_fee: Amount::from_sat(
+                        p["native_import_fee"]
+                            .as_u64()
+                            .ok_or("parent_currency.native_import_fee")?,
+                    ),
                     token_funding: &token_funding,
                     proof_protocol: u32::try_from(p["proof_protocol"].as_u64().unwrap_or(2))?,
                 }),
@@ -185,9 +187,11 @@ fn main() -> Result<(), Error> {
                     &utxos,
                     &primary_addresses,
                     system_id.hash(),
-                    spec["registration_fee"]
-                        .as_u64()
-                        .ok_or("spec.registration_fee")?,
+                    Amount::from_sat(
+                        spec["registration_fee"]
+                            .as_u64()
+                            .ok_or("spec.registration_fee")?,
+                    ),
                     change_address,
                     expiry,
                 )

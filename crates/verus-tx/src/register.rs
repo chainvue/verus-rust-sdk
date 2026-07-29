@@ -59,6 +59,7 @@ use verus_keys::{hash160, Address, AddressKind, PrivateKey};
 use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
+use crate::amount::Amount;
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::cc::{
     cc_script, identity_payment_script, identity_primary_script, reserve_output_script_to,
@@ -358,7 +359,7 @@ pub fn build_name_commitment(
                 value: 0,
                 script_pubkey: script,
             }],
-            burn: 0,
+            burn: Amount::ZERO,
             fee_output_count: 1,
             change_address: &params.change_address,
             expiry: params.expiry,
@@ -387,12 +388,16 @@ pub struct RegistrationParams<'a> {
     pub revocation_authority: Option<[u8; 20]>,
     /// Who may recover after revocation. Defaults to the identity itself.
     pub recovery_authority: Option<[u8; 20]>,
-    /// The registration fee, in satoshis, before any referral discount.
+    /// The registration fee, before any referral discount.
     ///
     /// Chain policy, not a constant this crate can know: `getcurrency` reports
-    /// it as `idregistrationfees`. Passing the wrong value gets the transaction
-    /// rejected with the commitment already spent.
-    pub registration_fee: u64,
+    /// it as `idregistrationfees`, and reports it in **coins** — `100.0`, not
+    /// `10000000000`. That unit change is exactly what [`Amount`] exists to stop
+    /// being silent, so this is an `Amount` rather than a bare integer.
+    ///
+    /// Passing the wrong value gets the transaction rejected with the commitment
+    /// already spent.
+    pub registration_fee: Amount,
     /// How many referral levels the chain pays out.
     ///
     /// **Per-currency, not a constant.** It is `idreferrallevels` from the
@@ -450,9 +455,9 @@ pub struct RegistrationParams<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParentCurrencyFee<'a> {
     /// `idregistrationfees`, in the parent currency's smallest unit.
-    pub fee: u64,
+    pub fee: Amount,
     /// `idimportfees`, burned natively.
-    pub native_import_fee: u64,
+    pub native_import_fee: Amount,
     /// Token-bearing inputs paying the fee. Every one is spent in full and the
     /// surplus comes back as token change, so a token left out is a token burned.
     pub token_funding: &'a [Utxo],
@@ -464,9 +469,9 @@ pub struct ParentCurrencyFee<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegistrationFees {
     /// Paid to each referrer in the chain.
-    pub referral_amount: u64,
+    pub referral_amount: Amount,
     /// What the registrant parts with in total: the payouts plus the burn.
-    pub outlay: u64,
+    pub outlay: Amount,
 }
 
 /// Split a registration fee the way consensus does.
@@ -475,17 +480,18 @@ pub struct RegistrationFees {
 /// `fee * (levels + 1) / (levels + 2)` and each referrer takes
 /// `fee / (levels + 2)` out of it. Integer division throughout, matching the
 /// daemon — 100 VRSC over 3 levels is 80 paid, 20 per referrer.
-pub fn registration_fees(fee: u64, levels: u32, referred: bool) -> RegistrationFees {
+pub fn registration_fees(fee: Amount, levels: u32, referred: bool) -> RegistrationFees {
     if !referred {
         return RegistrationFees {
-            referral_amount: 0,
+            referral_amount: Amount::ZERO,
             outlay: fee,
         };
     }
     let levels = u64::from(levels);
+    let fee = fee.to_sat();
     RegistrationFees {
-        referral_amount: fee / (levels + 2),
-        outlay: fee * (levels + 1) / (levels + 2),
+        referral_amount: Amount::from_sat(fee / (levels + 2)),
+        outlay: Amount::from_sat(fee * (levels + 1) / (levels + 2)),
     }
 }
 
@@ -507,7 +513,7 @@ impl<'a> RegistrationParams<'a> {
         utxos: &'a [Utxo],
         primary_addresses: &'a [Address],
         system_id: [u8; 20],
-        registration_fee: u64,
+        registration_fee: Amount,
         change_address: Address,
         expiry: Expiry,
     ) -> Self {
@@ -723,13 +729,13 @@ pub fn build_identity_registration(
                 // same twenty bytes wearing the other hat. Written out because
                 // it is an assumption, not a coincidence to lean on silently.
                 CurrencyId::of_identity(parent),
-                sub.fee,
+                sub.fee.to_sat(),
             )?,
         });
     }
     for referrer in &referrers {
         outputs.push(TxOut {
-            value: fees.referral_amount,
+            value: fees.referral_amount.to_sat(),
             script_pubkey: identity_payment_script(*referrer)?,
         });
     }
@@ -766,19 +772,20 @@ pub fn build_identity_registration(
             }
             token_leading.push(utxo.clone());
         }
+        let held = Amount::from_sat(held);
         let change = held
             .checked_sub(sub.fee)
-            .ok_or(TxError::InsufficientTokens {
+            .ok_or_else(|| TxError::InsufficientTokens {
                 currency: CurrencyId::of_identity(parent).to_string(),
-                missing: sub.fee - held.min(sub.fee),
+                missing: sub.fee.to_sat() - held.to_sat().min(sub.fee.to_sat()),
             })?;
-        if change > 0 {
+        if !change.is_zero() {
             outputs.push(TxOut {
                 value: 0,
                 script_pubkey: reserve_output_script_to(
                     Destination::PubKeyHash(params.change_address.hash()),
                     CurrencyId::of_identity(parent),
-                    change,
+                    change.to_sat(),
                 )?,
             });
         }
@@ -787,7 +794,10 @@ pub fn build_identity_registration(
     // The payouts come OUT OF the registrant's outlay; the remainder is burned.
     // A sub-identity burns the parent's import fee instead: its registration fee
     // left in the parent's currency, not natively.
-    let paid_out = fees.referral_amount * referrers.len() as u64;
+    let paid_out = fees
+        .referral_amount
+        .checked_mul(referrers.len() as u64)
+        .ok_or(TxError::ValueOverflow)?;
     let burn = match &params.parent_currency {
         Some(sub) => sub.native_import_fee,
         None => fees
@@ -986,18 +996,39 @@ mod tests {
     /// outputs came to exactly 60 with a single 20.0 payout.
     #[test]
     fn splits_a_referred_registration_fee_the_way_the_daemon_does() {
-        let fees = registration_fees(100_00000000, 3, true);
-        assert_eq!(fees.referral_amount, 20_00000000);
-        assert_eq!(fees.outlay, 80_00000000);
-        assert_eq!(fees.outlay - fees.referral_amount, 60_00000000);
+        let fees = registration_fees(Amount::from_sat(100_00000000), 3, true);
+        assert_eq!(fees.referral_amount, Amount::from_sat(20_00000000));
+        assert_eq!(fees.outlay, Amount::from_sat(80_00000000));
+        assert_eq!(
+            fees.outlay.checked_sub(fees.referral_amount).unwrap(),
+            Amount::from_sat(60_00000000)
+        );
+    }
+
+    /// The confusion this typing exists to prevent. `getcurrency` reports
+    /// `idregistrationfees` in **coins** — the literal JSON is `100.0` — while
+    /// the builder needs satoshis. Passing the coin figure straight through
+    /// would fund a registration with 100 satoshis and be rejected with the name
+    /// commitment already spent; passing satoshis where coins were meant
+    /// overpays by 1e8. `Amount` makes the unit explicit at the boundary, and
+    /// `from_coins_str` is the only conversion, exact and float-free.
+    #[test]
+    fn a_fee_read_as_coins_is_not_the_same_number_as_satoshis() {
+        let from_daemon = Amount::from_coins_str("100.0").unwrap();
+        assert_eq!(from_daemon, Amount::from_sat(100_00000000));
+        assert_ne!(from_daemon, Amount::from_sat(100));
+
+        let fees = registration_fees(from_daemon, 3, true);
+        assert_eq!(fees.referral_amount, Amount::from_sat(20_00000000));
+        assert_eq!(fees.outlay, Amount::from_sat(80_00000000));
     }
 
     /// Without a referral the registrant burns the whole fee and nobody is paid.
     #[test]
     fn an_unreferred_registration_burns_the_whole_fee() {
-        let fees = registration_fees(100_00000000, 3, false);
-        assert_eq!(fees.referral_amount, 0);
-        assert_eq!(fees.outlay, 100_00000000);
+        let fees = registration_fees(Amount::from_sat(100_00000000), 3, false);
+        assert_eq!(fees.referral_amount, Amount::from_sat(0));
+        assert_eq!(fees.outlay, Amount::from_sat(100_00000000));
     }
 
     /// A referral on a sub-identity is refused rather than guessed: the fee is
@@ -1036,10 +1067,10 @@ mod tests {
             system_id: parent,
             revocation_authority: None,
             recovery_authority: None,
-            registration_fee: 0,
+            registration_fee: Amount::from_sat(0),
             parent_currency: Some(ParentCurrencyFee {
-                fee: 100_000_000,
-                native_import_fee: 2_000_000,
+                fee: Amount::from_sat(100_000_000),
+                native_import_fee: Amount::from_sat(2_000_000),
                 token_funding: &[],
                 proof_protocol: 2,
             }),
@@ -1090,10 +1121,10 @@ mod tests {
             system_id: parent,
             revocation_authority: None,
             recovery_authority: None,
-            registration_fee: 0,
+            registration_fee: Amount::from_sat(0),
             parent_currency: Some(ParentCurrencyFee {
-                fee: 1_00000000,
-                native_import_fee: 2_000_000,
+                fee: Amount::from_sat(1_00000000),
+                native_import_fee: Amount::from_sat(2_000_000),
                 token_funding: &[],
                 // 1 = fractional / PBaaS.
                 proof_protocol: 1,
@@ -1142,7 +1173,7 @@ mod tests {
             system_id: parse(VRSCTEST).hash(),
             revocation_authority: None,
             recovery_authority: None,
-            registration_fee: 100_00000000,
+            registration_fee: Amount::from_sat(100_00000000),
             parent_currency: None,
             referral_levels: 3,
             referral_chain: &[],
