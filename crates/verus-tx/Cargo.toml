@@ -11,7 +11,14 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Serialize the types a wallet persists between runs: amounts, outpoints,
+# UTXOs, identities and partially-signed transactions. Off by default so a
+# consumer that does not need it does not carry serde.
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }

@@ -28,6 +28,7 @@ use crate::error::TxError;
 ///
 /// Deliberately has no `Add`, `Sub` or `Mul` — see the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Amount(u64);
 
 /// Satoshis in one coin.

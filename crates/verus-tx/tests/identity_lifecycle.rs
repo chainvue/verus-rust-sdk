@@ -158,23 +158,17 @@ fn registration() {
     let primaries = [key().address()];
     let registered = build_identity_registration(
         &key(),
-        &RegistrationParams {
-            commitment: &commitment,
-            reservation: &reservation,
-            utxos: &utxos,
-            primary_addresses: &primaries,
-            min_sigs: 1,
-            system_id: chain(),
-            revocation_authority: None,
-            recovery_authority: None,
-            registration_fee: 100_00000000,
-            parent_currency: None,
-            referral_levels: 3,
-            referral_chain: &[],
-            change_address: key().address(),
-            expiry: Expiry::Never,
-            fee_per_kb: 10_000,
-        },
+        &RegistrationParams::new(
+            &commitment,
+            &reservation,
+            &utxos,
+            &primaries,
+            chain(),
+            100_00000000,
+            key().address(),
+            Expiry::Never,
+        )
+        .with_referrals(3, &[]),
     )
     .unwrap();
     assert_golden(
@@ -197,23 +191,17 @@ fn referred_registration() {
     let primaries = [key().address()];
     let registered = build_identity_registration(
         &key(),
-        &RegistrationParams {
-            commitment: &commitment,
-            reservation: &reservation,
-            utxos: &utxos,
-            primary_addresses: &primaries,
-            min_sigs: 1,
-            system_id: chain(),
-            revocation_authority: None,
-            recovery_authority: None,
-            registration_fee: 100_00000000,
-            parent_currency: None,
-            referral_levels: 3,
-            referral_chain: &[],
-            change_address: key().address(),
-            expiry: Expiry::Never,
-            fee_per_kb: 10_000,
-        },
+        &RegistrationParams::new(
+            &commitment,
+            &reservation,
+            &utxos,
+            &primaries,
+            chain(),
+            100_00000000,
+            key().address(),
+            Expiry::Never,
+        )
+        .with_referrals(3, &[]),
     )
     .unwrap();
     assert_golden(
@@ -242,23 +230,17 @@ fn referral_chain_pays_every_level() {
     let chain_up = [direct, indirect];
     let registered = build_identity_registration(
         &key(),
-        &RegistrationParams {
-            commitment: &commitment,
-            reservation: &reservation,
-            utxos: &utxos,
-            primary_addresses: &primaries,
-            min_sigs: 1,
-            system_id: chain(),
-            revocation_authority: None,
-            recovery_authority: None,
-            registration_fee: 100_00000000,
-            parent_currency: None,
-            referral_levels: 3,
-            referral_chain: &chain_up,
-            change_address: key().address(),
-            expiry: Expiry::Never,
-            fee_per_kb: 10_000,
-        },
+        &RegistrationParams::new(
+            &commitment,
+            &reservation,
+            &utxos,
+            &primaries,
+            chain(),
+            100_00000000,
+            key().address(),
+            Expiry::Never,
+        )
+        .with_referrals(3, &chain_up),
     )
     .unwrap();
 
@@ -299,28 +281,22 @@ fn sub_identity_registration() {
     let primaries = [key().address()];
     let registered = build_identity_registration(
         &key(),
-        &RegistrationParams {
-            commitment: &commitment,
-            reservation: &reservation,
-            utxos: &utxos,
-            primary_addresses: &primaries,
-            min_sigs: 1,
-            system_id: chain(),
-            revocation_authority: None,
-            recovery_authority: None,
-            registration_fee: 0,
-            parent_currency: Some(ParentCurrencyFee {
-                fee: 1_00000000,
-                native_import_fee: 2_000_000,
-                token_funding: &token_funding,
-                proof_protocol: 2,
-            }),
-            referral_levels: 0,
-            referral_chain: &[],
-            change_address: key().address(),
-            expiry: Expiry::Never,
-            fee_per_kb: 10_000,
-        },
+        &RegistrationParams::new(
+            &commitment,
+            &reservation,
+            &utxos,
+            &primaries,
+            chain(),
+            0,
+            key().address(),
+            Expiry::Never,
+        )
+        .with_parent_currency(ParentCurrencyFee {
+            fee: 1_00000000,
+            native_import_fee: 2_000_000,
+            token_funding: &token_funding,
+            proof_protocol: 2,
+        }),
     )
     .unwrap();
     assert_golden(

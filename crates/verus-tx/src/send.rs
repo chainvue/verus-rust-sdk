@@ -84,6 +84,7 @@ pub struct Recipient {
 
 /// What to build.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SendParams<'a> {
     /// UTXOs available to spend. All must be plain P2PKH controlled by `key`.
     pub utxos: &'a [Utxo],
@@ -115,6 +116,12 @@ impl<'a> SendParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 

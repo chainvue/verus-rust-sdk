@@ -40,6 +40,7 @@ pub const DEFAULT_EXPIRY_BLOCKS: u32 = 20;
 
 /// When a transaction stops being minable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Expiry {
     /// Valid forever. Serializes as `0`.
     ///

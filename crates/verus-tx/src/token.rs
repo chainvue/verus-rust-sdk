@@ -52,6 +52,7 @@ pub struct TokenRecipient {
 
 /// What to build.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TokenSendParams<'a> {
     /// UTXOs available: token-bearing reserve outputs and native P2PKH.
     pub utxos: &'a [Utxo],
@@ -80,6 +81,12 @@ impl<'a> TokenSendParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 

@@ -42,6 +42,42 @@
 use crate::cc::Destination;
 use crate::error::TxError;
 
+/// A Sapling payment address is 43 bytes, and serde only implements its traits
+/// for arrays up to 32. Rather than pull in a dependency for one field, this
+/// carries them as byte vectors and re-checks the length on the way back — a
+/// stored identity with a 42-byte address is corrupt, not something to accept.
+#[cfg(feature = "serde")]
+mod sapling_addresses {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        addresses: &[[u8; 43]],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        addresses
+            .iter()
+            .map(|a| a.to_vec())
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<[u8; 43]>, D::Error> {
+        Vec::<Vec<u8>>::deserialize(deserializer)?
+            .into_iter()
+            .map(|bytes| {
+                let len = bytes.len();
+                bytes.try_into().map_err(|_| {
+                    serde::de::Error::custom(format!(
+                        "a Sapling payment address is 43 bytes, got {len}"
+                    ))
+                })
+            })
+            .collect()
+    }
+}
+
 /// `EVAL_IDENTITY_PRIMARY` — the output that holds a VerusID.
 pub const EVAL_IDENTITY_PRIMARY: u8 = 14;
 /// `EVAL_IDENTITY_REVOKE` — the condition letting the revocation authority spend.
@@ -66,6 +102,7 @@ pub const FLAG_TOKENIZED_CONTROL: u32 = 0x4;
 
 /// A VerusID as the chain stores it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Identity {
     /// Serialization version.
     pub version: u32,
@@ -91,6 +128,7 @@ pub struct Identity {
     /// The identity that may recover this one after revocation.
     pub recovery_authority: [u8; 20],
     /// Sapling payment addresses published by the identity, 43 bytes each.
+    #[cfg_attr(feature = "serde", serde(with = "sapling_addresses"))]
     pub private_addresses: Vec<[u8; 43]>,
     /// The system (chain) this identity lives on.
     pub system_id: [u8; 20],

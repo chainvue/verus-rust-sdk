@@ -296,6 +296,7 @@ pub fn reservation_script(
 
 /// What step 1 needs.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CommitmentParams<'a> {
     /// P2PKH UTXOs controlled by the signing key.
     pub utxos: &'a [Utxo],
@@ -324,6 +325,12 @@ impl<'a> CommitmentParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 
@@ -361,6 +368,7 @@ pub fn build_name_commitment(
 
 /// What step 2 needs.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RegistrationParams<'a> {
     /// The step-1 commitment output, which this transaction spends.
     pub commitment: &'a Utxo,
@@ -477,6 +485,90 @@ pub fn registration_fees(fee: u64, levels: u32, referred: bool) -> RegistrationF
     RegistrationFees {
         referral_amount: fee / (levels + 2),
         outlay: fee * (levels + 1) / (levels + 2),
+    }
+}
+
+impl<'a> RegistrationParams<'a> {
+    /// The parameters a registration cannot do without.
+    ///
+    /// Everything else has a defensible default and is set with a `with_*`
+    /// method: authorities default to the identity itself, referrals to none,
+    /// the parent currency to none (a root registration), and the fee rate to
+    /// [`DEFAULT_FEE_PER_KB`].
+    ///
+    /// `registration_fee` and the referral settings are chain policy read from
+    /// the registering currency's `getcurrency`, not constants — see the notes
+    /// on those fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        commitment: &'a Utxo,
+        reservation: &'a NameReservation,
+        utxos: &'a [Utxo],
+        primary_addresses: &'a [Address],
+        system_id: [u8; 20],
+        registration_fee: u64,
+        change_address: Address,
+        expiry: Expiry,
+    ) -> Self {
+        Self {
+            commitment,
+            reservation,
+            utxos,
+            primary_addresses,
+            min_sigs: 1,
+            system_id,
+            revocation_authority: None,
+            recovery_authority: None,
+            registration_fee,
+            parent_currency: None,
+            referral_levels: 0,
+            referral_chain: &[],
+            change_address,
+            expiry,
+            fee_per_kb: DEFAULT_FEE_PER_KB,
+        }
+    }
+
+    /// How many of `primary_addresses` must sign for the new identity.
+    pub fn with_min_sigs(mut self, min_sigs: u32) -> Self {
+        self.min_sigs = min_sigs;
+        self
+    }
+
+    /// Who may revoke and who may recover.
+    ///
+    /// Both default to the identity itself, which is what the daemon does — and
+    /// which makes the identity **unrevokable**, since an identity that is its
+    /// own recovery authority can never be recovered. Point recovery at another
+    /// identity here if revocation is ever meant to be usable; it cannot be
+    /// changed later without an authority-changing update.
+    pub fn with_authorities(
+        mut self,
+        revocation: Option<[u8; 20]>,
+        recovery: Option<[u8; 20]>,
+    ) -> Self {
+        self.revocation_authority = revocation;
+        self.recovery_authority = recovery;
+        self
+    }
+
+    /// The referral settings, both from the registering currency's definition.
+    pub fn with_referrals(mut self, levels: u32, chain: &'a [[u8; 20]]) -> Self {
+        self.referral_levels = levels;
+        self.referral_chain = chain;
+        self
+    }
+
+    /// Register under a parent currency rather than the chain itself.
+    pub fn with_parent_currency(mut self, parent: ParentCurrencyFee<'a>) -> Self {
+        self.parent_currency = Some(parent);
+        self
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
     }
 }
 

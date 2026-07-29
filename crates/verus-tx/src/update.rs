@@ -50,6 +50,7 @@ use verus_wire::TxOut;
 
 /// What to update, and what to fund it with.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct UpdateParams<'a> {
     /// The output currently holding the identity — what `getidentity` reports as
     /// its `txid`/`vout`. It carries no native value.
@@ -97,6 +98,21 @@ impl<'a> UpdateParams<'a> {
             fee_per_kb: DEFAULT_FEE_PER_KB,
             allow_authority_change: false,
         }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
+    }
+
+    /// Permit changing who controls the identity.
+    ///
+    /// Read [`UpdateParams::allow_authority_change`] before calling this: it is
+    /// the one VerusID mistake with no remedy.
+    pub fn allowing_authority_change(mut self) -> Self {
+        self.allow_authority_change = true;
+        self
     }
 }
 

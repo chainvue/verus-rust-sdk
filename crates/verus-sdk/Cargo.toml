@@ -23,6 +23,8 @@ shielded = ["dep:verus-sapling"]
 prover = ["shielded", "verus-sapling/prover"]
 # bellman's rayon backend: a large speedup natively, and unavailable on wasm32.
 multicore = ["shielded", "verus-sapling/multicore"]
+# Persist pending state: amounts, UTXOs, identities, partial transactions.
+serde = ["verus-tx?/serde"]
 
 [dependencies]
 verus-wire = { path = "../verus-wire" }
