@@ -308,11 +308,14 @@ pub fn reserve_output_script(
 /// DER — the encoding every other Verus signature uses. And the hash type lives
 /// *inside* the fulfillment rather than trailing the signature.
 ///
+/// The count is a real count: an `m-of-n` condition takes `m` entries in one
+/// fulfillment, not `m` separate scriptSigs. Their order follows the order the
+/// signers were supplied.
+///
 /// Layout confirmed against `SmartTransactionSignatures::toBuffer` and
 /// `SmartTransactionSignature::toBuffer` in the `@bitgo/utxo-lib` fork.
 pub fn fulfillment_script_sig(
-    pubkey: &[u8],
-    signature: &[u8; 64],
+    signatures: &[(Vec<u8>, [u8; 64])],
     hash_type: u8,
 ) -> Result<Vec<u8>, TxError> {
     /// `SmartTransactionSignatures` serialization version.
@@ -320,17 +323,36 @@ pub fn fulfillment_script_sig(
     /// A single-signature entry.
     const SIGNATURE_TYPE: u8 = 1;
 
-    let mut fulfillment = vec![FULFILLMENT_VERSION, hash_type, 1 /* one signature */];
-    fulfillment.push(SIGNATURE_TYPE);
-    fulfillment
-        .push(u8::try_from(pubkey.len()).map_err(|_| TxError::CcPayloadTooLarge(pubkey.len()))?);
-    fulfillment.extend_from_slice(pubkey);
-    fulfillment.push(64);
-    fulfillment.extend_from_slice(signature);
+    if signatures.is_empty() {
+        return Err(TxError::NoSignatures);
+    }
+
+    let mut fulfillment = vec![FULFILLMENT_VERSION, hash_type];
+    fulfillment.extend_from_slice(&compact_size(signatures.len())?);
+    for (pubkey, signature) in signatures {
+        fulfillment.push(SIGNATURE_TYPE);
+        fulfillment.push(
+            u8::try_from(pubkey.len()).map_err(|_| TxError::CcPayloadTooLarge(pubkey.len()))?,
+        );
+        fulfillment.extend_from_slice(pubkey);
+        fulfillment.push(64);
+        fulfillment.extend_from_slice(signature);
+    }
 
     let mut script_sig = Vec::new();
     push_data(&mut script_sig, &fulfillment)?;
     Ok(script_sig)
+}
+
+/// CompactSize, for the fulfillment's signature count.
+///
+/// A condition with more than 252 signers would need the wider forms; none
+/// exists, so this refuses rather than writing an encoding nothing has tested.
+fn compact_size(value: usize) -> Result<Vec<u8>, TxError> {
+    match value {
+        0..=252 => Ok(vec![u8::try_from(value).expect("checked above")]),
+        other => Err(TxError::CcPayloadTooLarge(other)),
+    }
 }
 
 /// Build the output script that HOLDS a VerusID.

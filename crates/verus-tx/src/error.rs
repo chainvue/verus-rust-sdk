@@ -170,6 +170,30 @@ pub enum TxError {
         address: String,
     },
 
+    /// Fewer signing keys than the identity's condition requires.
+    #[error("{supplied} signing key(s) supplied but the identity requires {required}")]
+    NotEnoughSigners {
+        /// Keys the caller supplied.
+        supplied: usize,
+        /// Signatures the identity's current threshold demands.
+        required: u32,
+    },
+
+    /// A fulfillment with no signatures in it.
+    #[error("a CryptoCondition fulfillment needs at least one signature")]
+    NoSignatures,
+
+    /// An update would change who controls the identity.
+    ///
+    /// Refused unless the caller opts in. Publishing a threshold nobody can meet
+    /// or addresses nobody holds makes the identity permanently unupdatable —
+    /// the single VerusID mistake with no remedy.
+    #[error("this update changes {field}, which moves control of the identity")]
+    AuthorityChangeRefused {
+        /// Which field the update would have altered.
+        field: String,
+    },
+
     /// The output being spent does not hold the identity being updated.
     #[error("the output being spent does not hold this identity")]
     IdentityOutputMismatch,

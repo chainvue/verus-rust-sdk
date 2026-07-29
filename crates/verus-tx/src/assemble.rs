@@ -43,7 +43,15 @@ pub(crate) struct Assembly<'a> {
 }
 
 /// Select coins, assemble, check conservation, sign.
-pub(crate) fn assemble(key: &PrivateKey, plan: Assembly<'_>) -> Result<SignedTransaction, TxError> {
+///
+/// `funding_key` signs the P2PKH inputs. `leading_keys` sign the CryptoCondition
+/// ones, all of them into a single fulfillment per input — an `m-of-n` condition
+/// wants `m` signatures in one scriptSig, not `m` scriptSigs.
+pub(crate) fn assemble(
+    funding_key: &PrivateKey,
+    leading_keys: &[&PrivateKey],
+    plan: Assembly<'_>,
+) -> Result<SignedTransaction, TxError> {
     // A leading input carrying native value would silently fund the burn and
     // break the accounting below, which assumes their contribution is zero.
     for utxo in plan.leading {
@@ -107,7 +115,7 @@ pub(crate) fn assemble(key: &PrivateKey, plan: Assembly<'_>) -> Result<SignedTra
         });
     }
 
-    sign_inputs(&mut tx, key, &inputs, plan.leading.len())?;
+    sign_inputs(&mut tx, funding_key, leading_keys, &inputs, plan.leading.len())?;
 
     let raw = tx.serialize()?;
     Ok(SignedTransaction {
@@ -131,11 +139,15 @@ pub(crate) fn assemble(key: &PrivateKey, plan: Assembly<'_>) -> Result<SignedTra
 /// script finished false and nothing about which one or why.
 fn sign_inputs(
     tx: &mut TxV4,
-    key: &PrivateKey,
+    funding_key: &PrivateKey,
+    leading_keys: &[&PrivateKey],
     prevouts: &[Utxo],
     leading: usize,
 ) -> Result<(), TxError> {
-    let pubkey = key.public_key().to_bytes();
+    if leading > 0 && leading_keys.is_empty() {
+        return Err(TxError::NoSignatures);
+    }
+    let funding_pubkey = funding_key.public_key().to_bytes();
     for (index, utxo) in prevouts.iter().enumerate() {
         let sighash = tx.transparent_sighash(
             VERUS_BRANCH_ID,
@@ -148,10 +160,18 @@ fn sign_inputs(
             // The fulfillment states the hash type in one byte of its own,
             // unlike a P2PKH scriptSig where it trails the DER signature.
             let hash_type = u8::try_from(SIGHASH_ALL).expect("SIGHASH_ALL is 1");
-            let signature = key.sign_prehash_compact(&sighash)?;
-            fulfillment_script_sig(&pubkey, &signature, hash_type)?
+            let signatures = leading_keys
+                .iter()
+                .map(|key| {
+                    Ok((
+                        key.public_key().to_bytes(),
+                        key.sign_prehash_compact(&sighash)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, TxError>>()?;
+            fulfillment_script_sig(&signatures, hash_type)?
         } else {
-            p2pkh_script_sig(key, &sighash, &pubkey)?
+            p2pkh_script_sig(funding_key, &sighash, &funding_pubkey)?
         };
     }
     Ok(())

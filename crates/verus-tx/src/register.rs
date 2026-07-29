@@ -331,6 +331,8 @@ pub fn build_name_commitment(
     let script = commitment_script(&params.reservation.commitment_hash()?, key.address().hash())?;
     assemble(
         key,
+        // No CryptoCondition inputs: a commitment is funded from plain P2PKH.
+        &[],
         Assembly {
             leading: &[],
             funding: params.utxos,
@@ -474,6 +476,8 @@ pub fn build_identity_registration(
 
     let transaction = assemble(
         key,
+        // The commitment is a 1-of-1 condition over the control key.
+        &[key],
         Assembly {
             leading: core::slice::from_ref(params.commitment),
             funding: params.utxos,

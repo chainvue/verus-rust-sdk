@@ -26,7 +26,13 @@
 //! Only the content map is editable here. Changing `primary_addresses`,
 //! `min_sigs`, or the revocation and recovery authorities is a change of
 //! authority: get it wrong and the identity becomes unupdatable by anyone,
-//! permanently. That belongs behind a deliberate API, not an example flag.
+//! permanently. The builder refuses those unless
+//! `UpdateParams::allow_authority_change` is set, and this example never sets
+//! it.
+//!
+//! `extra_wifs` supplies the co-signers of a multisig identity. The builder
+//! needs `min_sigs` keys from the identity's own primary addresses, all of them
+//! signing into one fulfillment; the first `wif` also pays the fee.
 //!
 //! # Content-map key order
 //!
@@ -50,6 +56,18 @@ fn main() -> Result<(), Error> {
     let spec: Value = serde_json::from_str(&input)?;
 
     let key = PrivateKey::from_wif(spec["wif"].as_str().ok_or("spec.wif")?)?;
+    // Co-signers for a multisig identity; empty for the ordinary 1-of-1 case.
+    let extra: Vec<PrivateKey> = match spec["extra_wifs"].as_array() {
+        Some(wifs) => wifs
+            .iter()
+            .map(|w| -> Result<PrivateKey, Error> {
+                Ok(PrivateKey::from_wif(w.as_str().ok_or("extra_wifs[]")?)?)
+            })
+            .collect::<Result<_, _>>()?,
+        None => Vec::new(),
+    };
+    let mut identity_keys: Vec<&PrivateKey> = vec![&key];
+    identity_keys.extend(extra.iter());
     let change_address: Address = spec["change_address"]
         .as_str()
         .ok_or("spec.change_address")?
@@ -90,6 +108,7 @@ fn main() -> Result<(), Error> {
 
     let signed = build_identity_update(
         &key,
+        &identity_keys,
         &UpdateParams {
             identity_output: &identity_output,
             identity: &identity,
@@ -97,6 +116,9 @@ fn main() -> Result<(), Error> {
             change_address,
             expiry_height,
             fee_per_kb: 10_000,
+            // Never set from an example: an authority change is the one VerusID
+            // mistake with no remedy.
+            allow_authority_change: false,
         },
     )?;
 

@@ -354,7 +354,7 @@ pub fn build_token_send(
             // the raw 64 bytes and holds the hash type in its own field.
             let signature = key.sign_prehash(&sighash)?;
             let compact: [u8; 64] = signature.to_bytes().into();
-            fulfillment_script_sig(&pubkey, &compact, 1)?
+            fulfillment_script_sig(&[(pubkey.clone(), compact)], 1)?
         } else {
             let signature = key.sign_prehash_der(&sighash, 1)?;
             let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
