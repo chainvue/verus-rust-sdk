@@ -18,6 +18,32 @@ protobuf field number. Only bytes from a real server can catch that.
 | `gettreestate_after.bin` | `GetTreeState(1156849)` | the frontier after the 5-output block: 270 bytes, 3104 leaves |
 | `getblockrange.bin` | `GetBlockRange(1156847, 1156850)` | four blocks, two of them empty, five nullifiers, `chainMetadata` |
 
+## A real note's whole life
+
+A second set covers one note from creation to spend. On 2026-07-29 this SDK
+generated a Sapling key, had 5 VRSCTEST shielded to it from the maintainer's
+node, then found, witnessed, proved and spent it — every step through
+`verus-light` / `verus-flows` / `verus-sapling`, key never leaving the process.
+
+| file | call | covers |
+|---|---|---|
+| `note_treestate_before.bin` | `GetTreeState(1167986)` | the frontier that fixes the note's position at 3176 |
+| `note_blocks.bin` | `GetBlockRange(1167987, 1167995)` | funding block through spend block |
+| `note_blocks_before_spend.bin` | `GetBlockRange(1167987, 1167994)` | the same range stopping one block short |
+
+```text
+funded  5af146d0583f535ece8518a1f3b7abaafae0b65155e4d05a90956367ecc91626  block 1167987
+spent   8f9e0a6b1073349bd6f25433e617de3bd4826ab4afeae68b293d23d6e68a78c8  block 1167995
+```
+
+The last fixture exists so `before_the_spend_the_note_was_spendable` cannot pass
+for the wrong reason — without it, the "spent" assertion would hold even if the
+nullifier join were broken.
+
+`crates/verus-flows/tests/shielded_note_lifecycle.rs` commits the **viewing key**
+for that address. It can find and value the note and can spend nothing; the
+spending key was written outside the repository and is not here.
+
 `compact_formats.proto` and `service.proto` are copied unmodified from the
 server's `walletrpc/` directory, MIT-licensed by the Zcash developers. They are
 the authority for every field number in `crates/verus-light/src/messages.rs`;

@@ -29,6 +29,8 @@
 //! [`ScanResult::notes`] directly reports money you have already spent.
 
 use verus_light::{LightClient, LightTransport};
+#[cfg(feature = "prover")]
+use verus_sapling::build::NoteToSpend;
 use verus_sapling::scan::{
     detect_notes, CompactOutput, DetectedNote, DiversifiableFullViewingKey, FullOutput,
     TreeStateBefore,
@@ -230,8 +232,15 @@ pub fn scan<T: LightTransport>(
     })
 }
 
-/// A note with everything a spend needs: the full output, and a witness
-/// advanced to a chosen anchor height.
+/// A note with everything a spend needs.
+///
+/// Deliberately carries every field of `verus_sapling::build::NoteToSpend`, not
+/// just the witness. The first attempt held only the note, the output and the
+/// witness — which reads as sufficient and is not: `NoteToSpend` also wants the
+/// frontier and the block's commitments, and a caller would have had to refetch
+/// both after this function had already done it. Producing a value that cannot
+/// be handed to the next function is not an ergonomics problem, it is an
+/// invitation to fetch the frontier at the wrong height.
 pub struct WitnessedNote {
     /// The note as the scan found it.
     pub note: DetectedNote,
@@ -239,7 +248,13 @@ pub struct WitnessedNote {
     /// compact form served for detection is only the first 52 ciphertext bytes
     /// and cannot be decrypted to a spendable note.
     pub output: FullOutput,
-    /// The Merkle path, advanced to `anchor_height`.
+    /// The commitment tree immediately before the note's block.
+    pub tree_before_block: TreeStateBefore,
+    /// Every Sapling commitment in the note's block, in order.
+    pub block_cmus: Vec<[u8; 32]>,
+    /// Index of this note's own commitment among them.
+    pub my_cmu_index: usize,
+    /// The Merkle path, advanced to the anchor height that was asked for.
     pub witness: NoteWitness,
 }
 
@@ -252,6 +267,25 @@ impl WitnessedNote {
     #[must_use]
     pub fn anchor(&self) -> [u8; 32] {
         self.witness.anchor()
+    }
+
+    /// Borrow this as a `NoteToSpend`, ready for
+    /// `verus_sapling::build_shielded_spend`.
+    ///
+    /// `extsk_bytes` is the 169-byte extended spending key. It is passed here
+    /// rather than stored on the struct so a scan, a witness and a balance can
+    /// all be computed by a watch-only wallet that never holds one.
+    #[cfg(feature = "prover")]
+    #[must_use]
+    pub fn to_spend<'a>(&'a self, extsk_bytes: &'a [u8]) -> NoteToSpend<'a> {
+        NoteToSpend {
+            extsk_bytes,
+            output: &self.output,
+            tree_before_block: &self.tree_before_block,
+            block_cmus: &self.block_cmus,
+            my_cmu_index: self.my_cmu_index,
+            advanced_witness: Some(&self.witness),
+        }
     }
 }
 
@@ -334,6 +368,9 @@ pub fn witness_note<T: LightTransport>(
     Ok(WitnessedNote {
         note: note.clone(),
         output,
+        tree_before_block: tree_before,
+        block_cmus,
+        my_cmu_index: index,
         witness,
     })
 }
