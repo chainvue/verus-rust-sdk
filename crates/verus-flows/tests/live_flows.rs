@@ -21,7 +21,10 @@
 //! The node is only ever asked to answer questions and to relay finished bytes.
 //! It is never given a key, and never asked to build or sign anything.
 
-use verus_flows::{prepare_send, send, spendable};
+use verus_flows::{
+    prepare_registration, prepare_send, send, spendable, CommitmentStatus, RegistrationOptions,
+    WaitPolicy,
+};
 use verus_keys::PrivateKey;
 use verus_rpc::{ChainReader, HttpTransport, RpcClient};
 use verus_tx::Amount;
@@ -155,4 +158,87 @@ fn a_payment_reaches_the_chain() {
         sent.txid
     );
     eprintln!("node has it at {confirmations:?} confirmations");
+}
+
+/// The whole VerusID registration, through the public node.
+///
+/// This is the flow the typestate and the resumable `Pending` exist for, run
+/// against a chain that will actually reject a mistake. It costs the
+/// registration fee — 100 VRSCTEST — plus two miner fees.
+///
+/// The name is derived from the tip so repeated runs do not collide with an
+/// identity this test registered earlier.
+#[test]
+fn a_verusid_registration_completes_on_chain() {
+    let Some(key) = live_key() else { return };
+    if std::env::var("VERUS_LIVE_REGISTER").is_err() {
+        eprintln!("skipping: set VERUS_LIVE_REGISTER=1 (this spends the 100 VRSCTEST fee)");
+        return;
+    }
+    let client = client();
+
+    let tip = client.block_count().expect("tip");
+    let name = format!("flow{tip}");
+    eprintln!("registering {name}@");
+
+    // Step 1, built and signed but NOT broadcast. The salt exists here.
+    let prepared = prepare_registration(&client, &key, &name, &RegistrationOptions::default())
+        .expect("prepare");
+    eprintln!(
+        "  prepared: fee {} read from chain policy, commitment {}",
+        prepared.registration_fee.to_coins_string(),
+        prepared.commitment_txid
+    );
+
+    // What a wallet must do before anything is spent: persist the salt.
+    let persisted = serde_json::to_string(&prepared).expect("serialize");
+    assert!(persisted.contains("salt"));
+
+    let pending = prepared
+        .broadcast_commitment(&client, &client)
+        .expect("broadcast commitment");
+    eprintln!("  commitment broadcast, waiting for a block");
+
+    // Poll until it confirms. The interval is floored inside WaitPolicy; this
+    // is somebody else's node.
+    let policy = WaitPolicy::new(
+        std::time::Duration::from_secs(20),
+        30,
+        Box::new(|attempt, confirmations| {
+            eprintln!("    poll {attempt}: {confirmations} confirmations");
+        }),
+    );
+    let ready = match pending.wait_blocking(&client, &policy).expect("wait") {
+        CommitmentStatus::Ready(ready) => ready,
+        other => panic!("commitment did not confirm: {other:?}"),
+    };
+    eprintln!("  commitment confirmed at vout {}", ready.commitment_vout);
+
+    // Step 2, reachable only from a confirmed commitment.
+    let registered = ready
+        .complete(&client, &client, &key)
+        .expect("registration");
+    eprintln!(
+        "  registration broadcast: {} (fee {})",
+        registered.txid,
+        registered.fee_paid.to_coins_string()
+    );
+
+    // And the chain agrees the identity exists.
+    for attempt in 0..30 {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        match client.identity(&format!("{name}@")) {
+            Ok(record) => {
+                eprintln!(
+                    "  {} exists at {} (block {})",
+                    record.fully_qualified_name, record.identity_address, record.block_height
+                );
+                assert_eq!(record.fully_qualified_name, format!("{name}.VRSCTEST@"));
+                assert!(!record.is_revoked());
+                return;
+            }
+            Err(_) => eprintln!("    not visible yet ({attempt})"),
+        }
+    }
+    panic!("{name}@ never appeared on chain");
 }
