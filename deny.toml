@@ -15,6 +15,15 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # Covers `webpki-roots`, which is Mozilla's CA certificate bundle reached
+    # through `ureq` — data, not code. CDLA-Permissive-2.0 is a permissive data
+    # licence: no copyleft, no reciprocal obligation on anything that uses the
+    # data, and no attribution requirement beyond keeping the notice. It imposes
+    # nothing on a consumer of this SDK.
+    #
+    # It only enters the tree through `verus-rpc`, the one crate that opens a
+    # socket. The offline crates do not reach it, and a test asserts that.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

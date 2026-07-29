@@ -40,17 +40,38 @@
 //!   exposes that check without the prover for exactly this reason.
 //! * **Sees every address you ask about.** That is the real price of a public
 //!   node, and no amount of care in this crate changes it.
+//!
+//! # `-32601` does not reliably mean "missing"
+//!
+//! A public endpoint is usually a filtering proxy, and the filter can be
+//! sensitive to the *number of arguments*, not just the method name.
+//! `api.verustest.net` serves `getblock` with one argument and answers
+//! `-32601` — "method not found" — for the same method with a verbosity
+//! argument.
+//!
+//! So [`RpcError::MethodUnavailable`] means "refused as not-found", which is
+//! weaker than "this node cannot do that". Before recording a method as
+//! unavailable, re-probe it at a different arity; an availability table built
+//! from careless probes will be wrong. That is not hypothetical — the table this
+//! crate was designed against had `getblock` listed as absent, and it is not.
 
 #![doc(html_no_source)]
 
 mod client;
+mod envelope;
 mod error;
+mod json;
+mod method;
 mod transport;
 mod types;
 
-pub use client::RpcClient;
+pub use client::{registration_cost, Broadcaster, ChainReader, RpcClient};
 pub use error::RpcError;
-pub use transport::Transport;
+pub use method::{callable_methods, CallableMethod};
 #[cfg(feature = "http")]
 pub use transport::HttpTransport;
-pub use types::{AddressUtxo, ChainInfo, CurrencyPolicy, IdentityRecord, TreeState};
+pub use transport::{RequestBody, Transport};
+pub use types::{
+    spendable_at, AddressBalance, AddressUtxo, ChainInfo, CurrencyPolicy, IdentityRecord,
+    COINBASE_MATURITY,
+};

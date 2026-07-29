@@ -31,6 +31,50 @@ pub enum RpcError {
     #[error("unexpected reply shape: {0}")]
     Unexpected(String),
 
+    /// The node answered `-32601`, "method not found".
+    ///
+    /// Distinct from [`RpcError::Node`] because the remedy differs: this means
+    /// try another endpoint or your own node, and on public infrastructure it is
+    /// the commonest failure.
+    ///
+    /// **It does not always mean the method is absent.** A filtering proxy can
+    /// allowlist a method *at a particular arity* and answer `-32601` for any
+    /// other — `api.verustest.net` serves `getblock` with one argument and
+    /// refuses it with two. So this can also mean "not with those arguments",
+    /// and a method recorded as unavailable is worth re-probing with a different
+    /// argument count before believing it.
+    ///
+    /// `z_gettreestate` is genuinely absent there, at every arity.
+    #[error("{method} was refused as method-not-found (the node may not have it, or may not accept it with these arguments)")]
+    MethodUnavailable {
+        /// The method that was refused.
+        method: &'static str,
+    },
+
+    /// A money field could not be read exactly.
+    ///
+    /// Reading it approximately is not an option: the workspace has no float
+    /// path for money, and a value off by one satoshi fails a conservation
+    /// check somewhere else, later.
+    #[error("{field} could not be read exactly: {value:?}")]
+    LossyNumber {
+        /// Which field.
+        field: &'static str,
+        /// What the daemon actually sent.
+        value: String,
+    },
+
+    /// A plaintext URL for a host that is not loopback.
+    #[error("{0} is plaintext: every address you query would be readable in transit")]
+    InsecureUrl(String),
+
+    /// A reply larger than the configured ceiling.
+    #[error("reply exceeded the {cap}-byte ceiling")]
+    ResponseTooLarge {
+        /// The configured ceiling.
+        cap: usize,
+    },
+
     /// A value the daemon reported could not be represented — an amount that
     /// does not fit, a hash of the wrong length.
     #[error("value out of range: {0}")]

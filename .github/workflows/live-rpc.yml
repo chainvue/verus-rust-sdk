@@ -1,0 +1,50 @@
+# Schema drift against the live public node.
+#
+# Deliberately NOT a pull-request gate. The fixtures in `fixtures/rpc/` are
+# frozen at the day they were captured, so a daemon upgrade that renames a field
+# passes every offline test and then fails in a consumer's wallet. Only the live
+# endpoint catches that.
+#
+# It is also somebody else's infrastructure: it can be down, rate-limited or
+# mid-upgrade for reasons that have nothing to do with the commit under review.
+# Gating PRs on it would train everyone to ignore a red X. On a schedule, a
+# failure is a signal worth reading.
+#
+# Read-only. Every method it calls is a question; nothing is broadcast.
+name: Live RPC
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: '1.95.0'
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # Checks three things a frozen fixture cannot:
+      #   - every typed read still parses from today's daemon;
+      #   - the daemon still computes our transaction ids;
+      #   - the endpoint's method allowlist has not moved. That last one is
+      #     load-bearing — whether `getblock` is served decides whether shielded
+      #     flows can be built on public infrastructure at all.
+      - name: Live read-only checks
+        env:
+          VERUS_LIVE_RPC: '1'
+        run: cargo test -p verus-rpc --test live_daemon -- --nocapture --test-threads=1
