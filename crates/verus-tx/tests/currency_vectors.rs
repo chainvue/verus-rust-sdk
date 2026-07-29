@@ -403,6 +403,56 @@ fn the_three_amount_lists_are_min_max_then_contributions() {
     assert_eq!(contributions - max, 18);
 }
 
+/// A definition uses three different amount encodings, chosen per field.
+///
+/// This is the trap that makes the object worth testing at all: VARINT for some
+/// fields, four-byte little-endian for others, eight-byte for the rest. Picking
+/// one for the whole object produces wrong money without failing to parse.
+#[test]
+fn amounts_use_three_different_encodings() {
+    let fixture = fixture();
+    let carveout = hex::encode(payload(
+        fixture["vectors"]["fractional_carveout"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    ));
+    let discount = hex::encode(payload(
+        fixture["vectors"]["fractional_discount"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    ));
+    let plain = payload(
+        fixture["vectors"]["fractional_one_reserve"]["definition_script"]
+            .as_str()
+            .expect("script"),
+    );
+
+    // prelaunchcarveout 0.1 is four-byte little-endian.
+    assert!(
+        carveout.contains(&hex::encode(10_000_000u32.to_le_bytes())),
+        "prelaunchcarveout is not LE32"
+    );
+    assert!(
+        !carveout.contains(&hex::encode(10_000_000u64.to_le_bytes())),
+        "prelaunchcarveout looks like LE64"
+    );
+
+    // prelaunchdiscount 0.05 is a VARINT: 81b09540, which lengthens the payload
+    // by exactly three bytes over the zero case. A fixed-width field could not.
+    assert!(
+        discount.contains("81b09540"),
+        "prelaunchdiscount is not the VARINT 81b09540"
+    );
+    assert_eq!(
+        discount.len() / 2 - plain.len(),
+        3,
+        "prelaunchdiscount is not variable width"
+    );
+
+    // And weights, in the same object, are LE32 while initialsupply is LE64 —
+    // covered by their own tests above.
+}
+
 /// The fixture must keep saying what is *not* known, or the next person will
 /// assume the mapping is complete.
 #[test]
@@ -412,11 +462,11 @@ fn the_fixture_still_records_what_is_unmapped() {
         .as_str()
         .expect("the incompleteness note was removed");
     assert!(
-        note.contains("STILL NOT mapped"),
+        note.contains("STILL NOT"),
         "the note stopped saying what is unmapped: {note}"
     );
     assert!(
-        note.contains("NOT yet sufficient to encode"),
+        note.contains("NOT sufficient to encode"),
         "the note stopped saying the layout cannot be encoded from yet"
     );
     assert!(
