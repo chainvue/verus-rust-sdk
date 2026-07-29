@@ -33,10 +33,10 @@ pub enum WireError {
 
     /// A sighash type other than `SIGHASH_ALL` was requested.
     ///
-    /// `SIGHASH_SINGLE` and `ANYONECANPAY` zero out parts of the preimage and
-    /// are only needed by marketplace offers, which this crate does not build
-    /// yet. Supporting them silently — by ignoring the flags — would sign a
-    /// commitment the caller did not ask for.
+    /// `SIGHASH_ALL`, `SIGHASH_NONE`, `SIGHASH_SINGLE` and the `ANYONECANPAY`
+    /// modifier are implemented; anything else is refused. Treating an unknown
+    /// hash type as one of those — by ignoring the bits that differ — would sign
+    /// a commitment the caller did not ask for.
     #[error("unsupported sighash type {0:#x}")]
     UnsupportedSighashType(u32),
 
@@ -52,4 +52,35 @@ pub enum WireError {
         /// How many outputs exist.
         outputs: usize,
     },
+
+    /// The bytes ended in the middle of a field.
+    #[error("transaction ended mid-field")]
+    TruncatedTransaction,
+
+    /// Bytes remained after a complete transaction.
+    ///
+    /// Refused rather than ignored: a decoder that stops early lets two
+    /// different byte strings parse to the same transaction, which is a way to
+    /// be paid for something other than what was signed.
+    #[error("{0} bytes remained after the transaction")]
+    TrailingBytes(usize),
+
+    /// A compact size encoded in more bytes than it needed.
+    ///
+    /// Re-serializing it produces different bytes and a different transaction
+    /// id, so it is refused rather than quietly normalised.
+    #[error("non-canonical compact size")]
+    NonCanonicalCompactSize,
+
+    /// A transaction header this crate does not parse.
+    #[error("unsupported transaction version header {0:#010x}")]
+    UnsupportedTransactionVersion(u32),
+
+    /// A version group id that is not Sapling's.
+    #[error("unsupported version group id {0:#010x}")]
+    UnsupportedVersionGroup(u32),
+
+    /// JoinSplits, which Verus does not use and this crate does not parse.
+    #[error("{0} JoinSplits; Verus transactions have none")]
+    JoinSplitsUnsupported(u64),
 }
