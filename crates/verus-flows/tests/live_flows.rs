@@ -437,4 +437,29 @@ fn vdxf_keys_resolve_and_are_chain_qualified() {
     // reason to prefer the qualified form.
     let bare = client.vdxf_id("profile").expect("getvdxfid");
     assert_ne!(bare, key, "a bare name resolved to the qualified key");
+
+    // The offline derivation must agree with the node on every shape it
+    // accepts: bare, dotted, chain-qualified, friendly- and i-address
+    // namespaces. This is the drift alarm — if a daemon upgrade ever changes
+    // the derivation, this fails before any app publishes a stray key.
+    let vrsctest = verus_tx::CurrencyId::from_bytes(address_hash(VRSCTEST));
+    for name in [
+        "profile",
+        "vrsc::identity.profile",
+        "a.b.c",
+        "myapp::settings.theme",
+        "vrsctest::a",
+        "iKzX5FyzKzYxtcWKYveYKVfrz2LNXLj4xM::x",
+        // Inner space runs in KEY components are verbatim on both sides —
+        // pinning the asymmetry with the namespace position, which is
+        // dual-collapsed by the daemon and refused offline.
+        "a  b",
+    ] {
+        let local = verus_tx::qualified_key(name, "VRSCTEST", vrsctest).expect("derive");
+        let remote = client.vdxf_id(name).expect("getvdxfid");
+        assert_eq!(
+            local, remote,
+            "offline and node derivation differ for {name}"
+        );
+    }
 }

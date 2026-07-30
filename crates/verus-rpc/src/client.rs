@@ -105,10 +105,10 @@ pub trait ChainReader {
     /// Returns the 20-byte key, in the order a content map stores it.
     ///
     /// **This needs a node, and that is a real limitation.** The derivation is
-    /// public and deterministic, so it ought to be computable offline; the
-    /// construction was probed at length and not pinned down, and publishing
-    /// content under a *guessed* key would put it somewhere nobody looks. So it
-    /// is asked rather than invented.
+    /// public and deterministic — and since `verus_tx::vdxf` it IS computable
+    /// offline, ported from the daemon's own derivation. This remains as the
+    /// oracle: the live suite locks the local derivation against it, and a
+    /// caller who wants the node's opinion can still ask.
     ///
     /// Two things to know about the answer:
     ///
