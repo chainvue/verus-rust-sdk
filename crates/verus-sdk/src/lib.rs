@@ -52,6 +52,7 @@ pub use verus_light;
 /// stay public — this is a shorter path to the same types, not a wrapper.
 #[cfg(feature = "transparent")]
 pub mod money {
+    pub use verus_tx::fee::DEFAULT_FEE_PER_KB;
     pub use verus_tx::{Amount, Expiry, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS, SATS_PER_COIN};
 }
 
@@ -190,7 +191,10 @@ pub mod network {
         Funding, LoggedIn, LoginPolicy, LoginRequest, OfferTerms, Pending, ReadyToRegister,
         Registered, RegistrationOptions, Sent, Taken, Taking, WaitPolicy,
     };
-    pub use verus_rpc::{Broadcaster, ChainReader, HttpTransport, RpcClient, RpcError};
+    pub use verus_rpc::{
+        AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,
+        CurrencyPolicy, HttpTransport, IdentityRecord, RpcClient, RpcError,
+    };
 }
 
 /// Shielded notes over the network: scan, value and witness via lightwalletd.
