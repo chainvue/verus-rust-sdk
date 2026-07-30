@@ -57,6 +57,22 @@ process. Without the `network` and `light` features the same crate is the
 offline half alone: builders in, bytes out, no socket anywhere in the
 dependency tree.
 
+### App templates
+
+Each online example in [`crates/verus-sdk/examples/`](./crates/verus-sdk/examples/)
+is a complete operation meant to be copied as a starting point. The header of
+each says whether running it spends testnet coins.
+
+| Example | Shows |
+|---|---|
+| `wallet_balance` | spendable vs immature vs token-bearing outputs |
+| `send_online` | a payment, including the `BroadcastUncertain` re-read that makes retrying safe |
+| `register_id_online` | the resumable two-step VerusID registration — salt persisted **before** any coins move |
+| `id_login` | sign a challenge as a VerusID and verify it, both halves |
+| `convert_online` | estimate, then convert with the estimate as a floor |
+| `make_offer_online` | fund and sign a marketplace offer (the hex *is* the offer) |
+| `take_offer_online` | inspect an offer against the chain, then take it at the verified terms |
+
 ## Design
 
 **Correctness is proven against the network, not against itself.** Four

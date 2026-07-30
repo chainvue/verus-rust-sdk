@@ -66,3 +66,33 @@ required-features = ["shielded"]
 [[example]]
 name = "spend_note"
 required-features = ["prover"]
+
+# The online examples: whole operations through the public node. Each one's
+# header says whether running it spends testnet coins.
+[[example]]
+name = "wallet_balance"
+required-features = ["network"]
+
+[[example]]
+name = "send_online"
+required-features = ["network"]
+
+[[example]]
+name = "register_id_online"
+required-features = ["network"]
+
+[[example]]
+name = "id_login"
+required-features = ["network"]
+
+[[example]]
+name = "convert_online"
+required-features = ["network"]
+
+[[example]]
+name = "make_offer_online"
+required-features = ["network"]
+
+[[example]]
+name = "take_offer_online"
+required-features = ["network"]
