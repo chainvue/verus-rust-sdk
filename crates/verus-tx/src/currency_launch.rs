@@ -598,6 +598,8 @@ pub fn build_currency_launch(
             // Six declared outputs plus a change slot.
             fee_output_count: 7,
             change_address: &params.change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },

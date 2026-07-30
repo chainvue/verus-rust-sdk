@@ -192,6 +192,113 @@ pub fn burn(
     submit(reader, broadcaster, key, &transfer, token_funding)
 }
 
+/// Mint new supply of a centralized currency, authorised by its identity.
+///
+/// `currency` is the token’s `i` address — which is also the id of its
+/// controlling identity, and that coincidence is the whole mechanism:
+/// consensus accepts a mint only from a transaction that *spends an output the
+/// controlling identity holds*, signed with the identity’s own authority
+/// (`CheckIdentitySpends`). So this flow funds the transaction from the
+/// identity’s pay-to-identity outputs, signs their fulfillments with `key`
+/// — which must be one of the identity’s primary addresses — and returns the
+/// surplus to the identity.
+///
+/// The identity must hold enough native coins to cover the transfer fee plus
+/// the miner fee; [`crate::funding::identity_held`] reports what it has, and
+/// an ordinary [`crate::send()`] to the `i` address tops it up.
+///
+/// The authority check is point-in-time: an identity whose keys rotate or
+/// which is revoked between the read and the broadcast produces a rejected
+/// transaction, not a loss.
+pub fn mint(
+    reader: &impl ChainReader,
+    broadcaster: &impl Broadcaster,
+    key: &PrivateKey,
+    currency: &str,
+    amount: Amount,
+    recipient: &str,
+    fee: Amount,
+) -> Result<Sent, FlowError> {
+    let info = reader.chain_info()?;
+    let chain_currency = currency_of(&info.chain_id)?;
+    let currency_id = currency_of(currency)?;
+    let recipient: Address = recipient.parse()?;
+    if recipient.kind() != verus_keys::AddressKind::PubKeyHash {
+        // The transfer destination is written as a key hash — the daemon's own
+        // template shape. An `i` address here would silently pay the R-form of
+        // the same hash, which nobody controls on purpose.
+        return Err(FlowError::NotReady(
+            "mint pays an R-address recipient; convert the destination first".into(),
+        ));
+    }
+
+    // The same prechecks the chain applies, surfaced with names. The
+    // controlling identity IS the currency id; `CheckIdentitySpends` will
+    // demand its primary keys and threshold, and this flow signs with one key.
+    let record = reader
+        .identity(currency)
+        .map_err(|_| FlowError::NoSuchIdentity(currency.to_string()))?;
+    if record.is_revoked() {
+        return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
+    }
+    let primaries = record.identity["primaryaddresses"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let signer = key.address().to_string();
+    if !primaries.contains(&signer) {
+        return Err(FlowError::Tx(verus_tx::TxError::NotAPrimaryAddress {
+            address: signer,
+        }));
+    }
+    let min_sigs = record.identity["minimumsignatures"].as_u64().unwrap_or(1);
+    if min_sigs > 1 {
+        return Err(FlowError::Tx(verus_tx::TxError::NotEnoughSigners {
+            supplied: 1,
+            required: u32::try_from(min_sigs).unwrap_or(u32::MAX),
+        }));
+    }
+
+    // The daemon’s own template: the transfer’s SOURCE slot names the system
+    // currency while the destination names what is created.
+    let transfer = build_conversion(
+        chain_currency,
+        amount,
+        ConversionKind::Mint {
+            currency: currency_id,
+        },
+        recipient,
+        chain_currency,
+        fee,
+    )?;
+
+    let identity_funding = crate::funding::identity_held(reader, currency)?;
+    if identity_funding.is_empty() {
+        return Err(FlowError::NotReady(format!(
+            "{currency} holds no spendable outputs; a mint is paid for by the identity — \
+             send() it some coins first"
+        )));
+    }
+    let tip = reader.block_count()?;
+    let params = ConversionParams::new(
+        &transfer,
+        // No P2PKH funding: a mint is paid for by the identity it spends from.
+        &[],
+        chain_currency,
+        key.address(),
+        Expiry::within(tip, DEFAULT_EXPIRY_BLOCKS),
+    )
+    .with_identity_funding(&identity_funding);
+
+    let signed = build_conversion_transaction(key, &params)?;
+    broadcast(broadcaster, &signed.hex, &signed.txid)?;
+    Ok(signed.into())
+}
+
 /// Fund, sign and broadcast a prepared transfer.
 fn submit(
     reader: &impl ChainReader,

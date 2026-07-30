@@ -83,6 +83,7 @@ pub mod identity {
         build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
     };
     pub use verus_tx::update::{build_identity_update, UpdateParams};
+    pub use verus_tx::{build_identity_spend, IdentitySpendParams};
     pub use verus_tx::{identity_payment_script, identity_primary_script};
 }
 
@@ -185,11 +186,12 @@ pub mod currency {
 pub mod network {
     pub use verus_flows::offer::take;
     pub use verus_flows::{
-        broadcast, burn, convert, estimate, inspect, plan_conversion, prepare_registration,
-        prepare_registration_with_salt, prepare_send, send, send_token, sign_login, spendable,
-        verify_login, AwaitingCommitment, CommitmentStatus, ConversionPlan, Demand, FlowError,
-        Funding, LoggedIn, LoginPolicy, LoginRequest, OfferTerms, Pending, ReadyToRegister,
-        Registered, RegistrationOptions, Sent, Taken, Taking, WaitPolicy,
+        broadcast, burn, convert, estimate, identity_held, inspect, mint, plan_conversion,
+        prepare_registration, prepare_registration_with_salt, prepare_send, send,
+        send_from_identity, send_token, sign_login, spendable, verify_login, AwaitingCommitment,
+        CommitmentStatus, ConversionPlan, Demand, FlowError, Funding, LoggedIn, LoginPolicy,
+        LoginRequest, OfferTerms, Pending, ReadyToRegister, Registered, RegistrationOptions, Sent,
+        Taken, Taking, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,

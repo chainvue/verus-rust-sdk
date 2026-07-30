@@ -275,6 +275,8 @@ fn republish(
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: common.change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry: common.expiry,
             fee_per_kb: common.fee_per_kb,
         },

@@ -15,14 +15,17 @@ use crate::amount::Amount;
 use crate::cc::fulfillment_script_sig;
 use crate::error::TxError;
 use crate::expiry::Expiry;
-use crate::fee::{check_burn_ceiling, select_utxos};
+use crate::fee::{
+    check_burn_ceiling, check_fee_ceiling, estimate_fee, select_utxos, DUST_THRESHOLD,
+};
 use crate::send::{p2pkh_script_sig, SignedTransaction};
 use crate::Utxo;
 
 /// The shape of a transaction to assemble.
 pub(crate) struct Assembly<'a> {
-    /// Inputs spent before the funding ones, in order. CryptoCondition outputs
-    /// carrying no native value — currently only a name commitment.
+    /// Inputs spent before the funding ones, in order: CryptoCondition outputs
+    /// the caller controls — a name commitment, token inputs, or (only with
+    /// [`Assembly::value_bearing_leading`]) identity-held funding.
     pub(crate) leading: &'a [Utxo],
     /// P2PKH UTXOs available to fund the transaction.
     pub(crate) funding: &'a [Utxo],
@@ -35,6 +38,26 @@ pub(crate) struct Assembly<'a> {
     pub(crate) fee_output_count: u64,
     /// Where change goes.
     pub(crate) change_address: &'a Address,
+    /// The change output's script, when change must not be plain P2PKH.
+    ///
+    /// `None` pays change to `change_address` as P2PKH, which is right for
+    /// every flow that funds from a key. An identity-funded spend sets this to
+    /// the identity's own payment script, so what is not spent **stays under
+    /// the identity's authority** instead of quietly migrating to a bare key.
+    pub(crate) change_script: Option<Vec<u8>>,
+    /// Permit leading inputs to carry native value, counted exactly.
+    ///
+    /// Off, the historical invariant holds: a leading input with value is
+    /// refused, because the accounting would otherwise let it silently fund
+    /// the burn. On, that value is a *declared* funding source instead: it is
+    /// added to the input side of the conservation check and subtracted from
+    /// what the P2PKH selection must raise. Nothing becomes implicit — the
+    /// check `inputs − outputs = fee + burn` still holds to the satoshi.
+    ///
+    /// This is opt-in per call site on purpose. The flows that assumed
+    /// zero-value leading inputs still get the refusal; only a flow built to
+    /// spend identity-held funds (a mint, an identity-funded send) asks.
+    pub(crate) value_bearing_leading: bool,
     /// When the transaction stops being minable.
     pub(crate) expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
@@ -51,15 +74,18 @@ pub(crate) fn assemble(
     leading_keys: &[&PrivateKey],
     plan: Assembly<'_>,
 ) -> Result<SignedTransaction, TxError> {
-    // A leading input carrying native value would silently fund the burn and
-    // break the accounting below, which assumes their contribution is zero.
-    for utxo in plan.leading {
-        if !utxo.satoshis.is_zero() {
-            return Err(TxError::LeadingInputCarriesValue {
-                txid: utxo.txid.to_display_hex(),
-                vout: utxo.vout,
-                satoshis: utxo.satoshis.to_sat(),
-            });
+    // Unless the caller has explicitly declared otherwise, a leading input
+    // carrying native value would silently fund the burn and break the
+    // accounting below, which assumes their contribution is zero.
+    if !plan.value_bearing_leading {
+        for utxo in plan.leading {
+            if !utxo.satoshis.is_zero() {
+                return Err(TxError::LeadingInputCarriesValue {
+                    txid: utxo.txid.to_display_hex(),
+                    vout: utxo.vout,
+                    satoshis: utxo.satoshis.to_sat(),
+                });
+            }
         }
     }
 
@@ -76,28 +102,110 @@ pub(crate) fn assemble(
         .checked_add(plan.burn.to_sat())
         .ok_or(TxError::ValueOverflow)?;
 
-    let selection = select_utxos(
-        plan.funding,
-        required,
-        plan.fee_output_count,
-        plan.fee_per_kb,
-        // Every output here is a CryptoCondition, which the fee heuristic sizes
-        // at 200 bytes rather than 34.
-        true,
-    )?;
+    // What the leading inputs bring. Zero on every historical path; with
+    // `value_bearing_leading` it is a declared funding source, subtracted from
+    // what the P2PKH selection must raise.
+    let leading_total = Amount::checked_sum(plan.leading.iter().map(|u| u.satoshis))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
+
+    // Value-bearing leading inputs get the same duplicate guard selection
+    // gives funding: a repeated outpoint double-counts `leading_total` and
+    // signs a transaction the mempool rejects.
+    if plan.value_bearing_leading {
+        // Identity change must carry an explicit script — P2PKH change here
+        // would silently migrate identity funds to a bare key, which is the
+        // exact move this design forbids. A hard error rather than an assert:
+        // this routes money, and a release-mode slip must not route it wrong.
+        if plan.change_script.is_none() {
+            return Err(TxError::MissingChangeScript);
+        }
+        for (index, utxo) in plan.leading.iter().enumerate() {
+            if plan.leading[..index]
+                .iter()
+                .any(|earlier| earlier.txid == utxo.txid && earlier.vout == utxo.vout)
+            {
+                return Err(TxError::DuplicateUtxo {
+                    txid: utxo.txid.to_display_hex(),
+                    vout: utxo.vout,
+                });
+            }
+        }
+    }
+
+    // Selection, or its equivalent when the leading inputs already cover
+    // everything. `fee` and `change` come out of exactly one of the branches,
+    // and conservation below re-checks whichever produced them.
+    let (selected, fee, change) = if leading_total >= required && plan.value_bearing_leading {
+        // The leading inputs over-cover the declared outlay, so no P2PKH input
+        // is needed — the miner fee and the change both come from the excess.
+        // Mixing in selection here would mean two fee computations; a caller
+        // whose excess cannot cover the fee is told exactly that instead.
+        let excess = leading_total - required;
+        let fee = estimate_fee(
+            plan.leading.len() as u64,
+            plan.fee_output_count,
+            plan.fee_per_kb,
+            true,
+        );
+        check_fee_ceiling(fee)?;
+        if excess < fee {
+            return Err(TxError::InsufficientFunds {
+                required: required.checked_add(fee).ok_or(TxError::ValueOverflow)?,
+                available: leading_total,
+            });
+        }
+        let change = excess - fee;
+        // The same dust rule as coin selection: change not worth an output
+        // becomes fee, and conservation accounts for it as fee.
+        if change <= DUST_THRESHOLD {
+            (Vec::new(), fee + change, 0)
+        } else {
+            (Vec::new(), fee, change)
+        }
+    } else {
+        // An identity-funded plan that is short and has no P2PKH funding to
+        // fall back on: answer with the identity's real holdings, not
+        // selection's `available: 0`.
+        if plan.value_bearing_leading && plan.funding.is_empty() {
+            let fee = estimate_fee(
+                plan.leading.len() as u64,
+                plan.fee_output_count,
+                plan.fee_per_kb,
+                true,
+            );
+            return Err(TxError::InsufficientFunds {
+                required: required.checked_add(fee).ok_or(TxError::ValueOverflow)?,
+                available: leading_total,
+            });
+        }
+        let selection = select_utxos(
+            plan.funding,
+            required - leading_total,
+            plan.fee_output_count,
+            plan.fee_per_kb,
+            // Every output here is a CryptoCondition, which the fee heuristic
+            // sizes at 200 bytes rather than 34.
+            true,
+        )?;
+        (selection.selected, selection.fee, selection.change)
+    };
 
     let mut outputs = plan.outputs;
-    if selection.change > 0 {
+    if change > 0 {
         outputs.push(TxOut {
-            value: selection.change,
-            script_pubkey: plan.change_address.p2pkh_script_pubkey()?,
+            value: change,
+            script_pubkey: match &plan.change_script {
+                Some(script) => script.clone(),
+                None => plan.change_address.p2pkh_script_pubkey()?,
+            },
         });
     }
 
     let inputs: Vec<Utxo> = plan
         .leading
         .iter()
-        .chain(selection.selected.iter())
+        .chain(selected.iter())
         .cloned()
         .collect();
 
@@ -113,11 +221,13 @@ pub(crate) fn assemble(
     };
 
     // Exact-integer conservation: inputs − outputs must be the miner fee plus
-    // the declared burn, and nothing else.
+    // the declared burn, and nothing else. This is the backstop for BOTH
+    // branches above — a slip in either fee computation fails here rather than
+    // signing a transaction that pays the difference to a miner.
     let inputs_total: u64 = inputs.iter().map(|u| u.satoshis.to_sat()).sum();
     let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
-    let expected = selection.fee + plan.burn.to_sat();
+    let expected = fee + plan.burn.to_sat();
     if actual != i128::from(expected) {
         return Err(TxError::ValueNotConserved {
             inputs: inputs_total,
@@ -140,7 +250,7 @@ pub(crate) fn assemble(
         hex: hex::encode(&raw),
         txid: txid_display(&tx.txid()?),
         fee: Amount::from_sat(expected),
-        change: Amount::from_sat(selection.change),
+        change: Amount::from_sat(change),
         inputs_used: inputs.iter().map(|utxo| (utxo.txid, utxo.vout)).collect(),
     })
 }

@@ -87,6 +87,94 @@ pub fn send(
     Ok(signed.into())
 }
 
+/// Pay from funds a VerusID holds.
+///
+/// The identity’s pay-to-identity outputs fund the payment; `keys` are its
+/// current primary addresses, enough to meet its `minsigs`, and the surplus
+/// returns to the identity. This is the everyday shape of money on Verus —
+/// funds live under an identity, not under a bare key — and it is a different
+/// signature from a P2PKH spend: each input carries a fulfillment, the same
+/// construction an identity update uses.
+///
+/// The primary addresses are read from the chain and checked against `keys`
+/// before signing, because signing with a stale key builds cleanly and then
+/// fails script verification with a message that names nothing.
+///
+/// The check is point-in-time: an identity whose keys rotate or which is
+/// revoked between this read and the broadcast produces a rejected
+/// transaction, not a loss — the same window every offline builder has.
+pub fn send_from_identity(
+    reader: &impl ChainReader,
+    broadcaster: &impl Broadcaster,
+    keys: &[&PrivateKey],
+    identity: &str,
+    to: &str,
+    amount: Amount,
+) -> Result<Sent, FlowError> {
+    let to: Address = to.parse()?;
+    let record = reader
+        .identity(identity)
+        .map_err(|_| FlowError::NoSuchIdentity(identity.to_string()))?;
+
+    // Refuse everything the chain would refuse later with a message that
+    // names nothing: a revoked identity cannot spend, a key the identity does
+    // not list cannot sign, and fewer keys than `minimumsignatures` cannot
+    // meet the condition. The raw identity object carries all three facts.
+    if record.is_revoked() {
+        return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
+    }
+    let primaries: Vec<String> = record.identity["primaryaddresses"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for key in keys {
+        let address = key.address().to_string();
+        if !primaries.contains(&address) {
+            return Err(FlowError::Tx(verus_tx::TxError::NotAPrimaryAddress {
+                address,
+            }));
+        }
+    }
+    // Counted by DISTINCT address: the same key twice satisfies nothing, and
+    // would otherwise sail through to the nameless on-chain failure this whole
+    // precheck exists to prevent.
+    let mut distinct: Vec<String> = keys.iter().map(|k| k.address().to_string()).collect();
+    distinct.sort();
+    distinct.dedup();
+    let min_sigs = record.identity["minimumsignatures"].as_u64().unwrap_or(1);
+    if (distinct.len() as u64) < min_sigs {
+        return Err(FlowError::Tx(verus_tx::TxError::NotEnoughSigners {
+            supplied: distinct.len(),
+            required: u32::try_from(min_sigs).unwrap_or(u32::MAX),
+        }));
+    }
+
+    let identity_address: Address = record
+        .identity_address
+        .parse()
+        .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
+    let utxos = funding::identity_held(reader, &record.identity_address)?;
+    let tip = reader.block_count()?;
+
+    let recipients = [Recipient {
+        address: to,
+        satoshis: amount,
+    }];
+    let params = verus_tx::IdentitySpendParams::new(
+        identity_address.hash(),
+        &utxos,
+        &recipients,
+        Expiry::within(tip, DEFAULT_EXPIRY_BLOCKS),
+    );
+    let signed = verus_tx::build_identity_spend(keys, &params)?;
+    broadcast(broadcaster, &signed.hex, &signed.txid)?;
+    Ok(signed.into())
+}
+
 /// Pay a token to one address.
 ///
 /// The token moves as a reserve output while the miner fee is still paid in

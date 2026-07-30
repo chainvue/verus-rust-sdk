@@ -158,6 +158,13 @@ pub enum TxError {
         satoshis: u64,
     },
 
+    /// A value-bearing leading input without an explicit change script.
+    ///
+    /// Change from identity-held funding must go somewhere deliberate; falling
+    /// back to P2PKH change would silently move identity funds to a bare key.
+    #[error("value-bearing leading inputs require an explicit change script")]
+    MissingChangeScript,
+
     /// A decimal amount that is not one, or has more precision than a satoshi.
     #[error("{0:?} is not a valid amount of coins")]
     InvalidAmount(String),

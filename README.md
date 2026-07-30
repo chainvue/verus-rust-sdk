@@ -271,7 +271,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
 | Transparent P2SH multisig, SIGHASH variants, identity timelocks | ✅ byte-verified, not broadcast |
-| Mint new supply | ❌ blocked on identity-held funding — see [`PROVEN.md`](./PROVEN.md) |
+| Mint new supply, spend from a VerusID | ✅ **on chain** — spent-by-identity, per consensus |
 | wasm bindings | ⬜ next |
 | PBaaS / cross-chain export | ⬜ needs a second system |
 
