@@ -79,16 +79,16 @@ pub mod shielded;
 pub mod testing;
 
 pub use broadcast::broadcast;
-pub use convert::{burn, convert, estimate, plan_conversion, ConversionPlan};
+pub use convert::{burn, convert, estimate, mint, plan_conversion, ConversionPlan};
 pub use error::FlowError;
-pub use funding::{spendable, Funding};
+pub use funding::{identity_held, spendable, Funding};
 pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use offer::{inspect, Demand, OfferTerms, Taken, Taking};
-pub use send::{prepare_send, send, send_token, Sent};
+pub use send::{prepare_send, send, send_from_identity, send_token, Sent};
 
 #[cfg(feature = "shielded")]
 pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};

@@ -391,6 +391,8 @@ pub fn build_name_commitment(
             burn: Amount::ZERO,
             fee_output_count: 1,
             change_address: &params.change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
@@ -869,6 +871,8 @@ pub fn build_identity_registration(
             // different transaction.
             fee_output_count: 3 + referrers.len() as u64,
             change_address: &params.change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },

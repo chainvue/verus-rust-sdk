@@ -193,6 +193,8 @@ pub fn build_identity_update(
             // The identity output plus a change slot.
             fee_output_count: 2,
             change_address: &params.change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },

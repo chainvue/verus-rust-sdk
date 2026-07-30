@@ -56,6 +56,7 @@ mod error;
 mod expiry;
 pub mod fee;
 pub mod identity;
+pub mod identity_spend;
 pub mod multisig;
 pub mod offer;
 pub mod partial;
@@ -81,6 +82,7 @@ pub use fee::{estimate_fee, select_utxos, Selection};
 pub use identity::{
     Identity, Timelock, EVAL_IDENTITY_PRIMARY, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
 };
+pub use identity_spend::{build_identity_spend, IdentitySpendParams};
 pub use partial::{InputKind, PartialTransaction};
 pub use register::{
     build_identity_registration, build_name_commitment, identity_id, CommitmentParams,

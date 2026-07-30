@@ -813,6 +813,22 @@ pub struct ConversionParams<'a> {
     /// token left out is a token burned — the same rule as a sub-identity
     /// registration.
     pub token_funding: &'a [Utxo],
+    /// Outputs held by the minted currency's controlling identity, for a mint.
+    ///
+    /// Consensus requires that a mint be *spent by* the currency id: at least
+    /// one input of the transaction must spend a CryptoCondition output whose
+    /// scriptSig fulfillment carries the identity's primary-key signatures
+    /// meeting its `minsigs` (`CheckIdentitySpends`, `pbaas.cpp`). A P2PKH
+    /// input can never satisfy that — its scriptSig has no fulfillment — so a
+    /// mint funded only from plain coins builds, signs, and is then rejected
+    /// with nothing but `bad-txns-failed-precheck`. Discovered the hard way;
+    /// pinned from the daemon's source afterwards.
+    ///
+    /// Each output here must pay the controlling identity itself (the standard
+    /// pay-to-identity script), is spent whole, and the surplus returns **to
+    /// the identity**, not to the change address — money under an identity's
+    /// authority should not quietly migrate to a bare key.
+    pub identity_funding: &'a [Utxo],
     /// The chain's own currency, which decides whether the source is native.
     pub chain_currency: CurrencyId,
     /// Where change goes.
@@ -836,6 +852,7 @@ impl<'a> ConversionParams<'a> {
             transfer,
             utxos,
             token_funding: &[],
+            identity_funding: &[],
             chain_currency,
             change_address,
             expiry,
@@ -846,6 +863,12 @@ impl<'a> ConversionParams<'a> {
     /// Token inputs, for converting or burning a token.
     pub fn with_token_funding(mut self, token_funding: &'a [Utxo]) -> Self {
         self.token_funding = token_funding;
+        self
+    }
+
+    /// Identity-held inputs, for a mint. See [`ConversionParams::identity_funding`].
+    pub fn with_identity_funding(mut self, identity_funding: &'a [Utxo]) -> Self {
+        self.identity_funding = identity_funding;
         self
     }
 
@@ -876,8 +899,61 @@ pub fn build_conversion_transaction(
         script_pubkey: transfer.to_script()?,
     }];
 
-    // Token change, when the source is a token.
+    // A mint is authorised by WHAT IT SPENDS, so its input side is checked
+    // first — before the token accounting below could fail with a message
+    // about token balances when the real mistake is the mint's shape. See
+    // `ConversionParams::identity_funding`.
     let source_is_native = transfer.source == params.chain_currency;
+    let is_mint = matches!(transfer.kind, ConversionKind::Mint { .. });
+    if is_mint && !source_is_native {
+        // The daemon's own template names the SYSTEM currency in the source
+        // slot. A token source would route through the token-change accounting
+        // below, whose inputs a mint never spends — a signed transaction with
+        // an unbacked change output, rejected on chain.
+        return Err(TxError::InvalidConversion(
+            "a mint's transfer names the chain's own currency as its source".into(),
+        ));
+    }
+    if is_mint && params.identity_funding.is_empty() {
+        return Err(TxError::InvalidConversion(
+            "a mint must spend an output held by the currency's controlling identity; \
+             fund it with identity_funding, not plain coins"
+                .into(),
+        ));
+    }
+    if is_mint && !params.utxos.is_empty() {
+        // Mixing key-held coins into an identity-authorised spend is refused
+        // rather than half-supported: the identity covers the whole outlay on
+        // every proven path, and P2PKH surplus routed to the identity's change
+        // script would migrate plain-key money under the identity silently.
+        return Err(TxError::InvalidConversion(
+            "a mint is funded by the identity alone; do not supply P2PKH utxos".into(),
+        ));
+    }
+
+    if !params.identity_funding.is_empty() {
+        let ConversionKind::Mint { currency } = transfer.kind else {
+            // Checked up here with the other input-side refusals — below the
+            // token accounting, its message would be masked by a token-balance
+            // error that is not the caller's real mistake.
+            return Err(TxError::InvalidConversion(
+                "identity funding is only used for a mint".into(),
+            ));
+        };
+        let identity_script = crate::cc::identity_payment_script(currency.to_bytes())?;
+        for utxo in params.identity_funding {
+            if utxo.script_pubkey != identity_script {
+                return Err(TxError::InvalidConversion(format!(
+                    "identity funding {}:{} does not pay the controlling identity of the \
+                     currency being minted",
+                    utxo.txid.to_display_hex(),
+                    utxo.vout
+                )));
+            }
+        }
+    }
+
+    // Token change, when the source is a token.
     if !source_is_native {
         let mut held: u64 = 0;
         for utxo in params.token_funding {
@@ -928,16 +1004,31 @@ pub fn build_conversion_transaction(
     }
 
     let output_count = outputs.len() as u64 + 1;
+    let (leading, change_script) = if is_mint {
+        // Whatever the identity outputs carry beyond the fee returns to the
+        // identity itself, not to a bare key.
+        let ConversionKind::Mint { currency } = transfer.kind else {
+            unreachable!("is_mint checked above");
+        };
+        (
+            params.identity_funding,
+            Some(crate::cc::identity_payment_script(currency.to_bytes())?),
+        )
+    } else {
+        (params.token_funding, None)
+    };
     assemble(
         key,
         &[key],
         Assembly {
-            leading: params.token_funding,
+            leading,
             funding: params.utxos,
             outputs,
             burn: Amount::ZERO,
             fee_output_count: output_count,
             change_address: &params.change_address,
+            change_script,
+            value_bearing_leading: is_mint,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
         },
@@ -1148,5 +1239,177 @@ mod mint_destination_tests {
         )
         .unwrap();
         assert_eq!(converting.destination.auxiliary.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod mint_funding_tests {
+    use super::*;
+    use crate::cc::identity_payment_script;
+    use crate::Txid;
+    use verus_wire::TxV4;
+
+    const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
+
+    fn key() -> PrivateKey {
+        PrivateKey::from_wif(TEST_WIF).unwrap()
+    }
+
+    fn chain() -> CurrencyId {
+        CurrencyId::from_bytes([0x11; 20])
+    }
+
+    fn token() -> CurrencyId {
+        CurrencyId::from_bytes([0x22; 20])
+    }
+
+    fn mint_transfer() -> ReserveTransfer {
+        build_conversion(
+            chain(),
+            Amount::from_coins_str("500").unwrap(),
+            ConversionKind::Mint { currency: token() },
+            key().address(),
+            chain(),
+            Amount::from_sat(20_000),
+        )
+        .unwrap()
+    }
+
+    fn identity_held(satoshis: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout: 0,
+            satoshis: Amount::from_sat(satoshis),
+            script_pubkey: identity_payment_script(token().to_bytes()).unwrap(),
+        }
+    }
+
+    /// The whole mint transaction, built through the path callers take.
+    ///
+    /// Input 0 spends the identity-held output with a fulfillment; output 0
+    /// is the reserve transfer carrying only the fee; the surplus returns to
+    /// the identity, not to a bare key. This is the shape `CheckIdentitySpends`
+    /// accepts and a P2PKH-funded mint cannot produce.
+    #[test]
+    fn a_mint_spends_the_identity_and_returns_change_to_it() {
+        let transfer = mint_transfer();
+        let funding = [identity_held(10_00000000)];
+        let params = ConversionParams::new(&transfer, &[], chain(), key().address(), Expiry::Never)
+            .with_identity_funding(&funding);
+        let signed = build_conversion_transaction(&key(), &params).unwrap();
+
+        let tx = TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+        assert_eq!(tx.inputs.len(), 1, "only the identity output is spent");
+        assert_eq!(tx.outputs.len(), 2, "transfer plus identity change");
+
+        // Output 0 is the transfer itself, byte-identical to the encoder.
+        assert_eq!(tx.outputs[0].script_pubkey, transfer.to_script().unwrap());
+        assert_eq!(tx.outputs[0].value, 20_000, "a mint carries only its fee");
+
+        // Change returns to the identity's own script.
+        assert_eq!(
+            tx.outputs[1].script_pubkey,
+            identity_payment_script(token().to_bytes()).unwrap()
+        );
+
+        // Exact conservation: what the identity held minus what the outputs
+        // carry is the miner fee, nothing else.
+        let outputs: u64 = tx.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(10_00000000 - outputs, signed.fee.to_sat());
+
+        // The input is a fulfillment stating SIGHASH_ALL for itself — the two
+        // properties `CheckIdentitySpends` requires of the scriptSig.
+        let data = match tx.inputs[0].script_sig.as_slice() {
+            [0x4c, _, rest @ ..] => rest,
+            [op, rest @ ..] if *op < 0x4c => rest,
+            other => panic!("not a single push: {other:02x?}"),
+        };
+        assert_eq!(data[0], 1, "SmartTransactionSignatures v1");
+        assert_eq!(data[1], 0x01, "SIGHASH_ALL, stated inline");
+    }
+
+    /// A mint funded only from plain coins is refused before signing.
+    ///
+    /// It would build, sign, and be rejected with nothing but
+    /// `bad-txns-failed-precheck` — which is exactly how this requirement was
+    /// discovered. The refusal names the cure.
+    #[test]
+    fn a_mint_without_identity_funding_is_refused() {
+        let transfer = mint_transfer();
+        let plain = [Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout: 1,
+            satoshis: Amount::from_sat(10_00000000),
+            script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
+        }];
+        let params =
+            ConversionParams::new(&transfer, &plain, chain(), key().address(), Expiry::Never);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason))
+                if reason.contains("controlling identity")
+        ));
+    }
+
+    /// Identity funding on anything but a mint is refused — no other flow is
+    /// proven to need it, and accepting it silently would spend identity funds
+    /// where plain coins were meant.
+    #[test]
+    fn identity_funding_on_a_conversion_is_refused() {
+        let transfer = build_conversion(
+            chain(),
+            Amount::from_sat(1_00000000),
+            ConversionKind::IntoFractional {
+                fractional: token(),
+            },
+            key().address(),
+            chain(),
+            Amount::from_sat(20_000),
+        )
+        .unwrap();
+        let funding = [identity_held(10_00000000)];
+        let params = ConversionParams::new(&transfer, &[], chain(), key().address(), Expiry::Never)
+            .with_identity_funding(&funding);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason)) if reason.contains("only used for a mint")
+        ));
+    }
+
+    /// Funding that does not pay the minted currency's controlling identity is
+    /// refused — the wrong identity's money must not be spendable by a typo.
+    #[test]
+    fn identity_funding_for_the_wrong_identity_is_refused() {
+        let transfer = mint_transfer();
+        let mut wrong = identity_held(10_00000000);
+        wrong.script_pubkey = identity_payment_script([0x99; 20]).unwrap();
+        let funding = [wrong];
+        let params = ConversionParams::new(&transfer, &[], chain(), key().address(), Expiry::Never)
+            .with_identity_funding(&funding);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason))
+                if reason.contains("does not pay the controlling identity")
+        ));
+    }
+
+    /// The identity must cover the transfer fee plus the miner fee; short by
+    /// any amount is a named refusal, not a transaction.
+    #[test]
+    fn a_mint_the_identity_cannot_pay_for_is_refused() {
+        let transfer = mint_transfer();
+        let funding = [identity_held(20_000)]; // exactly the transfer fee, nothing for the miner
+        let params = ConversionParams::new(&transfer, &[], chain(), key().address(), Expiry::Never)
+            .with_identity_funding(&funding);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InsufficientFunds { .. })
+        ));
     }
 }

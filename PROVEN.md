@@ -17,6 +17,7 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | Pay a VerusID (CC output, no eval code) | `5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e` | 1166385 |
 | `flows::send` through the public node | `50beae6e5be68a6687de3db3cd8fd9d5f0c7c52ee8eb5452bc0820a9afb98108` | 1167607 |
 | Facade acceptance — one dependency line, connect → balance → send | `4d061de95f2ef669dd6789efee9cc3a904d60ea12a4eb00d695247225f0bf8a8` | 1168821 |
+| **Spend from a VerusID** — fulfillment-signed, change back to the identity | `9b23824a9b93439f540bf188a0078f73ba58b252d4f00e4d5538c579b3e85519` | 1168907 |
 
 ## VerusID lifecycle
 
@@ -62,6 +63,7 @@ transaction, so it has no row here.
 | Fractional basket launched → `rustcur1168400@` (`iRRhsKoiBuMoyANFcQ2NMLJXDgfSHjgffS`) | `d555e314c7f63a7e5f3dc70012fa47eee88979dc72937a667cb7b97389405727` | 1168441 |
 | Preconvert into it, 5 VRSCTEST | `8b2c734cb92dd5ad415b9d3f6a6d2844ccdddd4e9b59b6e440d6390e10ca571e` | 1168452 |
 | Centralized token launched → `rusttok1168500@` (`iKzX5FyzKzYxtcWKYveYKVfrz2LNXLj4xM`) | `586307ced86f12846226cf942148c7c28f20a37b4e7b18df3b201135bd5eb057` | 1168583 |
+| **Mint** — 500 new supply, spent-by-identity, delivered on import | `b4176eee19a0a291ac822b4a4a5e4656792bea7a2addd9308f5162294028038b` | 1168909 |
 
 The basket's launch completed at block 1168499 — a protocol event, not an SDK
 transaction — paying out the full 1000 supply to the preconverting address.
@@ -82,11 +84,6 @@ acceptance:
 
 ## Known not working
 
-- **Mint** — rejected with `bad-txns-failed-precheck`. The daemon mints by
-  spending an output the controlling *identity* holds; funding from P2PKH
-  coins owned by that identity's primary key is not equivalent. Blocked on
-  identity-held funding in `assemble`, which refuses value-carrying identity
-  inputs by design today.
 - **Fractional-parent sub-IDs** — needs a `proofprotocol` 1 token parent's
   tokens to pay the fee; nothing reachable holds any.
 - **Cross-chain export / PBaaS launch** — needs a second system to test

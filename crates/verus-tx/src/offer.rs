@@ -212,6 +212,8 @@ pub fn fund_offer(
             burn: Amount::ZERO,
             fee_output_count: 2,
             change_address,
+            change_script: None,
+            value_bearing_leading: false,
             expiry,
             fee_per_kb,
         },

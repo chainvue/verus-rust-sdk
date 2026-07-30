@@ -66,18 +66,7 @@ impl Funding {
 pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, FlowError> {
     let tip = reader.block_count()?;
     let found = reader.address_utxos(&[address])?;
-
-    // Only an output that could still be immature is worth a round trip.
-    let mut coinbase_heights = Vec::new();
-    for utxo in &found {
-        if utxo.confirmations(tip) >= COINBASE_MATURITY {
-            continue;
-        }
-        if is_coinbase(reader, &utxo.utxo.txid.to_display_hex())? {
-            coinbase_heights.push(utxo.height);
-        }
-    }
-
+    let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
     let mature = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
     let mature_outpoints: Vec<_> = mature.iter().map(|u| (u.txid, u.vout)).collect();
 
@@ -111,6 +100,27 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
         immature,
         other: non_native,
     })
+}
+
+/// The heights of the coinbase outputs in `found` that could still be
+/// immature. Only an output younger than [`COINBASE_MATURITY`] is worth the
+/// round trip — shared by [`spendable`] and [`identity_held`] so their
+/// maturity rules cannot drift apart.
+fn probe_coinbase_heights(
+    reader: &impl ChainReader,
+    found: &[AddressUtxo],
+    tip: u32,
+) -> Result<Vec<u32>, FlowError> {
+    let mut heights = Vec::new();
+    for utxo in found {
+        if utxo.confirmations(tip) >= COINBASE_MATURITY {
+            continue;
+        }
+        if is_coinbase(reader, &utxo.utxo.txid.to_display_hex())? {
+            heights.push(utxo.height);
+        }
+    }
+    Ok(heights)
 }
 
 /// `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`, and nothing else.
@@ -152,6 +162,36 @@ pub fn require(funding: &Funding, needed: Amount, address: &str) -> Result<(), F
         address: address.to_string(),
         utxos: funding.utxos.len(),
     })
+}
+
+/// Gather the outputs a VerusID holds — the standard pay-to-identity outputs
+/// for `identity`, mature and ready to fund an identity-authorised spend or a
+/// mint.
+///
+/// `identity` is the `i` address. Only outputs whose script is *exactly* the
+/// identity's payment script are returned: the identity's own identity output
+/// (the one carrying its definition), tokens it holds, and anything else
+/// CryptoCondition are all excluded, because the identity-funded builders
+/// refuse them and rightly so.
+pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Utxo>, FlowError> {
+    let address: verus_keys::Address = identity
+        .parse()
+        .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
+    let expected = verus_tx::identity_payment_script(address.hash())?;
+    let tip = reader.block_count()?;
+    let found = reader.address_utxos(&[identity])?;
+
+    // Coinbase maturity applies here exactly as in `spendable` — an identity
+    // that stakes is paid in coinbase outputs carrying this very script, and
+    // an identity spend consumes EVERY output it is handed, so one immature
+    // output would poison the whole spend for a hundred blocks with an error
+    // that names nothing.
+    let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
+
+    Ok(verus_rpc::spendable_at(&found, tip, &coinbase_heights)
+        .into_iter()
+        .filter(|utxo| utxo.script_pubkey == expected)
+        .collect())
 }
 
 #[cfg(test)]
