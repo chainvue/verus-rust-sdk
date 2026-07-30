@@ -31,6 +31,16 @@ use crate::error::LightError;
 /// Set in a frame's flag byte to mark it as trailers rather than a message.
 const FLAG_TRAILERS: u8 = 0x80;
 
+/// Set in a frame's flag byte to mark its payload as compressed.
+///
+/// This client advertises no `grpc-accept-encoding` and never sends
+/// `grpc-encoding`, so a compliant server never sets this bit. A server that
+/// sets it anyway is not one this crate can talk to: handing the compressed
+/// bytes to [`crate::proto`] as if they were plaintext protobuf would not
+/// panic (the reader is bounds-checked) but would silently decode garbage
+/// fields instead of the real message, which is worse than an error.
+const FLAG_COMPRESSED: u8 = 0x01;
+
 /// The content type that selects grpc-web with protobuf payloads.
 pub(crate) const CONTENT_TYPE: &str = "application/grpc-web+proto";
 
@@ -106,7 +116,13 @@ pub(crate) fn decode_body(body: &[u8]) -> Result<Body<'_>, LightError> {
     let mut offset = 0;
 
     while offset < body.len() {
-        if offset + 5 > body.len() {
+        // `offset < body.len()` here, so `body.len() - offset` cannot
+        // underflow. Written this way rather than `offset + 5 > body.len()`
+        // for the same reason as the frame-length check below: a naive
+        // addition can overflow `usize`, which on wasm32 (an explicitly
+        // supported target — see `lib.rs`, `transport.rs`) is only 32 bits
+        // wide and far easier to reach than on a 64-bit host.
+        if 5 > body.len() - offset {
             return Err(LightError::Framing(format!(
                 "{} trailing bytes: not enough for a frame header",
                 body.len() - offset
@@ -122,7 +138,13 @@ pub(crate) fn decode_body(body: &[u8]) -> Result<Body<'_>, LightError> {
             LightError::Framing("frame length does not fit in this platform".into())
         })?;
         offset += 5;
-        if offset + len > body.len() {
+        // Same overflow hazard as the header check above: `len` is a 32-bit
+        // value the server chose, up to 4 GiB, and `offset + len` can wrap a
+        // 32-bit `usize` well before it reaches anything close to
+        // `body.len()`. Comparing against `body.len() - offset` (safe here
+        // because `offset <= body.len()` after the header check just above)
+        // cannot overflow.
+        if len > body.len() - offset {
             return Err(LightError::Framing(format!(
                 "frame claims {len} bytes but only {} remain",
                 body.len() - offset
@@ -132,11 +154,26 @@ pub(crate) fn decode_body(body: &[u8]) -> Result<Body<'_>, LightError> {
         offset += len;
 
         if flags & FLAG_TRAILERS == 0 {
+            if flags & FLAG_COMPRESSED != 0 {
+                return Err(LightError::Framing(
+                    "message frame is compressed, and this client does not implement grpc compression"
+                        .into(),
+                ));
+            }
             messages.push(payload);
         } else {
             let text = std::str::from_utf8(payload)
                 .map_err(|_| LightError::Framing("trailer frame is not valid UTF-8".into()))?;
-            status = parse_status(text);
+            // A response can carry more than one trailer frame, and only one
+            // of them needs to mention `grpc-status` for the call to have
+            // failed. Overwriting unconditionally here means a later trailer
+            // frame that carries no status — metadata-only, or from a proxy
+            // that appends its own — erases an error status the server
+            // already reported, which is exactly the silent-empty-success
+            // failure mode this module's docs warn about. `Option::or` keeps
+            // whatever this frame found, falling back to what an earlier
+            // frame found only when this one found nothing.
+            status = parse_status(text).or(status);
         }
     }
 

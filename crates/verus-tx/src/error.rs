@@ -10,6 +10,10 @@ use verus_wire::WireError;
 /// plausible-but-wrong transaction, which is strictly worse than an error: the
 /// caller may sign and broadcast it.
 #[derive(Debug, Error)]
+/// `#[non_exhaustive]`: this crate refuses new things as it learns what the
+/// chain refuses, so variants get added routinely. A downstream `match` must
+/// carry a wildcard arm rather than break on every such discovery.
+#[non_exhaustive]
 pub enum TxError {
     /// The selected UTXOs cannot cover the outputs plus the fee.
     #[error("insufficient funds: need {required} satoshis, have {available}")]
@@ -262,6 +266,26 @@ pub enum TxError {
         entries: usize,
         /// Levels the chain pays.
         levels: u32,
+    },
+
+    /// `idreferrallevels` far beyond anything a real chain configures.
+    ///
+    /// It is node-sourced chain policy, like the registration fee it
+    /// multiplies against in [`crate::register::registration_fees`] — this
+    /// crate cannot confirm it, only bound it. A value this large has no
+    /// legitimate basis (VRSCTEST pays out 3) and, left unbounded, lets a
+    /// caller-uncheckable multiplier reach the point where the fee split
+    /// overflows: `u32::MAX` levels against a 100-coin fee panics in a debug
+    /// build and silently returns an outlay of 14.10065407 coins in release,
+    /// because plain `u64` multiplication wraps rather than erroring.
+    #[error(
+        "referral levels {levels} exceeds the sane ceiling of {max}; no real chain approaches this"
+    )]
+    ImplausibleReferralLevels {
+        /// What was supplied.
+        levels: u32,
+        /// The ceiling it exceeded.
+        max: u32,
     },
 
     /// A parent currency whose fee output this crate does not build.

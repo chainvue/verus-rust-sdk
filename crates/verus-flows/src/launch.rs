@@ -40,6 +40,7 @@ use verus_tx::{Amount, Expiry, Utxo, DEFAULT_EXPIRY_BLOCKS};
 use crate::broadcast::broadcast;
 use crate::error::FlowError;
 use crate::funding;
+use crate::identity::check_trusted_node_fee;
 
 /// A currency launched and broadcast.
 #[derive(Clone, Debug)]
@@ -167,7 +168,12 @@ pub fn launch_currency(
                 definition.parent.to_bytes(),
             )
             .to_string();
-            reader.currency(&parent)?.currency_registration_fee
+            let reported = reader.currency(&parent)?.currency_registration_fee;
+            // H4: node-supplied and BURNED outright — see
+            // `check_trusted_node_fee`. A caller who pins the fee explicitly
+            // has taken responsibility for it, so it skips this bar and is
+            // checked against `MAX_DECLARED_BURN` instead, later at assembly.
+            check_trusted_node_fee("currency launch", reported)?
         }
     };
     if launch_fee == Amount::ZERO {

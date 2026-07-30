@@ -12,13 +12,36 @@ use crate::transport::RequestBody;
 /// Private on purpose: this is the only way a [`RequestBody`] comes into
 /// existence, so the set of requests this crate can emit is the set of
 /// [`Method`] variants.
-pub(crate) fn request(method: Method, params: serde_json::Value) -> Result<RequestBody, RpcError> {
-    let body = serde_json::json!({
-        "jsonrpc": "1.0",
-        "id": "verus-rust-sdk",
-        "method": method.name(),
-        "params": params,
-    });
+///
+/// Generic over the params rather than fixed to `serde_json::Value`: a
+/// `serde_json::Value::Number` is backed by `f64` for anything with a decimal
+/// point, so building one from money loses precision before this function is
+/// even reached. Serializing `params` directly — with `serde_json`'s
+/// `raw_value` feature, a `RawValue` field serializes as its original token
+/// text at any nesting depth — lets a caller such as
+/// [`crate::client::RpcClient::estimate_conversion`] hand over an exact
+/// decimal amount that never becomes a `Value` at all. Everything else keeps
+/// using plain `serde_json::json!`, which also implements `Serialize`.
+pub(crate) fn request<P: serde::Serialize>(
+    method: Method,
+    params: P,
+) -> Result<RequestBody, RpcError> {
+    // Named distinctly from the reply-side `Envelope` below: this one is
+    // outgoing and generic, that one is incoming and borrows from the reply
+    // text.
+    #[derive(serde::Serialize)]
+    struct RequestEnvelope<P> {
+        jsonrpc: &'static str,
+        id: &'static str,
+        method: &'static str,
+        params: P,
+    }
+    let body = RequestEnvelope {
+        jsonrpc: "1.0",
+        id: "verus-rust-sdk",
+        method: method.name(),
+        params,
+    };
     serde_json::to_string(&body)
         .map(RequestBody::new)
         .map_err(|e| RpcError::Malformed(format!("could not build request: {e}")))

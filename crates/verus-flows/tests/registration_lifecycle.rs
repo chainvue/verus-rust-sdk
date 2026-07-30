@@ -12,6 +12,7 @@ use verus_flows::{
 use verus_keys::PrivateKey;
 use verus_rpc::{CurrencyPolicy, IdentityRecord};
 use verus_tx::{Amount, Txid};
+use verus_wire::TxV4;
 
 /// The public test key used across this repository. It holds nothing.
 const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
@@ -318,4 +319,218 @@ fn a_different_salt_produces_a_different_commitment() {
     )
     .unwrap();
     assert_ne!(first.commitment_hex, second.commitment_hex);
+}
+
+/// H2: a referred registration used to fail every single time. `Pending`
+/// carried the referrer in the reservation but never carried
+/// `idreferrallevels` through to step 2, so `build_identity_registration`
+/// always saw `referral_levels == 0` and refused with `ReferralChainTooLong`
+/// — after the commitment fee was already spent. This runs the referred path
+/// end to end and checks the daemon's own fee split actually landed in the
+/// broadcast transaction, not just that the call returned `Ok`.
+#[test]
+fn a_referred_registration_completes_and_pays_the_referrer() {
+    let chain = funded_chain(1_000);
+    // Any address decodes to the 20 bytes `referral_id` needs; this test does
+    // not need the referrer to be a real, resolvable identity.
+    let referrer = "RJUgxvDnDLsRGCXNKDK56Rxngzh6m25J6F";
+
+    let options = RegistrationOptions {
+        referral: Some(referrer.to_string()),
+        ..Default::default()
+    };
+    let pending =
+        prepare_registration_with_salt(&chain, &key(), "referred", &options, SALT).unwrap();
+    // The level count came from chain policy, not a default the caller has to
+    // supply — this is exactly the field H2 adds.
+    assert_eq!(pending.referral_levels, 3);
+
+    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let ready = match pending.poll(&chain).unwrap() {
+        CommitmentStatus::Ready(ready) => ready,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+
+    // Before the fix this returned `Err(FlowError::Tx(TxError::ReferralChainTooLong { .. }))`.
+    let registered = ready.complete(&chain, &chain, &key()).unwrap();
+    assert_eq!(registered.name, "referred");
+
+    // The daemon's own arithmetic for this policy: 100 VRSC over 3 levels
+    // pays the referrer 20 and the registrant's outlay is 80 (see
+    // `verus_tx::register::registration_fees`'s doc comment).
+    let fees = verus_tx::register::registration_fees(Amount::from_sat(100_00000000), 3, true);
+    assert_eq!(fees.referral_amount, Amount::from_sat(20_00000000));
+
+    // Confirm the split actually applied to the broadcast bytes, not merely
+    // to some fee arithmetic computed and discarded: the registration
+    // transaction must carry an output paying the referrer exactly that much.
+    let broadcasts = chain.broadcasts();
+    assert_eq!(broadcasts.len(), 2, "commitment, then registration");
+    let tx = TxV4::deserialize(&hex::decode(&broadcasts[1]).unwrap()).unwrap();
+    assert!(
+        tx.outputs
+            .iter()
+            .any(|out| out.value == fees.referral_amount.to_sat()),
+        "no output paid the referrer's {} satoshis",
+        fees.referral_amount.to_sat()
+    );
+}
+
+/// A `Pending` persisted by a version of this crate before H2 added
+/// `referral_levels` must still load. `#[serde(default)]` is what makes that
+/// true — this pins it against a regression that would strand every
+/// in-flight registration serialized before the upgrade.
+#[test]
+fn a_pending_persisted_before_referral_levels_existed_still_deserializes() {
+    let chain = funded_chain(1_000);
+    let pending =
+        prepare_registration_with_salt(&chain, &key(), "oldformat", &options(), SALT).unwrap();
+    let saved = serde_json::to_string(&pending).unwrap();
+
+    // Simulate a JSON blob written by the pre-H2 version: strip the field
+    // this fix added, exactly as an old file on disk would be missing it.
+    let mut value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("referral_levels")
+        .expect("the field under test must actually be present before it is removed");
+    let without_the_field = serde_json::to_string(&value).unwrap();
+
+    let restored: Pending<verus_flows::AwaitingCommitment> =
+        serde_json::from_str(&without_the_field).unwrap();
+    assert_eq!(restored.referral_levels, 0);
+    assert_eq!(restored.reservation.salt, SALT);
+}
+
+/// H4: the registration fee is BURNED, and by default is read straight from
+/// whatever the node reports — exactly the value a hostile or misconfigured
+/// node controls. A node claiming a fee far above anything real must be
+/// refused by name, before the commitment is even built.
+#[test]
+fn an_absurd_node_reported_registration_fee_is_refused() {
+    let mut lying = vrsctest_policy();
+    lying.id_registration_fee = Amount::from_coins_str("999").unwrap();
+    let chain =
+        ScriptedReader::new(1_000)
+            .with_policy(lying)
+            .with_utxo(&address(), 500, 2000_00000000);
+
+    match prepare_registration_with_salt(&chain, &key(), "absurdfee", &options(), SALT) {
+        Err(FlowError::ImplausibleNodeFee {
+            operation,
+            reported,
+            ..
+        }) => {
+            assert_eq!(operation, "identity registration");
+            assert_eq!(reported, Amount::from_coins_str("999").unwrap());
+        }
+        other => panic!("expected ImplausibleNodeFee, got {other:?}"),
+    }
+    assert!(chain.broadcasts().is_empty());
+}
+
+/// The escape hatch: a caller who has independently confirmed the same
+/// absurd-looking fee is genuinely correct can still get it signed, by
+/// pinning it. Pinning is what makes the H4 bar bypassable at all — proving
+/// it actually works is as important as proving the bar refuses by default.
+#[test]
+fn a_pinned_fee_bypasses_the_node_trust_bar() {
+    let mut lying = vrsctest_policy();
+    lying.id_registration_fee = Amount::from_coins_str("999").unwrap();
+    let chain =
+        ScriptedReader::new(1_000)
+            .with_policy(lying)
+            .with_utxo(&address(), 500, 2000_00000000);
+
+    let options = RegistrationOptions {
+        pin_fee: Some(Amount::from_coins_str("999").unwrap()),
+        ..Default::default()
+    };
+    let pending =
+        prepare_registration_with_salt(&chain, &key(), "pinnedabsurd", &options, SALT).unwrap();
+    assert_eq!(
+        pending.registration_fee,
+        Amount::from_coins_str("999").unwrap()
+    );
+}
+
+/// The bar must not move for anything a real chain actually charges — this is
+/// `the_fee_is_read_from_chain_policy` and `a_caller_can_pin_the_fee_against_a_lying_node`
+/// re-asserted with H4's bar in place, so a regression that tightened it too
+/// far would show up here rather than only in the adversarial tests.
+#[test]
+fn normal_registration_fees_are_unaffected_by_the_node_trust_bar() {
+    let chain = funded_chain(1_000);
+    let pending =
+        prepare_registration_with_salt(&chain, &key(), "normalfee", &options(), SALT).unwrap();
+    assert_eq!(
+        pending.registration_fee,
+        Amount::from_coins_str("100").unwrap()
+    );
+}
+
+/// Referral policy is node-supplied, and it decides the fee split step two
+/// computes — so an implausible value must be refused BEFORE the commitment
+/// is broadcast. Checked only in `complete()`, the same value costs the
+/// caller a commitment fee and leaves them with a salt they can never use.
+#[test]
+fn an_implausible_referral_policy_is_refused_before_anything_is_broadcast() {
+    let absurd = CurrencyPolicy {
+        id_referral_levels: 10_000,
+        ..vrsctest_policy()
+    };
+    let chain = funded_chain(1_000).with_policy(absurd);
+    let options = RegistrationOptions {
+        referral: Some("RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP".to_string()),
+        ..RegistrationOptions::default()
+    };
+
+    match prepare_registration_with_salt(&chain, &key(), "reftest", &options, SALT) {
+        Err(FlowError::ImplausibleReferralLevels { reported, .. }) => {
+            assert_eq!(reported, 10_000);
+        }
+        other => panic!("expected ImplausibleReferralLevels, got {other:?}"),
+    }
+    assert!(
+        chain.broadcasts().is_empty(),
+        "nothing may be broadcast when the policy is refused"
+    );
+}
+
+/// …but the levels are irrelevant when no referral is asked for, so the same
+/// absurd policy must not block an ordinary registration.
+#[test]
+fn an_implausible_referral_policy_does_not_block_an_unreferred_registration() {
+    let absurd = CurrencyPolicy {
+        id_referral_levels: 10_000,
+        ..vrsctest_policy()
+    };
+    let chain = funded_chain(1_000).with_policy(absurd);
+    prepare_registration_with_salt(&chain, &key(), "noreftest", &options(), SALT)
+        .expect("an unreferred registration ignores referral policy");
+}
+
+/// A currency that pays no referrals says so, rather than surfacing as
+/// `ReferralChainTooLong` from inside the fee arithmetic after the commitment
+/// has been spent.
+#[test]
+fn asking_for_a_referral_where_none_are_paid_is_refused_by_name() {
+    let none_paid = CurrencyPolicy {
+        id_referral_levels: 0,
+        ..vrsctest_policy()
+    };
+    let chain = funded_chain(1_000).with_policy(none_paid);
+    let options = RegistrationOptions {
+        referral: Some("RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP".to_string()),
+        ..RegistrationOptions::default()
+    };
+
+    match prepare_registration_with_salt(&chain, &key(), "noreferrals", &options, SALT) {
+        Err(FlowError::CurrencyPaysNoReferrals { referrer }) => {
+            assert_eq!(referrer, "RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP");
+        }
+        other => panic!("expected CurrencyPaysNoReferrals, got {other:?}"),
+    }
+    assert!(chain.broadcasts().is_empty());
 }

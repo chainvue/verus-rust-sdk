@@ -36,12 +36,25 @@ impl BlockId {
         let mut reader = Reader::new(bytes);
         let mut height = 0;
         let mut hash = [0u8; 32];
+        let mut saw_field = false;
         while !reader.is_empty() {
+            saw_field = true;
             match reader.tag()? {
                 (1, WIRE_VARINT) => height = reader.varint()?,
                 (2, WIRE_BYTES) => hash = reader.array("block hash")?,
                 (_, wire) => reader.skip(wire)?,
             }
+        }
+        // `proto3` never distinguishes "field absent" from "field equal to its
+        // default", so an entirely empty message and a real block at height 0
+        // are indistinguishable field-by-field. But a genuinely empty wire
+        // payload — zero bytes — is not something a real server sends for
+        // this message; refusing it catches a truncated or fabricated
+        // response instead of quietly reporting `height: 0, hash: [0; 32]`.
+        if !saw_field {
+            return Err(LightError::Protobuf(
+                "BlockId message is empty; expected at least a height or hash field".into(),
+            ));
         }
         Ok(Self { height, hash })
     }
@@ -81,7 +94,9 @@ impl TreeState {
             time: 0,
             tree: String::new(),
         };
+        let mut saw_field = false;
         while !reader.is_empty() {
+            saw_field = true;
             match reader.tag()? {
                 (1, WIRE_BYTES) => state.network = reader.string()?,
                 (2, WIRE_VARINT) => state.height = reader.varint()?,
@@ -94,6 +109,15 @@ impl TreeState {
                 (5, WIRE_BYTES) => state.tree = reader.string()?,
                 (_, wire) => reader.skip(wire)?,
             }
+        }
+        // See the identical check in `BlockId::decode`: a zero-byte message
+        // decodes to every field at its default, which for `TreeState` is an
+        // empty `tree` — silently telling a caller the commitment tree is
+        // empty rather than that the server sent nothing at all.
+        if !saw_field {
+            return Err(LightError::Protobuf(
+                "TreeState message is empty; expected at least one field".into(),
+            ));
         }
         Ok(state)
     }
@@ -449,7 +473,9 @@ impl ServerInfo {
             block_height: 0,
             estimated_height: 0,
         };
+        let mut saw_field = false;
         while !reader.is_empty() {
+            saw_field = true;
             match reader.tag()? {
                 (1, WIRE_BYTES) => info.version = reader.string()?,
                 (4, WIRE_BYTES) => info.chain_name = reader.string()?,
@@ -459,6 +485,16 @@ impl ServerInfo {
                 (12, WIRE_VARINT) => info.estimated_height = reader.varint()?,
                 (_, wire) => reader.skip(wire)?,
             }
+        }
+        // See the identical check in `BlockId::decode`. `consensus_branch_id`
+        // in particular is meant to be checked against the id this SDK signs
+        // under (see the doc comment on the field): a caller that skips that
+        // check because an empty response decoded to an empty-but-valid
+        // string would sign transactions for the wrong chain.
+        if !saw_field {
+            return Err(LightError::Protobuf(
+                "ServerInfo message is empty; expected at least one field".into(),
+            ));
         }
         Ok(info)
     }

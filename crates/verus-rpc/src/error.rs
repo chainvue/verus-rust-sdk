@@ -4,6 +4,9 @@ use thiserror::Error;
 
 /// A failure reaching, or understanding, a Verus daemon.
 #[derive(Debug, Error)]
+/// `#[non_exhaustive]`: a new way for a node to answer badly is a discovery,
+/// not a breaking change.
+#[non_exhaustive]
 pub enum RpcError {
     /// The transport could not deliver the request or read the reply.
     #[error("transport: {0}")]

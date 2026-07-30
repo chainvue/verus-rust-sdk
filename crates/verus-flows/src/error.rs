@@ -5,6 +5,9 @@ use verus_tx::Amount;
 
 /// A failure somewhere in lookup, build, sign or broadcast.
 #[derive(Debug, Error)]
+/// `#[non_exhaustive]` for the same reason [`verus_tx::TxError`] is: a new
+/// refusal is a normal outcome of learning what a node or the chain rejects.
+#[non_exhaustive]
 pub enum FlowError {
     /// The node could not be reached, or its answer could not be used.
     #[error(transparent)]
@@ -93,4 +96,59 @@ pub enum FlowError {
     /// A step was attempted against state that does not support it.
     #[error("{0}")]
     NotReady(String),
+
+    /// A node-reported fee too large to trust by default.
+    ///
+    /// H4: `operation`'s fee is BURNED — no output exists to recover it from —
+    /// and by default it is read straight from whatever the node answers
+    /// (`idregistrationfees` / `currencyregistrationfee`), which is exactly the
+    /// value a hostile or misconfigured node controls outright.
+    /// `verus_tx::fee::MAX_DECLARED_BURN` alone does not catch this: it exists
+    /// to catch a typo in a fee the *caller* already decided on, not to doubt a
+    /// number nobody here chose. A node reporting 999 against a real 100-coin
+    /// registration fee sails through it with three orders of magnitude to
+    /// spare, and exact conservation would certify the resulting transaction
+    /// as happily as a correct one.
+    #[error(
+        "{operation} fee of {reported} exceeds the {ceiling} sanity bar for a fee read from the \
+         node; if this is genuinely the current chain policy, pin it explicitly instead of \
+         trusting the node's answer"
+    )]
+    ImplausibleNodeFee {
+        /// What the fee was for — `"identity registration"` or `"currency
+        /// launch"`.
+        operation: &'static str,
+        /// What the node reported.
+        reported: Amount,
+        /// The bar it exceeded — see `verus_tx::fee::MAX_TRUSTED_NODE_FEE`.
+        ceiling: Amount,
+    },
+
+    /// The node reported more referral levels than this crate will act on.
+    ///
+    /// Refused at *prepare*, before the commitment is broadcast. The same
+    /// value would otherwise be refused deep in the fee split at step two —
+    /// after the commitment fee has been spent, which is precisely the
+    /// fail-after-paying shape the two-step flow exists to prevent.
+    #[error(
+        "the node reports {reported} referral levels for this currency, above the \
+         {ceiling} this crate will act on; nothing has been broadcast"
+    )]
+    ImplausibleReferralLevels {
+        /// What the node reported.
+        reported: u32,
+        /// The bar it exceeded — `verus_tx::register::MAX_REFERRAL_LEVELS`.
+        ceiling: u32,
+    },
+
+    /// A referral was requested for a currency that pays none.
+    ///
+    /// Also refused at prepare. Left to step two it surfaces as
+    /// `ReferralChainTooLong`, which describes the arithmetic rather than the
+    /// cause and arrives after the commitment is spent.
+    #[error("this currency pays no referrals, so {referrer} cannot be credited")]
+    CurrencyPaysNoReferrals {
+        /// The referrer that was asked for.
+        referrer: String,
+    },
 }

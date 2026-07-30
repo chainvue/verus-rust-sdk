@@ -387,13 +387,39 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     // What the taker pays: whatever output 0 demands, funded from their own
     // coins.
     //
-    // A reserve output carries its value in the payload and nothing natively,
-    // so the native arithmetic below sees a demand of zero. The token side is
-    // accounted separately.
+    // What the maker demands, decided per output shape — every variant
+    // deliberately, because the wrong default in either direction is a bug
+    // this crate has already made once each way.
+    //
+    // A decode failure must PROPAGATE rather than default to "no demand": that
+    // is the "unreadable smart output becomes native-only" reclassification
+    // decode.rs forbids, and here it would let a token demand this crate
+    // cannot read fall through as a free trade.
+    //
+    // But refusing everything that is not a bare `PubKeyHash` is too strict in
+    // the other direction: a daemon `makeoffer` demanding native payment to
+    // the maker's **i-address** is an ordinary shape — arguably the common one
+    // on Verus — and it is native value only, exactly as fully understood as a
+    // key-hash payment. The native side is accounted from `outputs[0].value`
+    // whatever the script shape, so both carry no token demand.
     let token_demand =
-        match crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey) {
-            Ok(crate::decode::OutputKind::ReserveOutput { tokens, .. }) => tokens,
-            _ => Vec::new(),
+        match crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey)? {
+            // Value in the payload, nothing native: the token side, accounted
+            // separately below.
+            crate::decode::OutputKind::ReserveOutput { tokens, .. } => tokens,
+            // Native value only. Paying a key or paying an identity differ in
+            // who can spend the output, not in what is being asked for.
+            crate::decode::OutputKind::PubKeyHash { .. }
+            | crate::decode::OutputKind::IdentityPayment { .. } => Vec::new(),
+            // An output that HOLDS an identity is not a payment at all, and an
+            // eval code this crate cannot decode may carry value it cannot
+            // see. Neither is a demand `take_offer` can honour.
+            other => {
+                return Err(TxError::InvalidOffer(format!(
+                    "the offer's demand output is not a shape this crate can account for: \
+                     {other:?}"
+                )))
+            }
         };
 
     let mut balances = crate::token::Balances::default();

@@ -258,3 +258,60 @@ fn deep_nesting_is_refused_rather_than_overflowing_the_stack() {
     let client = RpcClient::new(Canned(Box::leak(deep.into_boxed_str())));
     assert!(client.chain_info().is_err());
 }
+
+/// Hex case carries no information, but a caller compares a hash against one
+/// from elsewhere with `==` — a reorg check against a stored block hash, a
+/// caller matching a broadcast's txid against its own record — and
+/// `verus_light::LightClient::txid_from_reply` already normalises to
+/// lowercase. A daemon answering in uppercase must not fail that comparison
+/// against every other source.
+#[test]
+fn hex_hashes_are_normalised_to_lowercase() {
+    let upper_txid =
+        r#"{"result":"5E19DE6D3F77B5E1F49EC92DB23027D5F026DB92004B026465A61BFF8AB13D7E"}"#;
+    assert_eq!(
+        client(upper_txid).send_raw_transaction("00").unwrap(),
+        "5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"
+    );
+
+    let upper_hash =
+        r#"{"result":"00000000000000000000000000000000000000000000000000000000000000FF"}"#;
+    assert_eq!(
+        client(upper_hash).best_block_hash().unwrap(),
+        "00000000000000000000000000000000000000000000000000000000000000ff"
+    );
+    assert_eq!(
+        client(upper_hash).block_hash(1).unwrap(),
+        "00000000000000000000000000000000000000000000000000000000000000ff"
+    );
+}
+
+/// A node repeating the same outpoint — once under its real address and once
+/// more — would otherwise let coin selection count the same funds twice. That
+/// only used to surface later as an opaque `DuplicateUtxo` from the builder,
+/// with nothing pointing at the node as the actual cause; refusing it here
+/// names it immediately.
+#[test]
+fn a_duplicate_outpoint_is_refused_at_the_boundary() {
+    let reply = r#"{"result":[
+        {"address":"R","txid":"00000000000000000000000000000000000000000000000000000000000000ff","outputIndex":0,"script":"76a914","satoshis":1000,"height":1,"isspendable":1},
+        {"address":"R","txid":"00000000000000000000000000000000000000000000000000000000000000ff","outputIndex":0,"script":"76a914","satoshis":1000,"height":1,"isspendable":1}
+    ]}"#;
+    match client(reply).address_utxos(&["R"]) {
+        Err(RpcError::Unexpected(message)) => {
+            assert!(message.contains("more than once"), "{message}")
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The same outpoint at two different, otherwise-valid *addresses* is the
+/// same double-count under a different disguise, and must be caught too.
+#[test]
+fn a_duplicate_outpoint_across_different_asked_addresses_is_refused() {
+    let reply = r#"{"result":[
+        {"address":"R1","txid":"00000000000000000000000000000000000000000000000000000000000000ff","outputIndex":0,"script":"76a914","satoshis":1000,"height":1,"isspendable":1},
+        {"address":"R2","txid":"00000000000000000000000000000000000000000000000000000000000000ff","outputIndex":0,"script":"76a914","satoshis":1000,"height":1,"isspendable":1}
+    ]}"#;
+    assert!(client(reply).address_utxos(&["R1", "R2"]).is_err());
+}

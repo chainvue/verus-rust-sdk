@@ -139,6 +139,42 @@ fn a_varint_that_never_terminates_is_refused() {
 }
 
 #[test]
+fn a_length_prefix_with_a_valid_maximal_varint_does_not_panic() {
+    // Unlike the test above, this varint is a *valid* 10-byte encoding — nine
+    // 0xff bytes contributing 63 set bits, and a final 0x01 for the 64th —
+    // that decodes cleanly to `u64::MAX`. The eleven-0xff varint above never
+    // exercises the bug this guards: its 10th byte (0xff) fails the
+    // "one meaningful bit" check in `Reader::varint` before the decoded
+    // length is ever used in a bounds check.
+    //
+    // This one passes `varint()` intact and is used as a `bytes()` length
+    // prefix (BlockID.hash, field 2) — exactly the case that overflowed
+    // `Reader::need`'s old `self.offset + n > self.bytes.len()` check: with
+    // `n == u64::MAX` as a `usize`, the addition wraps past zero, the check
+    // passes, and the slice indexing that follows panics. `12 ff ff ff ff ff
+    // ff ff ff ff 01` (the tag byte plus this length prefix) is the exact
+    // frame that reproduced it, in both debug (add overflow) and release
+    // (an out-of-bounds slice).
+    let message = vec![
+        (2 << 3) | 2,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0x01,
+    ];
+    let err = with(ok_status(), frame(&message))
+        .latest_block()
+        .unwrap_err();
+    assert!(matches!(err, LightError::Protobuf(_)), "{err:?}");
+}
+
+#[test]
 fn a_proto2_group_is_refused_rather_than_skipped() {
     // Field 9, wire type 3 (start group) — removed in proto3. Skipping it
     // blindly would desynchronise the reader against the rest of the message.
@@ -301,6 +337,139 @@ fn trailing_bytes_after_a_commitment_tree_are_refused() {
     let err = state.leaf_count().unwrap_err();
     match err {
         LightError::Protobuf(ref text) => assert!(text.contains("left over"), "{text}"),
+        other => panic!("expected a protobuf error, got {other:?}"),
+    }
+}
+
+/// `end - start + 1` overflows a u64 for `end == u64::MAX`. Wrapping to 0
+/// would sail past the [`verus_light::MAX_BLOCK_RANGE`] guard and then pass
+/// the trailing "did we get everything we asked for" check vacuously,
+/// returning `Ok(vec![])` — the silent-empty-range failure this whole client
+/// exists to avoid — for a range that plainly should be refused outright.
+#[test]
+fn a_block_range_spanning_the_full_u64_space_is_refused_before_it_overflows() {
+    let client = with(ok_status(), Vec::new());
+
+    let err = client.block_range(0, u64::MAX).unwrap_err();
+    match err {
+        LightError::Refused(ref text) => {
+            assert!(text.contains("no representable block count"), "{text}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// A well-formed request (`count == 2`, comfortably under `MAX_BLOCK_RANGE`),
+/// but a hostile server streams a third block beyond what was asked for.
+/// Computing the expected height for that third block — `start + 2` — then
+/// overflows a u64 when `start` is `u64::MAX - 1`. A wrapping computation
+/// there could coincidentally match a server-supplied height and mask the
+/// overflow instead of erroring on it.
+#[test]
+fn a_block_range_near_u64_max_does_not_overflow_when_the_server_over_delivers() {
+    /// A CompactBlock carrying only its height.
+    fn block(height: u64) -> Vec<u8> {
+        let mut out = vec![2 << 3];
+        let mut value = height;
+        loop {
+            let byte = u8::try_from(value & 0x7f).unwrap();
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+        out
+    }
+
+    let start = u64::MAX - 1;
+    let end = u64::MAX;
+    let mut body = frame(&block(start));
+    body.extend_from_slice(&frame(&block(start + 1)));
+    body.extend_from_slice(&frame(&block(0))); // unrequested, over-delivered
+    body.extend_from_slice(&trailer("grpc-status: 0\r\n"));
+
+    let err = with(None, body).block_range(start, end).unwrap_err();
+    match err {
+        LightError::Protobuf(ref text) => assert!(text.contains("overflows"), "{text}"),
+        other => panic!("expected a protobuf error, got {other:?}"),
+    }
+}
+
+/// A response can carry more than one trailer frame. Overwriting `status`
+/// unconditionally on every trailer erases a real error status the moment a
+/// later, metadata-only trailer mentions no `grpc-status` — silently turning
+/// a failed call into `Ok`, which is the same class of bug the trailers-only
+/// tests above exist to catch, just arriving one frame later.
+#[test]
+fn an_error_status_survives_a_later_statusless_trailer() {
+    let mut body = trailer("grpc-status: 13\r\ngrpc-message: internal\r\n");
+    body.extend_from_slice(&trailer("some-other-metadata: 1\r\n"));
+
+    let err = with(None, body).latest_block().unwrap_err();
+    match err {
+        LightError::Status { code, ref message } => {
+            assert_eq!(code, 13);
+            assert_eq!(message, "internal");
+        }
+        other => panic!("expected a status error, got {other:?}"),
+    }
+}
+
+/// This client never sends `grpc-accept-encoding` and never negotiates
+/// `grpc-encoding`, so a compliant server never sets the compression bit
+/// (flag `0x01`) on a message frame. One that does cannot be handed to the
+/// protobuf reader as-is — it would decode as whatever garbage the compressed
+/// bytes happen to contain, rather than the real message.
+#[test]
+fn a_compressed_frame_is_refused_rather_than_decoded_as_plaintext() {
+    let payload = [1u8 << 3, 0x2a]; // would decode as height = 42, if read as-is
+    let mut body = vec![0x01]; // flags: compressed, not trailers
+    body.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+    body.extend_from_slice(&payload);
+    body.extend_from_slice(&trailer("grpc-status: 0\r\n"));
+
+    let err = with(None, body).latest_block().unwrap_err();
+    assert!(matches!(err, LightError::Framing(_)), "{err:?}");
+}
+
+/// `proto3` cannot distinguish "field absent" from "field equal to its
+/// default", so a zero-byte message and a real value at the default both
+/// decode field-by-field identically. Without a check against the wire being
+/// truly empty, an empty `BlockID` response reads as a perfectly ordinary
+/// height-0, zero-hash tip.
+#[test]
+fn an_empty_block_id_message_is_refused_rather_than_read_as_height_zero() {
+    let err = with(ok_status(), frame(&[])).latest_block().unwrap_err();
+    match err {
+        LightError::Protobuf(ref text) => assert!(text.contains("empty"), "{text}"),
+        other => panic!("expected a protobuf error, got {other:?}"),
+    }
+}
+
+/// Same failure mode as [`an_empty_block_id_message_is_refused_rather_than_read_as_height_zero`],
+/// for `TreeState`: an empty response would otherwise read as a real frontier
+/// with zero commitments in it.
+#[test]
+fn an_empty_tree_state_message_is_refused() {
+    let err = with(ok_status(), frame(&[])).tree_state(100).unwrap_err();
+    match err {
+        LightError::Protobuf(ref text) => assert!(text.contains("empty"), "{text}"),
+        other => panic!("expected a protobuf error, got {other:?}"),
+    }
+}
+
+/// Same failure mode again, for `ServerInfo`: an empty response would
+/// otherwise read as a server with an empty `consensus_branch_id`, which
+/// [`ServerInfo::consensus_branch_id`](verus_light::ServerInfo) says a caller
+/// must check against the branch id this SDK signs under — silently skipping
+/// that check rather than failing it.
+#[test]
+fn an_empty_server_info_message_is_refused() {
+    let err = with(ok_status(), frame(&[])).server_info().unwrap_err();
+    match err {
+        LightError::Protobuf(ref text) => assert!(text.contains("empty"), "{text}"),
         other => panic!("expected a protobuf error, got {other:?}"),
     }
 }

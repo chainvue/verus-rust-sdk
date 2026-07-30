@@ -391,6 +391,96 @@ fn refuses_a_definition_for_another_system() {
     assert!(err.to_string().contains("system"), "{err}");
 }
 
+/// H4: the launch fee is BURNED — half consumed by consensus with no output
+/// at all — and by default is read straight from whatever the node reports.
+/// A node claiming a fee far above the real 200-coin figure must be refused
+/// by name, before any of the identity checks even matter.
+#[test]
+fn an_absurd_node_reported_launch_fee_is_refused() {
+    let lying = chain(0).with_policy(CurrencyPolicy {
+        currency_id: VRSCTEST.into(),
+        name: "vrsctest".into(),
+        id_registration_fee: Amount::from_coins_str("100").unwrap(),
+        id_referral_levels: 3,
+        id_import_fee: Amount::from_coins_str("0.02").unwrap(),
+        currency_registration_fee: Amount::from_coins_str("999").unwrap(),
+        proof_protocol: 1,
+    });
+
+    let err = launch_currency(
+        &lying,
+        &lying,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    match err {
+        FlowError::ImplausibleNodeFee {
+            operation,
+            reported,
+            ..
+        } => {
+            assert_eq!(operation, "currency launch");
+            assert_eq!(reported, Amount::from_coins_str("999").unwrap());
+        }
+        other => panic!("expected ImplausibleNodeFee, got {other}"),
+    }
+    assert!(lying.broadcasts().is_empty());
+}
+
+/// The escape hatch: a caller who has independently confirmed the same
+/// absurd-looking fee is genuinely correct can still launch, by pinning it —
+/// proving the bar is bypassable is as important as proving it refuses.
+#[test]
+fn a_pinned_launch_fee_bypasses_the_node_trust_bar() {
+    // The default `chain(0)` funds only 400 coins, enough for the real
+    // 200-coin fee but not for the 999 pinned here — top it up so the only
+    // thing under test is the trust bar, not funding.
+    let lying = chain(0)
+        .with_utxo(&key().address().to_string(), 50, 1500_00000000)
+        .with_policy(CurrencyPolicy {
+            currency_id: VRSCTEST.into(),
+            name: "vrsctest".into(),
+            id_registration_fee: Amount::from_coins_str("100").unwrap(),
+            id_referral_levels: 3,
+            id_import_fee: Amount::from_coins_str("0.02").unwrap(),
+            currency_registration_fee: Amount::from_coins_str("999").unwrap(),
+            proof_protocol: 1,
+        });
+
+    let launched = launch_currency(
+        &lying,
+        &lying,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        Some(Amount::from_coins_str("999").unwrap()),
+    )
+    .expect("a pinned fee bypasses the trust bar");
+    assert_eq!(launched.launch_fee, Amount::from_coins_str("999").unwrap());
+}
+
+/// The bar must not move for the real figure — `launches_a_token_end_to_end`
+/// already funds and broadcasts a 200-coin launch; this re-asserts the fee
+/// specifically, so a regression that tightened the bar too far shows up here
+/// rather than only in the adversarial tests above.
+#[test]
+fn normal_launch_fees_are_unaffected_by_the_node_trust_bar() {
+    let chain = chain(0);
+    let launched = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .expect("launch");
+    assert_eq!(launched.launch_fee, Amount::from_coins_str("200").unwrap());
+}
+
 /// A node that omits valueSat is refused by name — signing over a guessed
 /// amount would be rejected on chain with no explanation at all.
 #[test]
