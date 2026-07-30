@@ -67,6 +67,7 @@ pub mod signature;
 mod token;
 mod txid;
 pub mod update;
+pub mod vdxf;
 
 pub use amount::{Amount, SATS_PER_COIN};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
@@ -97,6 +98,7 @@ pub use send::{
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use txid::Txid;
 pub use update::{build_identity_update, UpdateParams};
+pub use vdxf::{data_key, qualified_key, root_namespace};
 
 /// An unspent output available to spend.
 #[derive(Clone, Debug, PartialEq, Eq)]

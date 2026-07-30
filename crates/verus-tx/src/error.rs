@@ -174,6 +174,15 @@ pub enum TxError {
     #[error("value-bearing leading inputs require an explicit change script")]
     MissingChangeScript,
 
+    /// A VDXF name this crate will not derive a key for.
+    ///
+    /// Deliberately narrower than the daemon, which truncates and normalises:
+    /// both would silently derive a different key than the caller wrote, and a
+    /// data key that is silently different is data published where nobody
+    /// looks.
+    #[error("invalid VDXF name: {0}")]
+    InvalidVdxfName(String),
+
     /// A decimal amount that is not one, or has more precision than a satoshi.
     #[error("{0:?} is not a valid amount of coins")]
     InvalidAmount(String),

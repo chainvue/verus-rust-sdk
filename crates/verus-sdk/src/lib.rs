@@ -170,6 +170,18 @@ pub mod currency {
     pub use verus_tx::CurrencyId;
 }
 
+/// VDXF: derive the 20-byte keys that address data on identities, offline.
+///
+/// `getvdxfid` without a node. The same name yields the same key for
+/// everyone — apps define their data keys at compile time and write content
+/// to identities fully offline. Mind the namespace trap documented in
+/// `verus_tx::vdxf`: a friendly `ns::` resolves as a ROOT name, so a
+/// chain-registered app identity must namespace by its `i` address.
+#[cfg(feature = "transparent")]
+pub mod vdxf {
+    pub use verus_tx::{data_key, qualified_key, root_namespace};
+}
+
 /// The networked half: ask a node, compose whole operations, broadcast.
 ///
 /// Everything here talks to infrastructure, and none of it ever sends a key —
