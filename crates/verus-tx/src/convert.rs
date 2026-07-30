@@ -80,8 +80,12 @@ pub const RESERVE_TRANSFER_ADDRESS: [u8; 20] = [
 pub const RT_VALID: u64 = 1;
 /// Convert the value rather than simply moving it.
 pub const RT_CONVERT: u64 = 2;
-/// Convert at launch price, before a currency starts. Refused here — see
-/// [`ConversionKind`].
+/// Convert at the **launch** price rather than the market one.
+///
+/// Only valid before the destination currency's `start_block`. A preconversion
+/// is not a trade against a live reserve — the currency has no reserves yet — it
+/// is a commitment made at the launch ratio, refunded in full if the launch
+/// fails its minimums.
 pub const RT_PRECONVERT: u64 = 4;
 /// Destroy the value, reducing supply and moving the fractional's price.
 pub const RT_BURN_CHANGE_PRICE: u64 = 128;
@@ -111,6 +115,26 @@ impl TransferDestination {
         Self {
             recipient: recipient.clone(),
             auxiliary: vec![recipient],
+        }
+    }
+
+    /// A converting destination whose refund goes somewhere else.
+    ///
+    /// The auxiliary destination is the **refund address**: where the value
+    /// returns if the conversion cannot be completed. For an ordinary conversion
+    /// that is a rare case; for a
+    /// [`Preconvert`](crate::convert::ConversionKind::Preconvert) it is the
+    /// normal one — a launch that misses its `min_preconversion` refunds every
+    /// contribution, and this is where yours goes.
+    ///
+    /// [`converting`](Self::converting) names the recipient for both, which is
+    /// correct only when they are the same party. The daemon uses the *sender*
+    /// as the auxiliary, so a payment to somebody else refunds to you, not to
+    /// them.
+    pub fn converting_with_refund(recipient: Destination, refund: Destination) -> Self {
+        Self {
+            recipient,
+            auxiliary: vec![refund],
         }
     }
 
@@ -225,6 +249,20 @@ pub enum ConversionKind {
         /// The reserve currency being bought.
         target: CurrencyId,
     },
+    /// A reserve into a currency that has not launched yet, at the launch price.
+    ///
+    /// Valid **only** while the destination is pre-launch: after `start_block`
+    /// the chain rejects it, and before it a plain conversion is rejected in
+    /// turn, because there are no reserves to price against. The two are not
+    /// interchangeable at any height.
+    ///
+    /// If the launch fails to meet its `min_preconversion`, every preconversion
+    /// is refunded — which is why this is safe to make early and why the amount
+    /// must respect `max_preconversion`.
+    Preconvert {
+        /// The launching currency being bought.
+        fractional: CurrencyId,
+    },
     /// Destroy the value.
     ///
     /// The currency must be a token. Burning reduces supply, which moves a
@@ -237,6 +275,7 @@ impl ConversionKind {
     fn flags(&self) -> u64 {
         match self {
             ConversionKind::IntoFractional { .. } => RT_VALID | RT_CONVERT,
+            ConversionKind::Preconvert { .. } => RT_VALID | RT_CONVERT | RT_PRECONVERT,
             ConversionKind::IntoReserve { .. } => RT_VALID | RT_CONVERT | RT_IMPORT_TO_SOURCE,
             ConversionKind::ReserveToReserve { .. } => {
                 RT_VALID | RT_CONVERT | RT_RESERVE_TO_RESERVE
@@ -252,7 +291,8 @@ impl ConversionKind {
     /// conversion — the value goes back where it came from and stops there.
     fn destination_currency(&self, source: CurrencyId) -> CurrencyId {
         match self {
-            ConversionKind::IntoFractional { fractional } => *fractional,
+            ConversionKind::IntoFractional { fractional }
+            | ConversionKind::Preconvert { fractional } => *fractional,
             ConversionKind::IntoReserve { reserve } => *reserve,
             ConversionKind::ReserveToReserve { via, .. } => *via,
             ConversionKind::Burn => source,
@@ -864,4 +904,87 @@ pub fn build_conversion_transaction(
             fee_per_kb: params.fee_per_kb,
         },
     )
+}
+
+#[cfg(test)]
+mod preconvert_tests {
+    use super::*;
+
+    fn hash(text: &str) -> [u8; 20] {
+        text.parse::<Address>().expect("address").hash()
+    }
+
+    /// The daemon's own preconvert, reproduced byte for byte.
+    ///
+    /// Captured from `sendcurrency … "preconvert": true` with `returntx` on
+    /// VRSCTEST, 2026-07-30, against a currency this SDK had just launched.
+    #[test]
+    fn a_preconvert_matches_the_daemon() {
+        let vrsctest = CurrencyId::from_bytes(hash("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"));
+        let launching = CurrencyId::from_bytes(hash("iRRhsKoiBuMoyANFcQ2NMLJXDgfSHjgffS"));
+
+        let transfer = ReserveTransfer {
+            source: vrsctest,
+            amount: Amount::from_coins_str("5.0").unwrap(),
+            fee_currency: vrsctest,
+            fee: Amount::from_coins_str("0.0002").unwrap(),
+            // Sent FROM one address TO another: the auxiliary is the sender,
+            // which is where a failed launch refunds to.
+            destination: TransferDestination::converting_with_refund(
+                Destination::PubKeyHash(hash("RWoj68ERmYHEhrkhFc1GgaxJGnS4z6XBQG")),
+                Destination::PubKeyHash(hash("RWKve6J7EB8YiFegJ4KGvuuzZwyt8URkUb")),
+            ),
+            kind: ConversionKind::Preconvert {
+                fractional: launching,
+            },
+        };
+
+        assert_eq!(
+            hex::encode(transfer.to_script().unwrap()),
+            "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4c90040308010114cb8a0f7\
+             f651b484a81e2312c3438deb601e273684c7401a6ef9ea235635e328124ff3429db9f9e91b64e2d8\
+             0edb4c90007a6ef9ea235635e328124ff3429db9f9e91b64e2d809b204214ec2101af4bbb81466ce\
+             a147744865262182d594401160214e6df008745f81e609c87bfc8d6f071c9ccd79f20f0ca3af64b0\
+             622d96024557f92ecc5f2e676048075"
+                .replace(['\n', ' '], "")
+        );
+        // The output carries the amount plus the fee, natively.
+        assert_eq!(
+            transfer.native_value(vrsctest).unwrap(),
+            Amount::from_coins_str("5.0002").unwrap()
+        );
+    }
+
+    /// A preconvert is `VALID | CONVERT | PRECONVERT`, and the bit that makes it
+    /// one is the third.
+    #[test]
+    fn the_preconvert_flag_is_the_only_difference_from_a_conversion() {
+        let target = CurrencyId::from_bytes([0x11; 20]);
+        let plain = ConversionKind::IntoFractional { fractional: target }.flags();
+        let pre = ConversionKind::Preconvert { fractional: target }.flags();
+
+        assert_eq!(plain, RT_VALID | RT_CONVERT);
+        assert_eq!(pre, RT_VALID | RT_CONVERT | RT_PRECONVERT);
+        assert_eq!(pre ^ plain, RT_PRECONVERT);
+    }
+
+    /// The refund address is a distinct field, and `converting` collapses it
+    /// onto the recipient — right only when they are the same party.
+    #[test]
+    fn the_refund_address_is_not_always_the_recipient() {
+        let payee = Destination::PubKeyHash([0xaa; 20]);
+        let me = Destination::PubKeyHash([0xbb; 20]);
+
+        let collapsed = TransferDestination::converting(payee.clone());
+        assert_eq!(collapsed.auxiliary, vec![payee.clone()]);
+
+        let explicit = TransferDestination::converting_with_refund(payee.clone(), me.clone());
+        assert_eq!(explicit.recipient, payee);
+        assert_eq!(explicit.auxiliary, vec![me]);
+        assert_ne!(
+            explicit.serialize().unwrap(),
+            collapsed.serialize().unwrap(),
+            "paying someone else must not refund to them"
+        );
+    }
 }

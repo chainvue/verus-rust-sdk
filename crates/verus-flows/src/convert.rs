@@ -89,7 +89,8 @@ pub fn plan_conversion(
     let recipient: Address = recipient.parse()?;
 
     let (to, via) = match &kind {
-        ConversionKind::IntoFractional { fractional } => (id_text(*fractional), None),
+        ConversionKind::IntoFractional { fractional }
+        | ConversionKind::Preconvert { fractional } => (id_text(*fractional), None),
         ConversionKind::IntoReserve { reserve } => (id_text(*reserve), None),
         ConversionKind::ReserveToReserve { via, target } => (id_text(*target), Some(id_text(*via))),
         ConversionKind::Burn => (source.to_string(), None),
@@ -97,6 +98,13 @@ pub fn plan_conversion(
 
     let estimated_out = if matches!(kind, ConversionKind::Burn) {
         // Nothing comes out of a burn, so there is nothing to estimate.
+        Amount::ZERO
+    } else if matches!(kind, ConversionKind::Preconvert { .. }) {
+        // A pre-launch currency has no reserves, so there is no market to price
+        // against and `estimateconversion` has nothing to answer with. What a
+        // preconversion returns is decided at launch, from the final ratio of
+        // everyone's contributions — not knowable now, and reporting a
+        // confident zero would be less honest than reporting none.
         Amount::ZERO
     } else {
         estimate(reader, source, &to, amount, via.as_deref())?.estimated_out
