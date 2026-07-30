@@ -1399,6 +1399,32 @@ mod mint_funding_tests {
         ));
     }
 
+    /// P2PKH coins offered alongside identity funding are refused — the
+    /// mint-level check names the cure, and below it `assemble` refuses the
+    /// mix generically (`MixedFunding`), so the unproven branch is
+    /// unrepresentable from every path.
+    #[test]
+    fn a_mint_mixing_p2pkh_funding_is_refused() {
+        let transfer = mint_transfer();
+        let funding = [identity_held(10_00000000)];
+        let plain = [Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout: 1,
+            satoshis: Amount::from_sat(1_00000000),
+            script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
+        }];
+        let params =
+            ConversionParams::new(&transfer, &plain, chain(), key().address(), Expiry::Never)
+                .with_identity_funding(&funding);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason)) if reason.contains("identity alone")
+        ));
+    }
+
     /// The identity must cover the transfer fee plus the miner fee; short by
     /// any amount is a named refusal, not a transaction.
     #[test]

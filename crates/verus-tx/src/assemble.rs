@@ -49,10 +49,11 @@ pub(crate) struct Assembly<'a> {
     ///
     /// Off, the historical invariant holds: a leading input with value is
     /// refused, because the accounting would otherwise let it silently fund
-    /// the burn. On, that value is a *declared* funding source instead: it is
-    /// added to the input side of the conservation check and subtracted from
-    /// what the P2PKH selection must raise. Nothing becomes implicit — the
-    /// check `inputs − outputs = fee + burn` still holds to the satoshi.
+    /// the burn. On, that value is a *declared* funding source — and the only
+    /// one: `funding` must be empty (`MixedFunding`), the leading inputs cover
+    /// the declared outlay plus the miner fee, and the excess returns via
+    /// `change_script`. Nothing becomes implicit — the check
+    /// `inputs − outputs = fee + burn` still holds to the satoshi.
     ///
     /// This is opt-in per call site on purpose. The flows that assumed
     /// zero-value leading inputs still get the refusal; only a flow built to
@@ -120,6 +121,13 @@ pub(crate) fn assemble(
         if plan.change_script.is_none() {
             return Err(TxError::MissingChangeScript);
         }
+        // And the identity funds the whole transaction alone. Mixing P2PKH
+        // funding in would mean two fee computations, P2PKH surplus routed to
+        // the identity's change script, and a branch no chain has accepted —
+        // unrepresentable beats unproven.
+        if !plan.funding.is_empty() {
+            return Err(TxError::MixedFunding);
+        }
         for (index, utxo) in plan.leading.iter().enumerate() {
             if plan.leading[..index]
                 .iter()
@@ -163,25 +171,27 @@ pub(crate) fn assemble(
         } else {
             (Vec::new(), fee, change)
         }
+    } else if plan.value_bearing_leading {
+        // An identity-funded plan that is short. There is no P2PKH fallback —
+        // MixedFunding refused that above — so answer with the identity's
+        // real holdings, not selection's `available: 0`.
+        let fee = estimate_fee(
+            plan.leading.len() as u64,
+            plan.fee_output_count,
+            plan.fee_per_kb,
+            true,
+        );
+        return Err(TxError::InsufficientFunds {
+            required: required.checked_add(fee).ok_or(TxError::ValueOverflow)?,
+            available: leading_total,
+        });
     } else {
-        // An identity-funded plan that is short and has no P2PKH funding to
-        // fall back on: answer with the identity's real holdings, not
-        // selection's `available: 0`.
-        if plan.value_bearing_leading && plan.funding.is_empty() {
-            let fee = estimate_fee(
-                plan.leading.len() as u64,
-                plan.fee_output_count,
-                plan.fee_per_kb,
-                true,
-            );
-            return Err(TxError::InsufficientFunds {
-                required: required.checked_add(fee).ok_or(TxError::ValueOverflow)?,
-                available: leading_total,
-            });
-        }
+        // Only the historical paths reach this branch, and their leading
+        // inputs are all valueless — the guard at the top enforced it — so
+        // the full requirement is raised from P2PKH selection.
         let selection = select_utxos(
             plan.funding,
-            required - leading_total,
+            required,
             plan.fee_output_count,
             plan.fee_per_kb,
             // Every output here is a CryptoCondition, which the fee heuristic
@@ -319,4 +329,107 @@ pub(crate) fn check_p2pkh_funding(utxos: &[Utxo]) -> Result<(), TxError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cc::identity_payment_script;
+    use crate::Txid;
+
+    fn key() -> PrivateKey {
+        PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap()
+    }
+
+    fn utxo(satoshis: u64, vout: u32, script_pubkey: Vec<u8>) -> Utxo {
+        Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout,
+            satoshis: Amount::from_sat(satoshis),
+            script_pubkey,
+        }
+    }
+
+    fn value_bearing_plan<'a>(
+        leading: &'a [Utxo],
+        funding: &'a [Utxo],
+        change_address: &'a Address,
+        change_script: Option<Vec<u8>>,
+    ) -> Assembly<'a> {
+        Assembly {
+            leading,
+            funding,
+            outputs: Vec::new(),
+            burn: Amount::ZERO,
+            fee_output_count: 1,
+            change_address,
+            change_script,
+            value_bearing_leading: true,
+            expiry: Expiry::Never,
+            fee_per_kb: crate::fee::DEFAULT_FEE_PER_KB,
+        }
+    }
+
+    /// No public builder can reach these — `identity_spend` passes no funding
+    /// and the mint refuses P2PKH coins first — so the guards are pinned here,
+    /// where a future in-crate call site would meet them.
+    #[test]
+    fn value_bearing_leading_refuses_mixed_funding_and_a_missing_change_script() {
+        let identity_script = identity_payment_script([0x42; 20]).unwrap();
+        let leading = [utxo(1_00000000, 0, identity_script.clone())];
+        let p2pkh = [utxo(
+            1_00000000,
+            1,
+            key().address().p2pkh_script_pubkey().unwrap(),
+        )];
+        let change = key().address();
+
+        let mixed = value_bearing_plan(&leading, &p2pkh, &change, Some(identity_script.clone()));
+        assert!(matches!(
+            assemble(&key(), &[&key()], mixed),
+            Err(TxError::MixedFunding)
+        ));
+
+        let scriptless = value_bearing_plan(&leading, &[], &change, None);
+        assert!(matches!(
+            assemble(&key(), &[&key()], scriptless),
+            Err(TxError::MissingChangeScript)
+        ));
+
+        let duplicated = [
+            utxo(1_00000000, 0, identity_script.clone()),
+            utxo(1_00000000, 0, identity_script.clone()),
+        ];
+        let dup = value_bearing_plan(&duplicated, &[], &change, Some(identity_script));
+        assert!(matches!(
+            assemble(&key(), &[&key()], dup),
+            Err(TxError::DuplicateUtxo { .. })
+        ));
+    }
+
+    /// A short identity-funded plan answers with the identity's real holdings.
+    #[test]
+    fn a_short_value_bearing_plan_reports_honest_numbers() {
+        let identity_script = identity_payment_script([0x42; 20]).unwrap();
+        let leading = [utxo(5_000, 0, identity_script.clone())];
+        let change = key().address();
+        let mut plan = value_bearing_plan(&leading, &[], &change, Some(identity_script));
+        plan.outputs = vec![TxOut {
+            value: 50_000,
+            script_pubkey: change.p2pkh_script_pubkey().unwrap(),
+        }];
+        match assemble(&key(), &[&key()], plan) {
+            Err(TxError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                assert_eq!(available, 5_000, "what the identity actually holds");
+                assert!(required > 50_000, "the outlay plus the estimated fee");
+            }
+            other => panic!("expected InsufficientFunds, got {other:?}"),
+        }
+    }
 }

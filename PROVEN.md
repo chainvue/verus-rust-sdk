@@ -18,6 +18,7 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | `flows::send` through the public node | `50beae6e5be68a6687de3db3cd8fd9d5f0c7c52ee8eb5452bc0820a9afb98108` | 1167607 |
 | Facade acceptance — one dependency line, connect → balance → send | `4d061de95f2ef669dd6789efee9cc3a904d60ea12a4eb00d695247225f0bf8a8` | 1168821 |
 | **Spend from a VerusID** — fulfillment-signed, change back to the identity | `9b23824a9b93439f540bf188a0078f73ba58b252d4f00e4d5538c579b3e85519` | 1168907 |
+| **2-of-2 multisig spend from a VerusID** — two keys in one fulfillment per input | `894b995b3e2ec0c2a9ad81595c8ee5e220922a6906ce1f2724efc62a5beb61d7` | 1168966 |
 
 ## VerusID lifecycle
 
@@ -32,6 +33,7 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | Revocation | `0acf6faf864c6b7d4e846073ae4bbca7858719955c98d86bb0877345ce546342` | 1167197 |
 | Recovery, under a different key | `088db56d780cb943f888f0bd98329764ee4e1f6467c18f2d506cc94f12e9179d` | 1167199 |
 | `flows::register` through the public node → `flow1167608.VRSCTEST@` | `431aa039f6b0ed163c0baeeebf729d86b99be572359bce07aa90db348cddcdd7` | 1167611 |
+| `flows::register`, custom primaries + `minsigs 2` → `rustms1168959@` | `7ed0224c98f4986f9e9c1a475e10f93d645f32785239efb2c2f5e7db449cbb7c` | 1168963 |
 
 VerusID **login** (message signing) is also proven live, in both directions
 against the daemon's `signmessage`/`verifymessage` — but a signature is not a
