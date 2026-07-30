@@ -158,6 +158,15 @@ pub enum TxError {
         satoshis: u64,
     },
 
+    /// Value-bearing leading inputs mixed with P2PKH funding.
+    ///
+    /// The two funding sides have different fee sizing and different change
+    /// destinations, and no path that mixes them has ever been proven on
+    /// chain. Refused rather than half-supported: fund from the identity or
+    /// from keys, not both in one transaction.
+    #[error("value-bearing leading inputs cannot be mixed with P2PKH funding")]
+    MixedFunding,
+
     /// A value-bearing leading input without an explicit change script.
     ///
     /// Change from identity-held funding must go somewhere deliberate; falling
