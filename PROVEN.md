@@ -66,6 +66,7 @@ transaction, so it has no row here.
 | Preconvert into it, 5 VRSCTEST | `8b2c734cb92dd5ad415b9d3f6a6d2844ccdddd4e9b59b6e440d6390e10ca571e` | 1168452 |
 | Centralized token launched → `rusttok1168500@` (`iKzX5FyzKzYxtcWKYveYKVfrz2LNXLj4xM`) | `586307ced86f12846226cf942148c7c28f20a37b4e7b18df3b201135bd5eb057` | 1168583 |
 | **Mint** — 500 new supply, spent-by-identity, delivered on import | `b4176eee19a0a291ac822b4a4a5e4656792bea7a2addd9308f5162294028038b` | 1168909 |
+| `flows::launch_currency` — the whole choreography through the facade → `flowcur1169197@` (`i51ksqQt1pV9h5iKH46TtnVRYE1ZBgcA4D`), fee read from chain policy | `46187582c1930332df5cf9264ee0f5d98ea0e54ef414761cc15c30fa1b2f811b` | 1169201 |
 
 The basket's launch completed at block 1168499 — a protocol event, not an SDK
 transaction — paying out the full 1000 supply to the preconverting address.

@@ -198,12 +198,12 @@ pub mod vdxf {
 pub mod network {
     pub use verus_flows::offer::take;
     pub use verus_flows::{
-        broadcast, burn, convert, estimate, identity_held, inspect, mint, plan_conversion,
-        prepare_registration, prepare_registration_with_salt, prepare_send, send,
+        broadcast, burn, convert, estimate, identity_held, inspect, launch_currency, mint,
+        plan_conversion, prepare_registration, prepare_registration_with_salt, prepare_send, send,
         send_from_identity, send_token, sign_login, spendable, verify_login, AwaitingCommitment,
-        CommitmentStatus, ConversionPlan, Demand, FlowError, Funding, LoggedIn, LoginPolicy,
-        LoginRequest, OfferTerms, Pending, ReadyToRegister, Registered, RegistrationOptions, Sent,
-        Taken, Taking, WaitPolicy,
+        CommitmentStatus, ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn,
+        LoginPolicy, LoginRequest, OfferTerms, Pending, ReadyToRegister, Registered,
+        RegistrationOptions, Sent, Taken, Taking, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,

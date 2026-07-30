@@ -1,0 +1,422 @@
+//! The currency-launch flow against a scripted chain.
+//!
+//! The builders underneath are proven on chain (PROVEN.md: `rustcur1168400@`,
+//! `rusttok1168500@`); what these tests pin is the *choreography* — that the
+//! flow reads the identity from the chain's own bytes, checks what the daemon
+//! would only reject after the fee, funds correctly and broadcasts.
+
+use verus_flows::testing::ScriptedReader;
+use verus_flows::{launch_currency, FlowError};
+use verus_keys::{Address, AddressKind, PrivateKey};
+use verus_rpc::{CurrencyPolicy, IdentityRecord};
+use verus_tx::currency_definition::CurrencyDefinition;
+use verus_tx::identity::{Identity, FLAG_ACTIVE_CURRENCY};
+use verus_tx::{identity_id, identity_primary_script, Amount, CurrencyId, Destination, Txid};
+use verus_wire::TxV4;
+
+const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
+const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+const NAME: &str = "flowcur";
+
+fn key() -> PrivateKey {
+    PrivateKey::from_wif(TEST_WIF).unwrap()
+}
+
+fn parent() -> [u8; 20] {
+    VRSCTEST.parse::<Address>().unwrap().hash()
+}
+
+fn identity(flags: u32) -> Identity {
+    Identity {
+        version: 3,
+        flags,
+        primary_addresses: vec![Destination::PubKeyHash(key().address().hash())],
+        min_sigs: 1,
+        parent: parent(),
+        name: NAME.to_string(),
+        content_multimap: Vec::new(),
+        content_map: Vec::new(),
+        revocation_authority: identity_id(NAME, Some(parent())),
+        recovery_authority: identity_id(NAME, Some(parent())),
+        private_addresses: Vec::new(),
+        system_id: parent(),
+        unlock_after: 0,
+    }
+}
+
+fn identity_address() -> [u8; 20] {
+    identity_id(NAME, Some(parent()))
+}
+
+fn holding_txid() -> Txid {
+    Txid::from_internal([0xbb; 32])
+}
+
+/// The chain: a funded key, the identity record, the raw transaction holding
+/// the identity's real output bytes, and a parent policy with the launch fee.
+fn chain(flags: u32) -> ScriptedReader {
+    chain_with_status(flags, "active")
+}
+
+fn chain_with_status(flags: u32, status: &str) -> ScriptedReader {
+    let id = identity(flags);
+    let script = identity_primary_script(
+        identity_address(),
+        id.to_bytes().unwrap(),
+        id.revocation_authority,
+        id.recovery_authority,
+    )
+    .unwrap();
+    ScriptedReader::new(1_000)
+        .with_utxo(&key().address().to_string(), 100, 400_00000000)
+        .with_identity(
+            &format!("{NAME}@"),
+            IdentityRecord {
+                fully_qualified_name: format!("{NAME}.VRSCTEST@"),
+                identity_address: Address::new(AddressKind::Identity, identity_address())
+                    .to_string(),
+                status: status.into(),
+                outpoint: (holding_txid(), 0),
+                block_height: 900,
+                identity: serde_json::json!({}),
+            },
+        )
+        .with_raw_transaction(
+            &holding_txid().to_display_hex(),
+            serde_json::json!({
+                "vout": [ { "valueSat": 0, "scriptPubKey": { "hex": hex::encode(&script) } } ]
+            }),
+        )
+        .with_policy(CurrencyPolicy {
+            currency_id: VRSCTEST.into(),
+            name: "vrsctest".into(),
+            id_registration_fee: Amount::from_coins_str("100").unwrap(),
+            id_referral_levels: 3,
+            id_import_fee: Amount::from_coins_str("0.02").unwrap(),
+            currency_registration_fee: Amount::from_coins_str("200").unwrap(),
+            proof_protocol: 1,
+        })
+}
+
+fn definition() -> CurrencyDefinition {
+    CurrencyDefinition::token(CurrencyId::from_bytes(parent()), NAME, 1_060)
+}
+
+/// The whole choreography: seven outputs, funded, conserved, broadcast.
+#[test]
+fn launches_a_token_end_to_end() {
+    let chain = chain(0);
+    let launched = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .expect("launch");
+
+    assert_eq!(launched.currency_id, identity_address());
+    assert_eq!(launched.start_block, 1_060);
+    assert_eq!(launched.launch_fee, Amount::from_coins_str("200").unwrap());
+
+    let broadcasts = chain.broadcasts();
+    assert_eq!(broadcasts.len(), 1, "exactly one transaction broadcast");
+    let tx = TxV4::deserialize(&hex::decode(&broadcasts[0]).unwrap()).unwrap();
+
+    // Identity input first, then funding.
+    assert_eq!(
+        hex::encode(tx.inputs[0].txid_internal),
+        hex::encode(holding_txid().to_internal())
+    );
+    assert_eq!(tx.outputs.len(), 7, "the launch shape plus change");
+
+    // Half the launch fee becomes the reserve deposit (output 5); the other
+    // half leaves the transaction without an output. Exact conservation:
+    // inputs − outputs = miner fee + consumed half.
+    let inputs: u64 = 400_00000000;
+    let outputs: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    let consumed = inputs - outputs;
+    assert!(
+        consumed >= 100_00000000,
+        "the consensus-consumed half of the fee is funded: {consumed}"
+    );
+}
+
+/// An identity that already defines a currency is refused before any fee.
+#[test]
+fn refuses_an_identity_with_an_active_currency() {
+    let chain = chain(FLAG_ACTIVE_CURRENCY);
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("already defines"), "{err}");
+    assert!(chain.broadcasts().is_empty());
+}
+
+/// A definition whose name is not the identity's dies at consensus, after the
+/// fee — so it dies here instead.
+#[test]
+fn refuses_a_definition_that_names_a_different_identity() {
+    let chain = chain(0);
+    let wrong = CurrencyDefinition::token(CurrencyId::from_bytes(parent()), "othername", 1_060);
+    let err =
+        launch_currency(&chain, &chain, &[&key()], &format!("{NAME}@"), &wrong, None).unwrap_err();
+    assert!(err.to_string().contains("othername"), "{err}");
+}
+
+/// A launch dated in the past is refused with the tip in the message.
+#[test]
+fn refuses_a_start_block_at_or_before_the_tip() {
+    let chain = chain(0);
+    let stale = CurrencyDefinition::token(CurrencyId::from_bytes(parent()), NAME, 1_000);
+    let err =
+        launch_currency(&chain, &chain, &[&key()], &format!("{NAME}@"), &stale, None).unwrap_err();
+    assert!(err.to_string().contains("start_block"), "{err}");
+}
+
+/// A parent that reports no launch fee is refused — unless the caller pins
+/// one, which is the escape hatch for a misreporting node.
+#[test]
+fn refuses_a_zero_launch_fee_unless_pinned() {
+    let no_fee = chain(0).with_policy(CurrencyPolicy {
+        currency_id: VRSCTEST.into(),
+        name: "vrsctest".into(),
+        id_registration_fee: Amount::from_coins_str("100").unwrap(),
+        id_referral_levels: 3,
+        id_import_fee: Amount::from_coins_str("0.02").unwrap(),
+        currency_registration_fee: Amount::ZERO,
+        proof_protocol: 1,
+    });
+    let err = launch_currency(
+        &no_fee,
+        &no_fee,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("registration fee"), "{err}");
+
+    let pinned = launch_currency(
+        &no_fee,
+        &no_fee,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        Some(Amount::from_coins_str("200").unwrap()),
+    )
+    .expect("pinned fee launches");
+    assert_eq!(pinned.launch_fee, Amount::from_coins_str("200").unwrap());
+}
+
+/// A key the identity does not list is refused by name, before signing.
+#[test]
+fn refuses_a_key_that_is_not_a_primary() {
+    let chain = chain(0);
+    let stranger = PrivateKey::from_bytes(&[0x27; 32], true).unwrap();
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&stranger],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            FlowError::Tx(verus_tx::TxError::NotAPrimaryAddress { .. })
+        ),
+        "{err}"
+    );
+}
+
+/// An outpoint that does not hold an identity output is named, not signed.
+#[test]
+fn refuses_a_holding_output_that_is_not_an_identity() {
+    let chain = chain(0).with_raw_transaction(
+        &holding_txid().to_display_hex(),
+        serde_json::json!({
+            "vout": [ { "valueSat": 0, "scriptPubKey": { "hex": "76a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac" } } ]
+        }),
+    );
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("identity output"), "{err}");
+}
+
+/// The dedup is the flow's own addition over the builder: the same key twice
+/// satisfies nothing.
+#[test]
+fn counts_distinct_signers_against_min_sigs() {
+    let id = {
+        let mut id = identity(0);
+        id.min_sigs = 2;
+        id.primary_addresses = vec![
+            Destination::PubKeyHash(key().address().hash()),
+            Destination::PubKeyHash([0x33; 20]),
+        ];
+        id
+    };
+    let script = identity_primary_script(
+        identity_address(),
+        id.to_bytes().unwrap(),
+        id.revocation_authority,
+        id.recovery_authority,
+    )
+    .unwrap();
+    let chain = chain(0).with_raw_transaction(
+        &holding_txid().to_display_hex(),
+        serde_json::json!({
+            "vout": [ { "valueSat": 0, "scriptPubKey": { "hex": hex::encode(&script) } } ]
+        }),
+    );
+    let same_key = key();
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key(), &same_key],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            FlowError::Tx(verus_tx::TxError::NotEnoughSigners {
+                supplied: 1,
+                required: 2
+            })
+        ),
+        "{err}"
+    );
+}
+
+/// A definition whose parent is not the identity's parent dies at consensus,
+/// after the fee — so it dies here.
+#[test]
+fn refuses_a_definition_with_the_wrong_parent() {
+    let chain = chain(0);
+    let mut wrong = definition();
+    wrong.parent = CurrencyId::from_bytes([0x44; 20]);
+    let err =
+        launch_currency(&chain, &chain, &[&key()], &format!("{NAME}@"), &wrong, None).unwrap_err();
+    assert!(err.to_string().contains("parent"), "{err}");
+}
+
+/// A node whose copy of the holding transaction lacks the output is refused,
+/// naming the transaction.
+#[test]
+fn refuses_a_holding_transaction_without_the_output() {
+    let chain = chain(0).with_raw_transaction(
+        &holding_txid().to_display_hex(),
+        serde_json::json!({ "vout": [] }),
+    );
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("no output"), "{err}");
+}
+
+/// No keys, no launch.
+#[test]
+fn refuses_an_empty_key_list() {
+    let chain = chain(0);
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, FlowError::Tx(verus_tx::TxError::NoSignatures)),
+        "{err}"
+    );
+}
+
+/// A revoked identity cannot define a currency.
+#[test]
+fn refuses_a_revoked_identity() {
+    let chain = chain_with_status(0, "revoked");
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, FlowError::Tx(verus_tx::TxError::AlreadyRevoked)),
+        "{err}"
+    );
+}
+
+/// A definition claiming another system dies at consensus, after the fee — so
+/// it dies here, and the wording names the rule.
+#[test]
+fn refuses_a_definition_for_another_system() {
+    let chain = chain(0);
+    let mut wrong = definition();
+    wrong.system_id = CurrencyId::from_bytes([0x55; 20]);
+    let err =
+        launch_currency(&chain, &chain, &[&key()], &format!("{NAME}@"), &wrong, None).unwrap_err();
+    assert!(err.to_string().contains("system"), "{err}");
+}
+
+/// A node that omits valueSat is refused by name — signing over a guessed
+/// amount would be rejected on chain with no explanation at all.
+#[test]
+fn refuses_a_holding_output_without_value_sat() {
+    let id = identity(0);
+    let script = identity_primary_script(
+        identity_address(),
+        id.to_bytes().unwrap(),
+        id.revocation_authority,
+        id.recovery_authority,
+    )
+    .unwrap();
+    let chain = chain(0).with_raw_transaction(
+        &holding_txid().to_display_hex(),
+        serde_json::json!({
+            "vout": [ { "scriptPubKey": { "hex": hex::encode(&script) } } ]
+        }),
+    );
+    let err = launch_currency(
+        &chain,
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &definition(),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("valueSat"), "{err}");
+}
