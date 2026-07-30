@@ -5,6 +5,9 @@ use thiserror::Error;
 /// Anything that can go wrong between asking a light server a question and
 /// having a typed answer.
 #[derive(Debug, Error)]
+/// `#[non_exhaustive]`: a new way for a light server to answer badly is a
+/// discovery, not a breaking change.
+#[non_exhaustive]
 pub enum LightError {
     /// The transport could not complete the request at all.
     #[error("transport failed: {0}")]

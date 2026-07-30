@@ -58,6 +58,28 @@ pub const MAX_MINER_FEE: u64 = 100_000_000;
 /// registration passes and an order-of-magnitude slip does not.
 pub const MAX_DECLARED_BURN: u64 = 100_000_000_000;
 
+/// The largest burn this crate trusts a node's own report of, by default.
+///
+/// Distinct from [`MAX_DECLARED_BURN`], and much tighter. `MAX_DECLARED_BURN`
+/// is the backstop for a fee the *caller* has already decided on and pinned —
+/// it exists to catch a typo, not to doubt the number. This constant guards
+/// the default path instead, where nothing decided anything: `verus-flows`
+/// reads `idregistrationfees` / `currencyregistrationfee` straight off
+/// whatever node answered `getcurrency`, and that fee is burned outright, with
+/// no output to recover it from if the node was lying.
+///
+/// A real identity registration on VRSCTEST/VRSC is 100 coins; a real currency
+/// launch is 200. 500 — half of [`MAX_DECLARED_BURN`] — clears both with room
+/// to spare for a genuine policy change, while still refusing a node that
+/// reports something like 999: comfortably inside `MAX_DECLARED_BURN`, and
+/// exactly the ~10x inflation a hostile or misconfigured node can otherwise get
+/// signed away for free, since exact conservation certifies it as happily as
+/// the real figure. A caller who has independently confirmed that a fee above
+/// this bar is genuinely correct can still get it signed — by pinning it,
+/// which is then judged against `MAX_DECLARED_BURN` instead, on the theory
+/// that a caller who pinned a number has taken responsibility for it.
+pub const MAX_TRUSTED_NODE_FEE: u64 = 500 * crate::amount::SATS_PER_COIN;
+
 /// Refuse a derived fee that is implausible on its face.
 pub(crate) fn check_fee_ceiling(fee: u64) -> Result<(), TxError> {
     if fee > MAX_MINER_FEE {

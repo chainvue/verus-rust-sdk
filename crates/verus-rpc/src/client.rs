@@ -1,10 +1,13 @@
 //! The client, and the split between asking and telling.
 
+use serde::Serialize;
 use serde_json::json;
+use serde_json::value::RawValue;
 use verus_tx::Amount;
 
 use crate::envelope::{parse, request, result_of};
 use crate::error::RpcError;
+use crate::json;
 use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
@@ -191,7 +194,11 @@ impl<T: Transport> RpcClient<T> {
     ///
     /// Private, and takes a [`Method`] rather than a string, so the set of
     /// requests this crate can emit is the set of variants of that enum.
-    fn call<R>(&self, method: Method, params: serde_json::Value) -> Result<R, RpcError>
+    ///
+    /// Generic over `P` rather than fixed to `serde_json::Value`, so a caller
+    /// with an exact decimal amount can hand over a `RawValue` and have it
+    /// serialize verbatim — see [`crate::envelope::request`].
+    fn call<R, P: Serialize>(&self, method: Method, params: P) -> Result<R, RpcError>
     where
         R: serde::de::DeserializeOwned,
     {
@@ -202,7 +209,7 @@ impl<T: Transport> RpcClient<T> {
 
     /// As [`RpcClient::call`], but keeping the raw text so money fields can be
     /// read from their original tokens.
-    fn call_raw(&self, method: Method, params: serde_json::Value) -> Result<String, RpcError> {
+    fn call_raw<P: Serialize>(&self, method: Method, params: P) -> Result<String, RpcError> {
         self.transport.post(&request(method, params)?)
     }
 }
@@ -257,11 +264,25 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         // A node could answer with an output belonging to some other address.
         // The sighash commits to the script, so a substituted one only produces
         // a rejected transaction — but failing here names the cause.
+        //
+        // A node could also repeat the same outpoint — once legitimately and
+        // once more, whether from a buggy index or a deliberate attempt to
+        // inflate what a caller thinks it can spend. Coin selection would
+        // count that value twice; catching it here names the outpoint instead
+        // of surfacing as an opaque `DuplicateUtxo` from the builder.
+        let mut seen = std::collections::HashSet::with_capacity(found.len());
         for utxo in &found {
             if !addresses.contains(&utxo.address.as_str()) {
                 return Err(RpcError::Unexpected(format!(
                     "node returned an output for {}, which was not asked about",
                     utxo.address
+                )));
+            }
+            if !seen.insert((utxo.utxo.txid, utxo.utxo.vout)) {
+                return Err(RpcError::Unexpected(format!(
+                    "node returned the outpoint {}:{} more than once",
+                    utxo.utxo.txid.to_display_hex(),
+                    utxo.utxo.vout
                 )));
             }
         }
@@ -294,18 +315,55 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         amount: &str,
         via: Option<&str>,
     ) -> Result<ConversionEstimate, RpcError> {
-        // The amount is passed as the caller's exact decimal text, not a float
-        // built from it — the same reason money is read back through `json`.
-        let amount: serde_json::Value =
-            serde_json::from_str(amount).map_err(|_| RpcError::LossyNumber {
+        // The comment this replaced claimed the amount was "not a float built
+        // from JSON" — that was wrong. `serde_json::Value` without the
+        // `arbitrary_precision` feature stores any number with a decimal point
+        // as `f64`, so parsing the caller's text into a `Value` and handing it
+        // to `json!` *was* the float path this workspace bans:
+        // `100000000.00000001` round-tripped to `100000000.0`, silently
+        // dropping a satoshi, and `-5`, `1e30`, `"abc"` and `{"a":1}` all
+        // parsed as *some* `Value` and passed through unvalidated.
+        //
+        // Fixed the way every other money field in this crate is read: keep
+        // the caller's token text as a `RawValue` and validate it exactly
+        // through `json::coins`, which parses via `Amount::from_coins_str` and
+        // refuses negative, exponent, sub-satoshi and out-of-range input.
+        //
+        // `currency_coins`, not `coins`: this amount is denominated in `from`,
+        // which is whatever currency the caller is converting OUT of, not the
+        // chain's own. Bounding it at the native ceiling would refuse an
+        // ordinary two-billion-unit amount of a large-supply token that the
+        // daemon would price happily — the same over-refusal the two ceilings
+        // exist to separate, and easy to miss because the reply side
+        // (`estimatedcurrencyout`) needs the identical treatment. The validated amount is re-emitted through
+        // `Amount::to_coins_string()` — proven to round-trip exactly by
+        // `verus_tx::amount`'s own test — as a `RawValue`, so what reaches the
+        // wire is that exact decimal text and never a `serde_json::Number`.
+        let raw_input =
+            RawValue::from_string(amount.to_string()).map_err(|_| RpcError::LossyNumber {
                 field: "amount",
                 value: amount.to_string(),
             })?;
-        let mut request = json!({ "currency": from, "convertto": to, "amount": amount });
-        if let Some(via) = via {
-            request["via"] = json!(via);
+        let exact = json::currency_coins(&raw_input, "amount")?;
+        let raw_amount = RawValue::from_string(exact.to_coins_string())
+            .expect("Amount::to_coins_string always produces a valid JSON number");
+
+        #[derive(Serialize)]
+        struct EstimateConversionParams<'a> {
+            currency: &'a str,
+            convertto: &'a str,
+            amount: &'a RawValue,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            via: Option<&'a str>,
         }
-        let body = self.call_raw(Method::EstimateConversion, json!([request]))?;
+        let params = [EstimateConversionParams {
+            currency: from,
+            convertto: to,
+            amount: &raw_amount,
+            via,
+        }];
+
+        let body = self.call_raw(Method::EstimateConversion, params)?;
         let result = result_of(&body, Method::EstimateConversion)?;
         let raw: RawConversionEstimate<'_> = serde_json::from_str(result.get())
             .map_err(|e| RpcError::Unexpected(format!("estimateconversion: {e}")))?;
@@ -398,7 +456,13 @@ fn check_hash(hash: &str, what: &'static str) -> Result<String, RpcError> {
             "{what} returned {hash:?}, which is not a 32-byte hash"
         )));
     }
-    Ok(hash.to_string())
+    // Lowercased for the same reason `verus_light::LightClient::txid_from_reply`
+    // is: hex case carries no information, but a caller compares this against
+    // a hash from elsewhere with `==` — a reorg check against a stored block
+    // hash, a caller matching a broadcast's txid against its own record — and
+    // a node that happens to answer in uppercase would otherwise fail that
+    // comparison against every other source, which normalises to lowercase.
+    Ok(hash.to_ascii_lowercase())
 }
 
 /// The fee a registration under this currency costs, split the way consensus
@@ -406,6 +470,20 @@ fn check_hash(hash: &str, what: &'static str) -> Result<String, RpcError> {
 ///
 /// A convenience over [`ChainReader::currency`], kept here rather than in a flow
 /// so a caller can see the numbers before committing to anything.
+///
+/// # When the node's numbers are not believable
+///
+/// `idreferrallevels` comes from the node. If it is implausible enough that
+/// the split cannot be computed honestly, this reports the **unreferred**
+/// outcome — the whole fee burned, nobody paid — rather than a wrapped or
+/// invented figure. That is deliberately the conservative direction for a
+/// preview: it can only overstate what the caller pays.
+///
+/// Note the asymmetry it creates. A registration attempted with those same
+/// numbers does not degrade — it is *refused* before anything is broadcast.
+/// So a preview showing the full fee where a referral was expected means the
+/// node reported something the SDK will not act on; treat it as a signal to
+/// check the node, not as a quote to accept.
 pub fn registration_cost(policy: &CurrencyPolicy, referred: bool) -> (Amount, Amount) {
     let fees = verus_tx::register::registration_fees(
         policy.id_registration_fee,

@@ -507,25 +507,83 @@ pub struct RegistrationFees {
     pub outlay: Amount,
 }
 
-/// Split a registration fee the way consensus does.
+/// The largest `referral_levels` [`checked_registration_fees`] will act on.
+///
+/// `referral_levels` is node-sourced chain policy (`idreferrallevels`) — see
+/// the field doc on [`RegistrationParams::referral_levels`] — and once H2
+/// wired the referral path up to the facade, a value here is a value a
+/// misbehaving node can choose. VRSCTEST pays out 3; this leaves a full order
+/// of magnitude of headroom for a real chain to configure more without
+/// accepting whatever a node cares to report. It exists independently of the
+/// overflow checks below: a small fee and an enormous `levels` divides down to
+/// numbers that do not overflow, so overflow checking alone would wave a
+/// nonsensical policy value through.
+pub const MAX_REFERRAL_LEVELS: u32 = 32;
+
+/// Split a registration fee the way consensus does, refusing rather than
+/// overflowing or silently wrapping when the inputs cannot be trusted.
 ///
 /// Unreferred, the registrant burns the whole fee. Referred, they pay
 /// `fee * (levels + 1) / (levels + 2)` and each referrer takes
 /// `fee / (levels + 2)` out of it. Integer division throughout, matching the
 /// daemon — 100 VRSC over 3 levels is 80 paid, 20 per referrer.
-pub fn registration_fees(fee: Amount, levels: u32, referred: bool) -> RegistrationFees {
+///
+/// `levels` is chain policy read from a node — see
+/// [`RegistrationParams::referral_levels`] — and this is the function that
+/// multiplies it against a fee that is also, in the common case, node-sourced.
+/// Plain `u64` arithmetic here is not merely imprecise but actively unsafe:
+/// `u32::MAX` levels against a 100-coin fee **panics** in a debug build (the
+/// multiplication overflows) and in release **silently wraps**, returning an
+/// outlay of 14.10065407 coins instead of refusing anything. Both failure
+/// modes are closed here: [`TxError::ImplausibleReferralLevels`] refuses a
+/// `levels` this crate has no basis to trust before any arithmetic runs on it,
+/// and [`TxError::ValueOverflow`] catches whatever `checked_mul` still cannot
+/// vouch for beneath that ceiling.
+pub fn checked_registration_fees(
+    fee: Amount,
+    levels: u32,
+    referred: bool,
+) -> Result<RegistrationFees, TxError> {
     if !referred {
-        return RegistrationFees {
+        return Ok(RegistrationFees {
             referral_amount: Amount::ZERO,
             outlay: fee,
-        };
+        });
+    }
+    if levels > MAX_REFERRAL_LEVELS {
+        return Err(TxError::ImplausibleReferralLevels {
+            levels,
+            max: MAX_REFERRAL_LEVELS,
+        });
     }
     let levels = u64::from(levels);
     let fee = fee.to_sat();
-    RegistrationFees {
-        referral_amount: Amount::from_sat(fee / (levels + 2)),
-        outlay: Amount::from_sat(fee * (levels + 1) / (levels + 2)),
-    }
+    // `levels <= MAX_REFERRAL_LEVELS`, so this cannot overflow a u64; the
+    // multiplication just below is the one that can, for a large enough fee.
+    let divisor = levels + 2;
+    let numerator = fee.checked_mul(levels + 1).ok_or(TxError::ValueOverflow)?;
+    Ok(RegistrationFees {
+        referral_amount: Amount::from_sat(fee / divisor),
+        outlay: Amount::from_sat(numerator / divisor),
+    })
+}
+
+/// As [`checked_registration_fees`], but infallible — kept for callers that
+/// predate it and cannot propagate a `Result`, such as
+/// `verus_rpc::registration_cost`'s informational display of the numbers
+/// before a caller commits to anything.
+///
+/// Rather than panic or silently wrap the way the old unchecked arithmetic
+/// did, this degrades to the unreferred outcome — the registrant burns the
+/// whole fee and nobody is paid — whenever `checked_registration_fees` will
+/// not vouch for the inputs. That is a safe default in both directions: it
+/// never overpays a referrer and never reports a burn larger than the fee
+/// itself.
+pub fn registration_fees(fee: Amount, levels: u32, referred: bool) -> RegistrationFees {
+    checked_registration_fees(fee, levels, referred).unwrap_or(RegistrationFees {
+        referral_amount: Amount::ZERO,
+        outlay: fee,
+    })
 }
 
 impl<'a> RegistrationParams<'a> {
@@ -723,13 +781,13 @@ pub fn build_identity_registration(
     // them natively — which the chain-level path below does — would send real
     // coins somewhere the daemon sends none.
     let is_sub_identity = params.parent_currency.is_some();
-    let fees = registration_fees(
+    let fees = checked_registration_fees(
         params.registration_fee,
         params.referral_levels,
         // Not `referral.is_some()`: for a sub-identity the discount does not
         // apply, and claiming it would underpay the parent.
         !is_sub_identity && params.reservation.referral.is_some(),
-    );
+    )?;
     let referrers: Vec<[u8; 20]> = if is_sub_identity {
         // Recorded in the reservation, paid nothing. See above.
         Vec::new()
@@ -1073,6 +1131,56 @@ mod tests {
         let fees = registration_fees(Amount::from_sat(100_00000000), 3, false);
         assert_eq!(fees.referral_amount, Amount::from_sat(0));
         assert_eq!(fees.outlay, Amount::from_sat(100_00000000));
+    }
+
+    /// M2: `levels` is node-sourced (`idreferrallevels`), and the old unchecked
+    /// arithmetic panicked in debug for a large enough value. The checked path
+    /// must refuse it by name instead, before any multiplication runs.
+    #[test]
+    fn an_absurd_referral_level_count_is_refused_before_it_can_overflow() {
+        assert!(matches!(
+            checked_registration_fees(Amount::from_sat(100_00000000), u32::MAX, true),
+            Err(TxError::ImplausibleReferralLevels {
+                levels: u32::MAX,
+                max: MAX_REFERRAL_LEVELS
+            })
+        ));
+    }
+
+    /// The same bug in release mode did not panic — it silently wrapped and
+    /// returned an outlay of 14.10065407 coins for a 100-coin fee. Confirming
+    /// the old behaviour is gone matters more than confirming the panic is:
+    /// a wrong-but-plausible-looking number is the worse failure of the two.
+    #[test]
+    fn an_absurd_referral_level_count_does_not_silently_wrap_the_outlay() {
+        let refused = checked_registration_fees(Amount::from_sat(100_00000000), u32::MAX, true);
+        assert!(refused.is_err(), "expected a refusal, not a computed value");
+
+        // The infallible convenience wrapper must not surface the wrapped
+        // value either — it degrades to "burn the whole fee" instead.
+        let degraded = registration_fees(Amount::from_sat(100_00000000), u32::MAX, true);
+        assert_eq!(degraded.outlay, Amount::from_sat(100_00000000));
+        assert_eq!(degraded.referral_amount, Amount::ZERO);
+    }
+
+    /// The ceiling itself: one level above it is refused, and the ceiling value
+    /// is not, holding the exact daemon arithmetic for a fee this large.
+    #[test]
+    fn the_referral_level_ceiling_is_exclusive() {
+        assert!(matches!(
+            checked_registration_fees(
+                Amount::from_sat(100_00000000),
+                MAX_REFERRAL_LEVELS + 1,
+                true
+            ),
+            Err(TxError::ImplausibleReferralLevels { .. })
+        ));
+        assert!(checked_registration_fees(
+            Amount::from_sat(100_00000000),
+            MAX_REFERRAL_LEVELS,
+            true
+        )
+        .is_ok());
     }
 
     /// A referral on a sub-identity is recorded and paid nothing.

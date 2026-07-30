@@ -211,7 +211,7 @@ impl RawAddressBalance<'_> {
         let mut currency_balance = BTreeMap::new();
         for (currency, raw) in self.currencybalance {
             // Coins here, satoshis above, in the same reply.
-            currency_balance.insert(currency, json::coins(raw, "currencybalance")?);
+            currency_balance.insert(currency, json::currency_coins(raw, "currencybalance")?);
         }
         Ok(AddressBalance {
             balance: json::satoshis(self.balance, "balance")?,
@@ -252,6 +252,13 @@ impl RawCurrency<'_> {
             currency_id: self.currencyid,
             name: self.name,
             // Coins, not satoshis — see `json`.
+            // The three identity/currency fees deliberately take the NATIVE
+            // ceiling, not the per-currency one, even though a fee under a
+            // token parent is denominated in that token. It is a sanity bar on
+            // a number that gets burned, and a fee of a billion units is not a
+            // fee — the flows refuse anything over 500 coins on the default
+            // path anyway. Chosen, not overlooked: `currencybalance` and
+            // `estimatedcurrencyout` below are the per-currency amounts.
             id_registration_fee: json::coins(self.idregistrationfees, "idregistrationfees")?,
             id_referral_levels: self.idreferrallevels,
             id_import_fee: json::coins(self.idimportfees, "idimportfees")?,
@@ -274,7 +281,7 @@ impl RawConversionEstimate<'_> {
     pub(crate) fn into_typed(self) -> Result<ConversionEstimate, RpcError> {
         Ok(ConversionEstimate {
             // Coins, like every other human-facing amount the daemon prints.
-            estimated_out: json::coins(self.estimatedcurrencyout, "estimatedcurrencyout")?,
+            estimated_out: json::currency_coins(self.estimatedcurrencyout, "estimatedcurrencyout")?,
             fee: None,
         })
     }

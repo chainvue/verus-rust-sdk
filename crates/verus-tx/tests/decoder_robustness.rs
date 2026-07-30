@@ -29,7 +29,9 @@ use verus_tx::cc::{reserve_output_script, Destination};
 use verus_tx::identity::Identity;
 use verus_tx::register::{commitment_script, identity_id, NameReservation};
 use verus_tx::CurrencyId;
-use verus_tx::{decode_output_script, identity_payment_script, identity_primary_script};
+use verus_tx::{
+    decode_output_script, identity_payment_script, identity_primary_script, OutputKind,
+};
 
 const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
 const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
@@ -90,12 +92,81 @@ fn sample_identity() -> Identity {
     }
 }
 
+/// A small identity: one primary address, no content, no private addresses, a
+/// short name. On its own its payload sits comfortably under the 255-byte
+/// `OP_PUSHDATA1` ceiling — the baseline every variant in [`identity_corpus`]
+/// is built from, so each one isolates a single feature crossing it.
+fn minimal_identity() -> Identity {
+    Identity {
+        version: 3,
+        flags: 0,
+        primary_addresses: vec![Destination::PubKeyHash(key().address().hash())],
+        min_sigs: 1,
+        parent: chain(),
+        name: "id".to_string(),
+        content_multimap: Vec::new(),
+        content_map: Vec::new(),
+        revocation_authority: [0x04; 20],
+        recovery_authority: [0x05; 20],
+        private_addresses: Vec::new(),
+        system_id: chain(),
+        unlock_after: 0,
+    }
+}
+
+/// The identity shapes the auditor measured as failing to decode (H1): the
+/// encoder (`cc.rs` `push_data`) reaches for `OP_PUSHDATA2` the moment the
+/// payload passes 255 bytes, and the decoder only understood `OP_PUSHDATA1`.
+/// Each variant changes exactly one thing from [`minimal_identity`] so the
+/// corpus proves the fix covers each trigger independently, not just their sum.
+fn identity_corpus() -> Vec<Identity> {
+    let base = minimal_identity();
+
+    let mut three_primaries = base.clone();
+    three_primaries.primary_addresses = vec![
+        Destination::PubKeyHash(key().address().hash()),
+        Destination::PubKeyHash([0x99; 20]),
+        Destination::PubKeyHash([0x88; 20]),
+    ];
+    three_primaries.min_sigs = 2;
+
+    let mut with_private_address = base.clone();
+    with_private_address.private_addresses = vec![[0x06; 43]];
+
+    let mut with_content_map_entry = base.clone();
+    with_content_map_entry.content_map = vec![([0x02; 20], [0x03; 32])];
+
+    let mut long_name = base.clone();
+    long_name.name = "a".repeat(50);
+
+    vec![
+        base,
+        three_primaries,
+        with_private_address,
+        with_content_map_entry,
+        long_name,
+    ]
+}
+
+/// Encode an identity into the output script that would actually hold it on
+/// chain, via the real encoder — never hand-rolled bytes.
+fn identity_script(identity: &Identity) -> Vec<u8> {
+    let id = identity_id(&identity.name, Some(identity.parent));
+    identity_primary_script(
+        id,
+        identity.to_bytes().unwrap(),
+        identity.revocation_authority,
+        identity.recovery_authority,
+    )
+    .unwrap()
+}
+
 /// Every shape of output this crate knows how to build.
 fn valid_scripts() -> Vec<Vec<u8>> {
     let identity = sample_identity();
     let id = identity_id(&identity.name, Some(identity.parent));
     let reservation = NameReservation::new("robustness", chain(), None, [0x5a; 32]).unwrap();
-    vec![
+    let mut scripts = vec![
         key().address().p2pkh_script_pubkey().unwrap(),
         identity_payment_script(id).unwrap(),
         reserve_output_script(
@@ -116,7 +187,9 @@ fn valid_scripts() -> Vec<Vec<u8>> {
             key().address().hash(),
         )
         .unwrap(),
-    ]
+    ];
+    scripts.extend(identity_corpus().iter().map(identity_script));
+    scripts
 }
 
 /// Damage `bytes` in one of the ways a parser is most likely to mishandle.
@@ -186,6 +259,50 @@ fn the_harness_detects_a_panic() {
         must_not_panic("deliberate", &[0xde, 0xad], || panic!("boom"));
     }));
     assert!(caught.is_err(), "must_not_panic swallowed a panic");
+}
+
+/// Every mutation test below only asserts "must not panic" — a `Vec` of
+/// scripts a decoder is *supposed* to accept, with nothing ever checking that
+/// it actually does. That blind spot is why H1 (the decoder could not read
+/// `OP_PUSHDATA2`, which its own encoder writes for any identity payload past
+/// 255 bytes) survived: `valid_scripts()` already contained a script that
+/// size before this test existed, and nothing here noticed it failed to
+/// decode.
+#[test]
+fn every_unmutated_valid_script_decodes_successfully() {
+    for (index, script) in valid_scripts().into_iter().enumerate() {
+        let result = decode_output_script(&script);
+        assert!(
+            result.is_ok(),
+            "corpus entry {index} ({} bytes) failed to decode: {result:?}",
+            script.len()
+        );
+    }
+}
+
+/// An identity that decodes must decode to exactly the identity that was
+/// encoded, not merely "successfully to something". Covers the shapes that
+/// motivated the `OP_PUSHDATA2` fix: three primary addresses, a private (z)
+/// address, a `content_map` entry, and a name at the 50-character mark.
+#[test]
+fn an_identity_round_trips_through_the_real_encoder_and_decoder() {
+    for identity in identity_corpus() {
+        let script = identity_script(&identity);
+        match decode_output_script(&script) {
+            Ok(OutputKind::IdentityPrimary { identity: decoded }) => {
+                assert_eq!(
+                    *decoded, identity,
+                    "identity {:?} did not round-trip through decode_output_script",
+                    identity.name
+                );
+            }
+            other => panic!(
+                "identity {:?} ({} byte payload) did not decode as IdentityPrimary: {other:?}",
+                identity.name,
+                script.len()
+            ),
+        }
+    }
 }
 
 #[test]

@@ -53,8 +53,22 @@ impl<'a> Reader<'a> {
         self.offset >= self.bytes.len()
     }
 
+    /// # Why this is not `self.offset + n > self.bytes.len()`
+    ///
+    /// That obvious-looking check overflows. `n` comes from a decoded varint —
+    /// for [`bytes`](Self::bytes) it is a length prefix the server chose, and a
+    /// hostile or buggy one can send a 10-byte varint that decodes to
+    /// `u64::MAX`, which `usize::try_from` accepts whole on a 64-bit target.
+    /// `self.offset + n` then wraps around to something small, the bounds
+    /// check passes, and the slice indexing below it panics — turning a
+    /// malformed response into a remote crash instead of an `Err`.
+    ///
+    /// `self.offset <= self.bytes.len()` is an invariant this reader
+    /// maintains (every mutation of `offset` is preceded by a `need` call
+    /// bounding the amount added), so `self.bytes.len() - self.offset` cannot
+    /// underflow, and comparing against it cannot overflow either.
     fn need(&self, n: usize) -> Result<(), LightError> {
-        if self.offset + n > self.bytes.len() {
+        if n > self.bytes.len() - self.offset {
             return Err(LightError::Protobuf(format!(
                 "wanted {n} bytes at offset {}, but the message is {} long",
                 self.offset,

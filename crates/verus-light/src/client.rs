@@ -113,7 +113,18 @@ impl<T: LightTransport> LightClient<T> {
                 "block range {start}..={end} runs backwards"
             )));
         }
-        let count = end - start + 1;
+        // `end - start` cannot underflow (checked above), but `+ 1` can
+        // overflow for `end == u64::MAX` — `block_range(0, u64::MAX)` being
+        // the obvious way to hit it. A wrapping `count` of 0 would sail
+        // straight past the `MAX_BLOCK_RANGE` guard below, and the trailing
+        // `blocks.len() != count` check would then pass vacuously against
+        // whatever the server actually sent, for the same silent-empty-range
+        // failure this module exists to prevent.
+        let count = (end - start).checked_add(1).ok_or_else(|| {
+            LightError::Refused(format!(
+                "block range {start}..={end} has no representable block count"
+            ))
+        })?;
         if count > MAX_BLOCK_RANGE {
             return Err(LightError::Refused(format!(
                 "{count} blocks is more than the {MAX_BLOCK_RANGE} this client will fetch at once; \
@@ -131,7 +142,19 @@ impl<T: LightTransport> LightClient<T> {
         // and a gap here would be indistinguishable from "no notes in those
         // blocks" everywhere downstream.
         for (offset, block) in blocks.iter().enumerate() {
-            let expected = start + u64::try_from(offset).expect("an index fits in u64");
+            let offset = u64::try_from(offset).expect("an index fits in u64");
+            // `count` is bounded by `MAX_BLOCK_RANGE` for what this client
+            // *asked* for, but a hostile server can stream back more messages
+            // than it was asked for, so `offset` here is not actually bounded
+            // by that guard. Combined with a `start` near `u64::MAX`, a plain
+            // `start + offset` can overflow; `checked_add` turns that into an
+            // error instead of a wrapped height that could coincidentally
+            // match `block.height` and mask the overflow entirely.
+            let expected = start.checked_add(offset).ok_or_else(|| {
+                LightError::Protobuf(format!(
+                    "block position {offset} overflows a height starting at {start}"
+                ))
+            })?;
             if block.height != expected {
                 return Err(LightError::Protobuf(format!(
                     "expected block {expected} at position {offset} of the range, got {}",

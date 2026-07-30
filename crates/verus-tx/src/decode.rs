@@ -25,6 +25,10 @@ const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;
 const OP_DROP: u8 = 0x75;
 /// `OP_PUSHDATA1`.
 const OP_PUSHDATA1: u8 = 0x4c;
+/// `OP_PUSHDATA2`.
+const OP_PUSHDATA2: u8 = 0x4d;
+/// `OP_PUSHDATA4`.
+const OP_PUSHDATA4: u8 = 0x4e;
 
 /// What an output turned out to be.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,11 +97,40 @@ impl<'a> ScriptReader<'a> {
     }
 
     /// Read one push, returning its data. Errors on any non-push opcode.
+    ///
+    /// `OP_PUSHDATA2` matters here, not just `OP_PUSHDATA1`: `cc.rs`'s
+    /// `push_data` reaches for it the moment a payload passes 255 bytes, which
+    /// an identity does immediately once it carries any content — a single
+    /// `content_map` entry alone puts the params chunk at 266 bytes. Without
+    /// this arm, every identity with real content, a private address, a 3-of-N
+    /// key set, or a longish name failed to decode (`MalformedCryptoCondition`),
+    /// which blocks update, revoke, recover and currency-launch on exactly the
+    /// identities that use those features.
+    ///
+    /// `OP_PUSHDATA4` is deliberately NOT supported. `push_data` itself refuses
+    /// to emit anything over 65535 bytes (`CcPayloadTooLarge`) rather than reach
+    /// it, so no encoder in this crate has ever produced or round-tripped that
+    /// form — decoding it would be trusting an encoding nothing here tests.
+    /// Refusing it explicitly, rather than silently mis-reading the length or
+    /// panicking on it, keeps the same "fail closed" contract as the rest of
+    /// this module.
     fn take_push(&mut self) -> Result<&'a [u8], TxError> {
         let opcode = self.take_opcode()?;
         let length = match opcode {
             1..=75 => usize::from(opcode),
             OP_PUSHDATA1 => usize::from(self.take_opcode()?),
+            OP_PUSHDATA2 => {
+                let low = self.take_opcode()?;
+                let high = self.take_opcode()?;
+                usize::from(u16::from_le_bytes([low, high]))
+            }
+            OP_PUSHDATA4 => {
+                return Err(malformed(
+                    "OP_PUSHDATA4 push encountered; this crate's own encoder \
+                     refuses to emit one (see cc.rs push_data's CcPayloadTooLarge), \
+                     so decoding it would exercise an encoding nothing here has tested",
+                ))
+            }
             other => {
                 return Err(malformed(&format!(
                     "expected a data push, found opcode {other:#04x}"
@@ -122,6 +155,18 @@ fn malformed(detail: &str) -> TxError {
 }
 
 /// Decode Bitcoin's `VARINT` (base-128, MSB continuation).
+///
+/// # Why `checked_mul`, not `checked_shl`
+///
+/// The overflow guard here used to be `value.checked_shl(7)`, which looks like
+/// it rejects an oversized value but does not: `checked_shl` only returns
+/// `None` when the *shift amount* is `>= 64` (the bit width), never when bits
+/// are actually shifted out the top. `u64::MAX.checked_shl(7)` is `Some(_)`. A
+/// crafted 10-byte token-amount VARINT (`ff ff ff ff ff ff ff ff ff 7f`) wrapped
+/// silently to `9295997013522923647` instead of erroring — feeding a bogus
+/// `Balances` entry in `token.rs`, a bogus demand in `offer.rs`, and a bogus
+/// `held` in `convert.rs`. `checked_mul(128)` (equivalent to a real `<< 7`)
+/// actually detects the overflow.
 fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
     let mut value: u64 = 0;
     loop {
@@ -130,7 +175,7 @@ fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
             .ok_or_else(|| malformed("VARINT ended early"))?;
         *offset += 1;
         value = value
-            .checked_shl(7)
+            .checked_mul(128)
             .and_then(|v| v.checked_add(u64::from(byte & 0x7f)))
             .ok_or_else(|| malformed("VARINT overflows u64"))?;
         if byte & 0x80 == 0 {
@@ -388,5 +433,79 @@ mod tests {
             decode_output_script(&[0x51]),
             Err(TxError::UnsupportedScript(_))
         ));
+    }
+
+    /// `cc.rs` `push_data` reaches for `OP_PUSHDATA2` the moment a payload
+    /// passes 255 bytes. Before this crate's own encoder wrote bytes the
+    /// decoder could not read back.
+    #[test]
+    fn take_push_reads_a_pushdata2_encoded_push() {
+        let mut script = vec![OP_PUSHDATA2];
+        script.extend_from_slice(&300u16.to_le_bytes());
+        script.extend(vec![0xab; 300]);
+        let mut reader = ScriptReader::new(&script);
+        assert_eq!(reader.take_push().unwrap().len(), 300);
+        assert!(reader.done());
+    }
+
+    /// A full CryptoCondition output whose payload only fits in an
+    /// `OP_PUSHDATA2` push must decode, not just the raw push in isolation —
+    /// this is the shape `identity_primary_script` produces for any identity
+    /// carrying content, a private address, or a longish name.
+    #[test]
+    fn decodes_an_output_whose_payload_needs_pushdata2() {
+        let master =
+            crate::cc::OptCcParams::one_of_one(EVAL_NONE, Destination::PubKeyHash(RECIPIENT));
+        let params = crate::cc::OptCcParams {
+            vdata: vec![vec![0u8; 300]],
+            // An eval code this module does not special-case: the point of
+            // this test is that the *push* parses, not the payload semantics.
+            ..crate::cc::OptCcParams::one_of_one(200, Destination::PubKeyHash(RECIPIENT))
+        };
+        let script = crate::cc::cc_script(&master, &params).unwrap();
+        assert_eq!(
+            decode_output_script(&script).unwrap(),
+            OutputKind::UnsupportedCryptoCondition { eval_code: 200 }
+        );
+    }
+
+    /// `OP_PUSHDATA4` is refused explicitly rather than decoded: `push_data`
+    /// itself refuses anything over 65535 bytes (`CcPayloadTooLarge`) rather
+    /// than emit it, so no encoder here has ever produced or tested that form.
+    #[test]
+    fn take_push_refuses_a_pushdata4_encoded_push() {
+        let mut script = vec![OP_PUSHDATA4];
+        script.extend_from_slice(&300u32.to_le_bytes());
+        script.extend(vec![0xab; 300]);
+        let mut reader = ScriptReader::new(&script);
+        assert!(matches!(
+            reader.take_push(),
+            Err(TxError::MalformedCryptoCondition(_))
+        ));
+    }
+
+    /// The guard this replaces, `value.checked_shl(7)`, only rejects a shift
+    /// amount `>= 64` — it never detects the value itself overflowing, so
+    /// `u64::MAX.checked_shl(7)` is `Some(_)` and a 10-byte VARINT wrapped
+    /// silently instead of erroring.
+    #[test]
+    fn a_varint_that_overflows_u64_is_an_error_not_a_wrapped_value() {
+        let mut bytes = vec![0xffu8; 9];
+        bytes.push(0x7f);
+        let mut offset = 0;
+        assert!(matches!(
+            read_var_int(&bytes, &mut offset),
+            Err(TxError::MalformedCryptoCondition(_))
+        ));
+    }
+
+    /// A VARINT well within range still decodes normally after the fix — the
+    /// guard must reject overflow without breaking the common case.
+    #[test]
+    fn a_varint_within_range_still_decodes() {
+        let mut offset = 0;
+        assert_eq!(read_var_int(&[0x7f], &mut offset).unwrap(), 127);
+        offset = 0;
+        assert_eq!(read_var_int(&[0x80, 0x00], &mut offset).unwrap(), 128);
     }
 }

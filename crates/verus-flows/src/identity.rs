@@ -111,6 +111,20 @@ pub struct Pending<S> {
     /// operation was budgeted against, and a node that reports a different one
     /// later should be noticed, not silently obeyed.
     pub registration_fee: Amount,
+    /// `idreferrallevels`, read from chain policy when this was prepared.
+    ///
+    /// Needed at step 2 to actually pay a referral out — see
+    /// [`Pending::complete`] — so it has to survive the same round trip to
+    /// disk the rest of this type does. `#[serde(default)]` so a `Pending`
+    /// persisted before this field existed still deserializes: it lands as
+    /// `0`, which reproduces the H2 bug (referred registrations refused with
+    /// `ReferralChainTooLong`) for exactly the in-flight registrations that
+    /// predate the fix, rather than failing to load at all. There is no
+    /// better default available after the fact — the real figure was read
+    /// once, at prepare time, and a resumed process has no chain policy to
+    /// re-derive it from.
+    #[serde(default)]
+    pub referral_levels: u32,
     /// The addresses that will control the identity.
     pub primary_addresses: Vec<String>,
     /// How many of them must sign.
@@ -147,6 +161,7 @@ impl<S> Pending<S> {
             commitment_txid: self.commitment_txid,
             commitment_vout: self.commitment_vout,
             registration_fee: self.registration_fee,
+            referral_levels: self.referral_levels,
             primary_addresses: self.primary_addresses,
             min_sigs: self.min_sigs,
             system_id: self.system_id,
@@ -239,10 +254,37 @@ pub fn prepare_registration_with_salt(
     }
 
     let policy = reader.currency(&info.name)?;
-    let fee = options.pin_fee.unwrap_or(policy.id_registration_fee);
+    let fee = match options.pin_fee {
+        Some(fee) => fee,
+        // Node-supplied and BURNED outright — see `check_trusted_node_fee`.
+        // An explicitly pinned fee skips this bar: the caller has taken
+        // responsibility for the number, and it is `pin_fee` that is checked
+        // against the wider `MAX_DECLARED_BURN` backstop instead, later at
+        // assembly.
+        None => check_trusted_node_fee("identity registration", policy.id_registration_fee)?,
+    };
 
+    // Referral policy is node-supplied too, and it decides the fee split that
+    // step two computes. Checking it HERE — before any broadcast — is the
+    // point: left to `complete()`, an implausible value is refused only after
+    // the commitment fee is spent, and the name commitment is wasted with the
+    // salt still valid but useless. Only checked when a referral is actually
+    // wanted; the levels are irrelevant otherwise.
     let referral = match &options.referral {
-        Some(referrer) => Some(referral_id(reader, referrer)?),
+        Some(referrer) => {
+            if policy.id_referral_levels > verus_tx::register::MAX_REFERRAL_LEVELS {
+                return Err(FlowError::ImplausibleReferralLevels {
+                    reported: policy.id_referral_levels,
+                    ceiling: verus_tx::register::MAX_REFERRAL_LEVELS,
+                });
+            }
+            if policy.id_referral_levels == 0 {
+                return Err(FlowError::CurrencyPaysNoReferrals {
+                    referrer: referrer.clone(),
+                });
+            }
+            Some(referral_id(reader, referrer)?)
+        }
         None => None,
     };
     let reservation = NameReservation::new(name, system_id, referral, salt)?;
@@ -276,6 +318,7 @@ pub fn prepare_registration_with_salt(
         // against what the chain actually holds.
         commitment_vout: 0,
         registration_fee: fee,
+        referral_levels: policy.id_referral_levels,
         primary_addresses,
         min_sigs: options.min_sigs.unwrap_or(1),
         system_id,
@@ -465,7 +508,17 @@ impl Pending<ReadyToRegister> {
             change,
             Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
         )
-        .with_min_sigs(self.min_sigs);
+        .with_min_sigs(self.min_sigs)
+        // H2: without this, `referral_levels` stays at `RegistrationParams`'s
+        // default of 0 and `build_identity_registration` computes
+        // `referrers = vec![referrer]` for every referred reservation, then
+        // refuses it with `ReferralChainTooLong` — after the commitment fee is
+        // already spent. The empty chain is correct here: this facade only
+        // ever commits to a single, immediate referrer (see `referral_id` in
+        // `prepare_registration_with_salt`), never a multi-level chain, so
+        // there is nothing beyond `self.reservation.referral` for
+        // `build_identity_registration` to walk.
+        .with_referrals(self.referral_levels, &[]);
 
         let signed = build_identity_registration(key, &params)?;
         broadcast(
@@ -557,6 +610,38 @@ fn random_salt() -> [u8; 32] {
 fn currency_id_bytes(id: &str) -> Result<[u8; 20], FlowError> {
     let address: Address = id.parse()?;
     Ok(address.hash())
+}
+
+/// H4: refuse a registration fee read from a node, unless it looks plausible.
+///
+/// `policy.id_registration_fee` is whatever `getcurrency` answered — a value
+/// the node controls completely, with no consensus proof behind it — and it
+/// is *burned*, so there is no output a caller could inspect and reject before
+/// it is gone. The only prior bound, `verus_tx::fee::MAX_DECLARED_BURN`, is a
+/// backstop sized for a *pinned* fee a caller already decided on (1000 coins,
+/// to catch a typo); it does nothing to stop a hostile or misconfigured node
+/// reporting 999 against a real 100-coin fee. See
+/// [`verus_tx::fee::MAX_TRUSTED_NODE_FEE`] for why 500 was chosen as the
+/// tighter default bar.
+///
+/// Shared with the currency-launch flow, whose fee has the same shape: a
+/// node-supplied number that is burned rather than paid to an output anyone
+/// could inspect. Only the `operation` string differs.
+///
+/// Returns the fee unchanged when it passes, so this composes into the
+/// `let fee = ...;` it guards.
+pub(crate) fn check_trusted_node_fee(
+    operation: &'static str,
+    reported: Amount,
+) -> Result<Amount, FlowError> {
+    if reported.to_sat() > verus_tx::fee::MAX_TRUSTED_NODE_FEE {
+        return Err(FlowError::ImplausibleNodeFee {
+            operation,
+            reported,
+            ceiling: Amount::from_sat(verus_tx::fee::MAX_TRUSTED_NODE_FEE),
+        });
+    }
+    Ok(reported)
 }
 
 /// The identity id of a referrer, given by name or by `i` address.
