@@ -87,6 +87,12 @@ pub const RT_CONVERT: u64 = 2;
 /// is a commitment made at the launch ratio, refunded in full if the launch
 /// fails its minimums.
 pub const RT_PRECONVERT: u64 = 4;
+/// Create new supply of a centralized currency.
+///
+/// Only its controlling identity may do this, and only for a currency whose
+/// `proofprotocol` is 2 (`CHAINID`) — a fractional basket cannot be minted, its
+/// supply comes from conversions.
+pub const RT_MINT_CURRENCY: u64 = 32;
 /// Destroy the value, reducing supply and moving the fractional's price.
 pub const RT_BURN_CHANGE_PRICE: u64 = 128;
 /// The destination currency is the *source* of the conversion — set when
@@ -263,6 +269,19 @@ pub enum ConversionKind {
         /// The launching currency being bought.
         fractional: CurrencyId,
     },
+    /// Create new supply of a centralized currency.
+    ///
+    /// Signed by the currency's **controlling identity** — the one the currency
+    /// is named after — and valid only for a currency whose `proofprotocol` is
+    /// 2 (`CHAINID`). A fractional basket is refused by the chain: its supply
+    /// comes from conversions, not from an issuer's say-so.
+    ///
+    /// Unlike a conversion this carries **no auxiliary destination**. There is
+    /// nothing to refund — the value did not exist before.
+    Mint {
+        /// The currency to create.
+        currency: CurrencyId,
+    },
     /// Destroy the value.
     ///
     /// The currency must be a token. Burning reduces supply, which moves a
@@ -276,6 +295,7 @@ impl ConversionKind {
         match self {
             ConversionKind::IntoFractional { .. } => RT_VALID | RT_CONVERT,
             ConversionKind::Preconvert { .. } => RT_VALID | RT_CONVERT | RT_PRECONVERT,
+            ConversionKind::Mint { .. } => RT_VALID | RT_MINT_CURRENCY,
             ConversionKind::IntoReserve { .. } => RT_VALID | RT_CONVERT | RT_IMPORT_TO_SOURCE,
             ConversionKind::ReserveToReserve { .. } => {
                 RT_VALID | RT_CONVERT | RT_RESERVE_TO_RESERVE
@@ -295,6 +315,7 @@ impl ConversionKind {
             | ConversionKind::Preconvert { fractional } => *fractional,
             ConversionKind::IntoReserve { reserve } => *reserve,
             ConversionKind::ReserveToReserve { via, .. } => *via,
+            ConversionKind::Mint { currency } => *currency,
             ConversionKind::Burn => source,
         }
     }
@@ -953,6 +974,51 @@ mod preconvert_tests {
             transfer.native_value(vrsctest).unwrap(),
             Amount::from_coins_str("5.0002").unwrap()
         );
+    }
+
+    /// The daemon's own mint, reproduced byte for byte.
+    ///
+    /// Captured from `sendcurrency "sdkcuralpha@" … "mintnew": true` with
+    /// `returntx` on VRSCTEST, 2026-07-30.
+    ///
+    /// Two things worth reading off it. The destination carries **no auxiliary**
+    /// — a conversion refunds if it cannot complete, and there is nothing to
+    /// refund on a mint. And the payload's value slot names the *system*
+    /// currency while the destination names what is being created, which reads
+    /// oddly and is what the daemon emits.
+    #[test]
+    fn a_mint_matches_the_daemon() {
+        let vrsctest = CurrencyId::from_bytes(hash("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"));
+        let token = CurrencyId::from_bytes(hash("i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7"));
+
+        let transfer = ReserveTransfer {
+            source: vrsctest,
+            amount: Amount::from_coins_str("1.0").unwrap(),
+            fee_currency: vrsctest,
+            fee: Amount::from_coins_str("0.0002").unwrap(),
+            destination: TransferDestination::plain(Destination::PubKeyHash(hash(
+                "RWoj68ERmYHEhrkhFc1GgaxJGnS4z6XBQG",
+            ))),
+            kind: ConversionKind::Mint { currency: token },
+        };
+
+        assert_eq!(
+            hex::encode(transfer.to_script().unwrap()),
+            "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4c77040308010114cb8a0f7             f651b484a81e2312c3438deb601e273684c5b01a6ef9ea235635e328124ff3429db9f9e91b64e2da             ed6c10021a6ef9ea235635e328124ff3429db9f9e91b64e2d809b200214ec2101af4bbb81466cea1             47744865262182d59442bd0c2dcf49d034269ad0cd786c01bdd4bc2f9d675"
+                .replace(['\n', ' '], "")
+        );
+    }
+
+    /// Mint is `VALID | MINT_CURRENCY` — no CONVERT bit, because nothing is
+    /// being converted.
+    #[test]
+    fn minting_does_not_set_the_convert_flag() {
+        let token = CurrencyId::from_bytes([0x22; 20]);
+        let flags = ConversionKind::Mint { currency: token }.flags();
+
+        assert_eq!(flags, RT_VALID | RT_MINT_CURRENCY);
+        assert_eq!(flags & RT_CONVERT, 0);
+        assert_eq!(flags, 33);
     }
 
     /// A preconvert is `VALID | CONVERT | PRECONVERT`, and the bit that makes it

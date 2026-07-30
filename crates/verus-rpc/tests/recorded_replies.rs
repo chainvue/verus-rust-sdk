@@ -80,6 +80,56 @@ fn reads_the_registration_fee_from_a_float_literal_without_a_float() {
     assert_eq!(policy.proof_protocol, 1);
 }
 
+/// The one figure a currency launch cannot proceed without.
+///
+/// Half of it becomes the reserve deposit and half is consumed by consensus with
+/// no output accounting for it, so a wrong value produces a transaction the
+/// daemon rejects. It is chain policy, which is why it is read rather than
+/// assumed — and it arrives as a JSON float like the rest.
+#[test]
+fn reads_the_currency_registration_fee() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/rpc/getcurrency_vrsctest.json"
+    ))
+    .unwrap();
+    assert!(
+        raw.contains(r#""currencyregistrationfee":200.0"#),
+        "the fixture no longer carries the literal, so this test proves nothing"
+    );
+
+    let policy = client("getcurrency_vrsctest").currency("VRSCTEST").unwrap();
+    assert_eq!(policy.currency_registration_fee.to_sat(), 200_00000000);
+
+    // The split a launch is built from: the ceiling half is the reserve
+    // deposit, the rest is burned.
+    let fee = policy.currency_registration_fee.to_sat();
+    assert_eq!(fee - fee / 2, 100_00000000);
+}
+
+/// A currency whose definition carries no launch fee reads as zero rather than
+/// failing — the field is absent from some replies, and a launch that needs it
+/// refuses on the zero.
+#[test]
+fn an_absent_currency_registration_fee_is_zero() {
+    let policy = client("getcurrency_vrsctest").currency("VRSCTEST").unwrap();
+    assert!(policy.currency_registration_fee.to_sat() > 0, "sanity");
+
+    struct Bare;
+    impl Transport for Bare {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(
+                r#"{"result":{"currencyid":"i","name":"X","idregistrationfees":1.0,
+                   "idreferrallevels":0,"idimportfees":0.0}}"#
+                    .replace('\n', "")
+                    .to_string(),
+            )
+        }
+    }
+    let bare = RpcClient::new(Bare).currency("X").unwrap();
+    assert_eq!(bare.currency_registration_fee.to_sat(), 0);
+}
+
 /// The fee and the referral split, straight from the node's own policy — the
 /// numbers a caller should see before spending a name commitment.
 #[test]

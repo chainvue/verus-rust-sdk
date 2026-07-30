@@ -93,12 +93,17 @@ pub fn plan_conversion(
         | ConversionKind::Preconvert { fractional } => (id_text(*fractional), None),
         ConversionKind::IntoReserve { reserve } => (id_text(*reserve), None),
         ConversionKind::ReserveToReserve { via, target } => (id_text(*target), Some(id_text(*via))),
+        ConversionKind::Mint { currency } => (id_text(*currency), None),
         ConversionKind::Burn => (source.to_string(), None),
     };
 
     let estimated_out = if matches!(kind, ConversionKind::Burn) {
         // Nothing comes out of a burn, so there is nothing to estimate.
         Amount::ZERO
+    } else if matches!(kind, ConversionKind::Mint { .. }) {
+        // A mint creates exactly what it asks for — there is no price and
+        // nothing to estimate.
+        amount
     } else if matches!(kind, ConversionKind::Preconvert { .. }) {
         // A pre-launch currency has no reserves, so there is no market to price
         // against and `estimateconversion` has nothing to answer with. What a
