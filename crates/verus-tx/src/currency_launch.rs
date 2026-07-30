@@ -49,6 +49,10 @@ use crate::register::identity_id;
 use verus_wire::compact::write_compact_size;
 use verus_wire::TxOut;
 
+use crate::expiry::Expiry;
+use crate::Utxo;
+use verus_keys::{Address, PrivateKey};
+
 /// One satoshi-scaled unit — `SATOSHIDEN`.
 const SATOSHIDEN: u128 = 100_000_000;
 
@@ -493,4 +497,109 @@ pub fn build_launch_outputs(
 
     debug_assert_eq!(EVAL_CURRENCY_DEFINITION, 2, "output 1 is the definition");
     Ok(LaunchOutputs { outputs })
+}
+
+/// What a launch transaction needs beyond the outputs themselves.
+#[derive(Clone, Debug)]
+pub struct LaunchParams<'a> {
+    /// The output currently holding the defining identity — what `getidentity`
+    /// reports as its `txid`/`vout`. Carries no native value.
+    pub identity_output: &'a Utxo,
+    /// The currency being defined.
+    pub definition: &'a CurrencyDefinition,
+    /// Tip, fee and the identity as the chain holds it.
+    pub context: &'a LaunchContext,
+    /// P2PKH coins to fund the reserve deposit, the registration fee and the
+    /// miner fee.
+    pub utxos: &'a [Utxo],
+    /// Where native change goes. It stands in for the daemon's own
+    /// identity-change output, so the defining identity's address is the
+    /// like-for-like choice.
+    pub change_address: Address,
+    /// When the transaction stops being minable.
+    pub expiry: Expiry,
+    /// Fee rate in satoshis per kilobyte.
+    pub fee_per_kb: u64,
+}
+
+/// Build and sign a complete `definecurrency` transaction.
+///
+/// # What it costs
+///
+/// The launch fee splits in two. The ceiling half becomes the reserve deposit,
+/// an actual output. **The other half leaves the transaction without one** —
+/// consensus consumes it as the registration fee — so the funding has to cover
+/// it even though nothing in the output list accounts for it. Verified against
+/// the daemon's own transaction: 205 in, 105 out, 100 unaccounted, and 100 is
+/// exactly `launch_fee - reserve_deposit`.
+///
+/// The miner fee is on top of that.
+///
+/// # Why the result is not byte-identical to the daemon's
+///
+/// Only output 6 differs, and it must: the daemon emits an identity-change
+/// output, this emits native change to [`LaunchParams::change_address`], and its
+/// value depends on which coins fund the transaction. Outputs 0 through 5 — the
+/// ones consensus validates — are byte-identical.
+pub fn build_currency_launch(
+    funding_key: &PrivateKey,
+    identity_keys: &[&PrivateKey],
+    params: &LaunchParams<'_>,
+) -> Result<crate::send::SignedTransaction, TxError> {
+    let built = build_launch_outputs(params.definition, params.context)?;
+
+    // The chain's copy of the identity is the authority on who may spend its
+    // output. Checking against the caller's own idea of it would check them
+    // against their own mistake.
+    let current = match crate::decode_output_script(&params.identity_output.script_pubkey)? {
+        crate::OutputKind::IdentityPrimary { identity } => *identity,
+        _ => return Err(TxError::IdentityOutputMismatch),
+    };
+    if identity_id(&current.name, Some(current.parent)) != params.context.identity_address {
+        return Err(TxError::IdentityOutputMismatch);
+    }
+    // The output being spent is what commits to the threshold, so it is the
+    // current one that has to be met — not whatever the context says.
+    if identity_keys.len() < current.min_sigs as usize {
+        return Err(TxError::NotEnoughSigners {
+            supplied: identity_keys.len(),
+            required: current.min_sigs,
+        });
+    }
+    for key in identity_keys {
+        let signer = Destination::PubKeyHash(key.address().hash());
+        if !current.primary_addresses.contains(&signer) {
+            return Err(TxError::NotAPrimaryAddress {
+                address: key.address().to_string(),
+            });
+        }
+    }
+
+    let reserve_deposit = built.reserve_deposit_value();
+    let burn = params
+        .context
+        .launch_fee
+        .checked_sub(reserve_deposit)
+        .ok_or(TxError::ValueOverflow)?;
+
+    // Outputs 0 through 5. The seventh is the daemon's identity-change output,
+    // and the assembler's native change stands in for it.
+    let mut outputs = built.outputs;
+    outputs.truncate(6);
+
+    crate::assemble::assemble(
+        funding_key,
+        identity_keys,
+        crate::assemble::Assembly {
+            leading: core::slice::from_ref(params.identity_output),
+            funding: params.utxos,
+            outputs,
+            burn,
+            // Six declared outputs plus a change slot.
+            fee_output_count: 7,
+            change_address: &params.change_address,
+            expiry: params.expiry,
+            fee_per_kb: params.fee_per_kb,
+        },
+    )
 }
