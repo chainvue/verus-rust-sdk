@@ -38,6 +38,7 @@ pub struct ScriptedReader {
     broadcasts: RefCell<Vec<String>>,
     broadcast_failure: RefCell<Option<RpcError>>,
     estimate: RefCell<Option<verus_rpc::ConversionEstimate>>,
+    pub(crate) raw_transactions: RefCell<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl ScriptedReader {
@@ -56,6 +57,7 @@ impl ScriptedReader {
             broadcasts: RefCell::new(Vec::new()),
             broadcast_failure: RefCell::new(None),
             estimate: RefCell::new(None),
+            raw_transactions: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -146,7 +148,17 @@ impl ScriptedReader {
         self
     }
 
-    /// An identity that exists on chain.
+    /// Serve a full raw-transaction JSON for `txid`, as `getrawtransaction`
+    /// verbosity 1 would. Flows that decode real outputs — a currency launch
+    /// spending its identity's output — script the holding transaction here.
+    pub fn with_raw_transaction(self, txid: &str, json: serde_json::Value) -> Self {
+        self.raw_transactions
+            .borrow_mut()
+            .insert(txid.to_string(), json);
+        self
+    }
+
+    /// Serve `record` for `getidentity` lookups of `name`.
     pub fn with_identity(self, name: &str, record: IdentityRecord) -> Self {
         self.identities
             .borrow_mut()
@@ -357,6 +369,9 @@ impl ChainReader for ScriptedReader {
 
     fn raw_transaction(&self, txid: &str) -> Result<serde_json::Value, RpcError> {
         self.count();
+        if let Some(json) = self.raw_transactions.borrow().get(txid) {
+            return Ok(json.clone());
+        }
         // The height encoded into a scripted txid, so `is_coinbase` can be
         // answered without a separate table. Display hex is byte-reversed, so
         // the byte written at index 1 arrives at the far end.

@@ -68,6 +68,7 @@ pub mod convert;
 pub mod error;
 pub mod funding;
 pub mod identity;
+pub mod launch;
 pub mod login;
 pub mod offer;
 pub mod send;
@@ -86,6 +87,7 @@ pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
+pub use launch::{launch_currency, Launched};
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use offer::{inspect, Demand, OfferTerms, Taken, Taking};
 pub use send::{prepare_send, send, send_from_identity, send_token, Sent};

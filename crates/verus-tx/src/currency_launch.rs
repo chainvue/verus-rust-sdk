@@ -512,9 +512,12 @@ pub struct LaunchParams<'a> {
     /// P2PKH coins to fund the reserve deposit, the registration fee and the
     /// miner fee.
     pub utxos: &'a [Utxo],
-    /// Where native change goes. It stands in for the daemon's own
-    /// identity-change output, so the defining identity's address is the
-    /// like-for-like choice.
+    /// Where native change goes.
+    ///
+    /// The daemon pays its own change back to the defining identity; this
+    /// builder emits plain P2PKH change instead, and the flows pay it to the
+    /// funding key — the same convention as registration. Either is accepted
+    /// on chain; what matters is that it is a deliberate choice.
     pub change_address: Address,
     /// When the transaction stops being minable.
     pub expiry: Expiry,
