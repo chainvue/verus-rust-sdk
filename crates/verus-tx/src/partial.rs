@@ -24,6 +24,21 @@
 //! asynchronous flow possible at all; it is a property of the sighash, not
 //! something this module arranges.
 //!
+//! # Each input has its own sighash type
+//!
+//! [`PartialInput::hash_type`] defaults to `SIGHASH_ALL`, which is what almost
+//! every transaction wants: it commits to every input and every output, so
+//! nothing can move after signing.
+//!
+//! It is per-input because that is how the protocol works. An offer is one input
+//! signed under `SIGHASH_SINGLE | ANYONECANPAY` sitting in the same transaction
+//! as inputs signed under `SIGHASH_ALL` — a per-transaction setting could not
+//! express it.
+//!
+//! Set it with [`PartialTransaction::with_hash_type`] **before** signing; the
+//! type is part of what a signature covers, so changing it afterwards is refused
+//! rather than allowed to invalidate one silently.
+//!
 //! # What a co-signer must check
 //!
 //! Nothing here can tell a co-signer that a transaction is *what they meant to
@@ -32,6 +47,12 @@
 //! the recipient can look at where the money goes and what it costs **before**
 //! adding a signature — treat a partial transaction from someone else as
 //! untrusted input, because that is exactly what it is.
+//!
+//! Since inputs carry their own sighash types, `summary` reports those too, and
+//! [`Summary::commits_to_all_outputs`] answers the question that matters: are
+//! the outputs I am looking at actually the ones my signature binds? Under
+//! `SIGHASH_NONE` they are not, and whoever holds the partial can redirect the
+//! money after you sign it.
 //!
 //! Tampering after a signature exists is caught: a changed output changes the
 //! sighash, and the earlier signature stops verifying. [`PartialTransaction::finalize`]
@@ -82,6 +103,23 @@ pub struct PartialInput {
     pub value: Amount,
     /// How it is unlocked.
     pub kind: InputKind,
+    /// The sighash type this input is signed under.
+    ///
+    /// [`SIGHASH_ALL`] unless deliberately changed, and that default is the one
+    /// almost every transaction wants: it commits to every input and every
+    /// output, so nothing about the transaction can move after signing.
+    ///
+    /// Per-input rather than per-transaction because that is how the protocol
+    /// works — an offer is exactly one input signed under
+    /// `SIGHASH_SINGLE | ANYONECANPAY` alongside inputs signed under
+    /// `SIGHASH_ALL`, in the same transaction.
+    ///
+    /// **Anything other than [`SIGHASH_ALL`] narrows what your signature
+    /// protects.** `SIGHASH_NONE` commits to no outputs, so the holder can send
+    /// the money anywhere. `SIGHASH_ANYONECANPAY` lets other inputs be swapped
+    /// underneath yours. Use them when the flow genuinely needs them — a trade
+    /// completed by a stranger does — and not otherwise.
+    pub hash_type: u32,
     /// Signatures gathered so far, in the order they arrived.
     pub signatures: Vec<CollectedSignature>,
 }
@@ -120,6 +158,26 @@ pub struct Summary {
     /// How many signatures each input still expects to be usable, as far as can
     /// be told without the conditions' own definitions.
     pub signatures_per_input: Vec<usize>,
+    /// The sighash type each input is signed under.
+    ///
+    /// **Check this before signing.** The outputs listed above are only binding
+    /// if your input commits to them. Under `SIGHASH_NONE` they are not covered
+    /// at all and whoever holds the partial can redirect the money after you
+    /// sign; under `SIGHASH_SINGLE` only the output at your own index is.
+    pub hash_types: Vec<u32>,
+}
+
+impl Summary {
+    /// Whether every input commits to every output — the ordinary case.
+    ///
+    /// When this is false, [`Summary::outputs`] does not describe what your
+    /// signature protects, and the difference is the whole risk of co-signing.
+    #[must_use]
+    pub fn commits_to_all_outputs(&self) -> bool {
+        self.hash_types
+            .iter()
+            .all(|hash_type| *hash_type == SIGHASH_ALL)
+    }
 }
 
 impl PartialTransaction {
@@ -151,6 +209,7 @@ impl PartialTransaction {
                     script_pubkey: utxo.script_pubkey.clone(),
                     value: utxo.satoshis,
                     kind: *kind,
+                    hash_type: SIGHASH_ALL,
                     signatures: Vec::new(),
                 })
                 .collect(),
@@ -181,6 +240,45 @@ impl PartialTransaction {
         }
     }
 
+    /// Sign input `index` under a different sighash type.
+    ///
+    /// Must be set **before** the input is signed: the type is part of what the
+    /// signature covers, so changing it afterwards invalidates any signature
+    /// already gathered. Refused rather than allowed to corrupt one silently.
+    ///
+    /// The hash type itself is validated when the sighash is computed — an
+    /// unknown combination, or `SIGHASH_SINGLE` on an input with no output at
+    /// the same index, is refused there rather than signed.
+    pub fn with_hash_type(&mut self, index: usize, hash_type: u32) -> Result<(), TxError> {
+        let count = self.inputs.len();
+        let input = self
+            .inputs
+            .get_mut(index)
+            .ok_or(TxError::PrevoutCountMismatch {
+                inputs: count,
+                prevouts: index,
+            })?;
+        if !input.signatures.is_empty() {
+            return Err(TxError::MalformedPartialTransaction(format!(
+                "input {index} already carries {} signature(s); changing its sighash type \
+                 would invalidate them",
+                input.signatures.len()
+            )));
+        }
+        let previous = input.hash_type;
+        input.hash_type = hash_type;
+
+        // Compute the sighash once now, so an unknown combination — or
+        // SIGHASH_SINGLE on an input with no matching output — is reported here
+        // rather than by whoever signs next. Put the old value back if it is
+        // rejected, so a refused call leaves nothing changed.
+        if let Err(e) = self.sighash(index) {
+            self.inputs[index].hash_type = previous;
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// The sighash for one input.
     pub fn sighash(&self, index: usize) -> Result<[u8; 32], TxError> {
         let input = self
@@ -195,7 +293,7 @@ impl PartialTransaction {
             index,
             &input.script_pubkey,
             input.value.to_sat(),
-            SIGHASH_ALL,
+            input.hash_type,
         )?)
     }
 
@@ -227,7 +325,7 @@ impl PartialTransaction {
                 InputKind::PubKeyHash => {
                     match Address::from_p2pkh_script_pubkey(&input.script_pubkey) {
                         Some(address) if address.hash() == owner => {
-                            key.sign_prehash_der(&sighash, 1)?
+                            key.sign_prehash_der(&sighash, hash_type_byte(input.hash_type)?)?
                         }
                         // Not ours, or not the shape it claims: leave it for
                         // whoever does own it.
@@ -282,6 +380,7 @@ impl PartialTransaction {
                 })
                 .collect(),
             signatures_per_input: self.inputs.iter().map(|i| i.signatures.len()).collect(),
+            hash_types: self.inputs.iter().map(|i| i.hash_type).collect(),
         })
     }
 
@@ -294,7 +393,6 @@ impl PartialTransaction {
     /// script finished false.
     pub fn finalize(&self) -> Result<SignedTransaction, TxError> {
         let mut tx = self.skeleton();
-        let hash_type = u8::try_from(SIGHASH_ALL).expect("SIGHASH_ALL is 1");
 
         for (index, input) in self.inputs.iter().enumerate() {
             if input.signatures.is_empty() {
@@ -334,7 +432,7 @@ impl PartialTransaction {
                             Ok((s.pubkey.clone(), compact))
                         })
                         .collect::<Result<Vec<_>, TxError>>()?;
-                    fulfillment_script_sig(&signatures, hash_type)?
+                    fulfillment_script_sig(&signatures, hash_type_byte(input.hash_type)?)?
                 }
             };
         }
@@ -352,6 +450,19 @@ impl PartialTransaction {
             inputs_used: self.inputs.iter().map(|i| i.outpoint).collect(),
         })
     }
+}
+
+/// A sighash type as the single byte a scriptSig and a fulfillment carry.
+///
+/// The wire form is one byte; the constants are `u32` because that is what the
+/// sighash builder takes. A value that does not fit is a caller bug, not
+/// something to truncate silently into a different hash type.
+fn hash_type_byte(hash_type: u32) -> Result<u8, TxError> {
+    u8::try_from(hash_type).map_err(|_| {
+        TxError::MalformedPartialTransaction(format!(
+            "sighash type {hash_type:#x} does not fit in the byte a scriptSig carries"
+        ))
+    })
 }
 
 /// Check one gathered signature against the hash it claims to cover.
@@ -387,7 +498,12 @@ fn verify(
 const MAGIC: &[u8; 8] = b"VRSCPSIG";
 /// Format version. A reader refuses anything it does not know rather than
 /// guessing at a layout that may have moved.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
+/// The version before per-input sighash types existed. Still readable: every
+/// input in a v1 partial was signed under `SIGHASH_ALL`, so the value is known
+/// rather than guessed, and refusing one already in a co-signer's hands would
+/// break a flow for no reason.
+const FORMAT_VERSION_V1: u8 = 1;
 
 impl PartialTransaction {
     /// Serialize for handing to a co-signer.
@@ -418,6 +534,7 @@ impl PartialTransaction {
                 InputKind::PubKeyHash => 0,
                 InputKind::CryptoCondition => 1,
             });
+            out.extend_from_slice(&input.hash_type.to_le_bytes());
             write_compact(&mut out, input.signatures.len());
             for signature in &input.signatures {
                 write_slice(&mut out, &signature.pubkey);
@@ -437,7 +554,7 @@ impl PartialTransaction {
             ));
         }
         let version = reader.byte()?;
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_V1 {
             return Err(TxError::MalformedPartialTransaction(format!(
                 "format version {version} is not one this crate reads"
             )));
@@ -475,6 +592,12 @@ impl PartialTransaction {
                     )))
                 }
             };
+            // v1 carried no sighash type because there was only one.
+            let hash_type = if version == FORMAT_VERSION_V1 {
+                SIGHASH_ALL
+            } else {
+                reader.u32()?
+            };
             let signature_count = reader.compact()?;
             let mut signatures = Vec::with_capacity(signature_count.min(64));
             for _ in 0..signature_count {
@@ -487,6 +610,7 @@ impl PartialTransaction {
                 script_pubkey,
                 value,
                 kind,
+                hash_type,
                 signatures,
             });
         }
@@ -580,6 +704,7 @@ mod tests {
     use super::*;
     use crate::cc::reserve_output_script;
     use crate::currency::CurrencyId;
+    use verus_wire::consensus::{SIGHASH_ANYONECANPAY, SIGHASH_NONE, SIGHASH_SINGLE};
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
 
@@ -819,5 +944,187 @@ mod tests {
         assert_eq!(summary.outputs.len(), 1);
         assert_eq!(summary.outputs[0].1.as_ref(), Some(&a.address()));
         assert_eq!(summary.signatures_per_input, vec![0, 0]);
+    }
+    // ---------------------------------------------------- per-input hash types
+
+    /// The default has to stay `SIGHASH_ALL`. Anything else would silently
+    /// narrow what every existing caller's signatures protect.
+    #[test]
+    fn inputs_default_to_sighash_all() {
+        let utxos = [p2pkh_input(&key_a(), 5_000)];
+        let partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+        assert_eq!(partial.inputs[0].hash_type, SIGHASH_ALL);
+        assert!(partial.summary().unwrap().commits_to_all_outputs());
+    }
+
+    /// Two inputs in one transaction, signed under different hash types — which
+    /// is the shape an offer actually has, and the reason this is per-input.
+    #[test]
+    fn two_inputs_can_use_different_hash_types() {
+        let utxos = [p2pkh_input(&key_a(), 5_000), condition_input(&key_a())];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash, InputKind::CryptoCondition],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+
+        partial
+            .with_hash_type(0, SIGHASH_SINGLE | SIGHASH_ANYONECANPAY)
+            .unwrap();
+
+        // Different types must produce different hashes, or the field is not
+        // reaching the sighash at all.
+        assert_ne!(partial.sighash(0).unwrap(), partial.sighash(1).unwrap());
+
+        let summary = partial.summary().unwrap();
+        assert_eq!(
+            summary.hash_types,
+            vec![SIGHASH_SINGLE | SIGHASH_ANYONECANPAY, SIGHASH_ALL]
+        );
+        // And a co-signer is told the outputs are not fully covered.
+        assert!(!summary.commits_to_all_outputs());
+
+        partial.sign(&key_a()).unwrap();
+        partial.finalize().unwrap();
+
+        // The hash type must reach the wire, at the one position it belongs.
+        // A P2PKH scriptSig is [len][DER || hash_type][len][pubkey], so the
+        // final byte of the first push is the hash type — searching the whole
+        // transaction for 0x83 would pass on a coincidence in a signature.
+        let signature = &partial.inputs[0].signatures[0].bytes;
+        assert_eq!(
+            *signature.last().unwrap(),
+            0x83,
+            "input 0's DER signature does not end with the hash type it was signed under"
+        );
+        // Input 1 is a condition, whose compact signature carries no hash type
+        // byte at all — it lives in the fulfillment instead.
+        assert_eq!(partial.inputs[1].signatures[0].bytes.len(), 64);
+    }
+
+    /// Changing the type after signing would invalidate the signature, so it is
+    /// refused instead of quietly corrupting it.
+    #[test]
+    fn the_hash_type_cannot_change_once_signed() {
+        let utxos = [p2pkh_input(&key_a(), 5_000)];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+        partial.sign(&key_a()).unwrap();
+
+        let err = partial.with_hash_type(0, SIGHASH_NONE).unwrap_err();
+        assert!(matches!(err, TxError::MalformedPartialTransaction(_)));
+        // And nothing moved.
+        assert_eq!(partial.inputs[0].hash_type, SIGHASH_ALL);
+        partial.finalize().expect("still finalizes");
+    }
+
+    /// `SIGHASH_SINGLE` needs an output at the input's own index. Refusing it
+    /// here beats a signature that commits to no outputs whatsoever.
+    #[test]
+    fn sighash_single_without_a_matching_output_is_refused_and_rolled_back() {
+        let utxos = [p2pkh_input(&key_a(), 5_000), condition_input(&key_a())];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash, InputKind::CryptoCondition],
+            // One output, so input 1 has no counterpart.
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+
+        assert!(partial.with_hash_type(1, SIGHASH_SINGLE).is_err());
+        // A refused call leaves the input exactly as it was, so the partial is
+        // still usable rather than stuck in a state that cannot be signed.
+        assert_eq!(partial.inputs[1].hash_type, SIGHASH_ALL);
+        partial.sign(&key_a()).unwrap();
+        partial.finalize().expect("unchanged and still finalizes");
+    }
+
+    #[test]
+    fn an_unknown_hash_type_is_refused() {
+        let utxos = [p2pkh_input(&key_a(), 5_000)];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+        assert!(partial.with_hash_type(0, 0x42).is_err());
+        assert!(partial.with_hash_type(9, SIGHASH_NONE).is_err());
+    }
+
+    #[test]
+    fn a_hash_type_survives_a_round_trip() {
+        let utxos = [p2pkh_input(&key_a(), 5_000)];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+        partial.with_hash_type(0, SIGHASH_NONE).unwrap();
+        partial.sign(&key_a()).unwrap();
+
+        let bytes = partial.to_bytes().unwrap();
+        assert_eq!(bytes[8], FORMAT_VERSION);
+        let back = PartialTransaction::from_bytes(&bytes).unwrap();
+        assert_eq!(back, partial);
+        assert_eq!(back.inputs[0].hash_type, SIGHASH_NONE);
+        back.finalize().expect("a co-signer can finish it");
+    }
+
+    /// A v1 partial predates per-input hash types, and every input in one was
+    /// signed under `SIGHASH_ALL`. Refusing it would break a flow already in
+    /// someone's hands for no reason, so it is read with that known value.
+    #[test]
+    fn a_version_one_partial_still_reads_as_sighash_all() {
+        let utxos = [p2pkh_input(&key_a(), 5_000)];
+        let mut partial = PartialTransaction::start(
+            &utxos,
+            &[InputKind::PubKeyHash],
+            outputs(&key_a(), 4_000),
+            Expiry::AtHeight(1_167_900),
+            0,
+        )
+        .unwrap();
+        partial.sign(&key_a()).unwrap();
+
+        // Downgrade the v2 encoding by hand: set the version byte and drop the
+        // four hash-type bytes that v1 did not carry.
+        let v2 = partial.to_bytes().unwrap();
+        let marker = SIGHASH_ALL.to_le_bytes();
+        let at = v2
+            .windows(4)
+            .rposition(|w| w == marker)
+            .expect("the hash type is in there");
+        let mut v1 = v2.clone();
+        v1.drain(at..at + 4);
+        v1[8] = FORMAT_VERSION_V1;
+
+        let back = PartialTransaction::from_bytes(&v1).unwrap();
+        assert_eq!(back.inputs[0].hash_type, SIGHASH_ALL);
+        assert_eq!(back, partial, "a v1 partial must round-trip into a v2 one");
+        back.finalize().expect("and still finalize");
     }
 }
