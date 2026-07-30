@@ -1,4 +1,8 @@
-//! On-chain atomic swaps: making an offer and taking one.
+//! On-chain marketplace orders: making an offer and taking one.
+//!
+//! This is Verus's `makeoffer`/`takeoffer` mechanism — a decentralized
+//! marketplace order settled atomically in one transaction. It is *not* an
+//! "atomic swap" in the cross-chain HTLC sense: both legs live on this chain.
 //!
 //! An offer is a **half-signed transaction**. The maker signs an input that
 //! gives something away, paired with one output that says what they want back,
@@ -733,7 +737,7 @@ mod tests {
         (funding, offer)
     }
 
-    /// The whole swap: a maker's half-signed offer completed by a taker into a
+    /// The whole order: a maker's half-signed offer completed by a taker into a
     /// transaction that balances.
     #[test]
     fn a_taker_completes_an_offer_into_a_balanced_transaction() {

@@ -1,4 +1,4 @@
-//! A complete atomic swap on VRSCTEST, through the public node.
+//! A complete marketplace order settled on VRSCTEST, through the public node.
 //!
 //! Two independent keys, two independent signatures, one transaction. The maker
 //! signs an input under `SIGHASH_SINGLE | ANYONECANPAY` paired with the output
@@ -13,9 +13,10 @@
 //! VERUS_LIVE_SWAP=1 cargo test -p verus-flows --test live_swap -- --nocapture --test-threads=1
 //! ```
 //!
-//! Both sides are native VRSCTEST. A maker asking to be paid in a *token* is
-//! refused by `take_offer`, which funds only the native demand — see the note
-//! there. So this proves the mechanism, not a cross-currency trade.
+//! Both sides here are native VRSCTEST, so this proves the mechanism with the
+//! simplest legs. Token demands are supported too — `take_offer` funds them
+//! from reserve inputs — but that path is byte-verified only, never broadcast
+//! (PROVEN.md keeps the ledger); this live test does not exercise it.
 
 use verus_flows::{spendable, Broadcaster, ChainReader, HttpTransport, RpcClient};
 use verus_keys::PrivateKey;
@@ -58,7 +59,7 @@ fn await_confirmation(client: &RpcClient<HttpTransport>, txid: &str) {
 }
 
 #[test]
-fn two_parties_complete_an_atomic_swap() {
+fn two_parties_settle_a_marketplace_order() {
     let Some((maker, taker)) = keys() else { return };
     let client = client();
 
@@ -153,7 +154,7 @@ fn two_parties_complete_an_atomic_swap() {
     // --- step 4: the network settles it
     let txid = client
         .send_raw_transaction(&completed_hex)
-        .expect("the network must accept a swap this SDK built");
-    eprintln!("  SWAP {txid}");
+        .expect("the network must accept an order this SDK settled");
+    eprintln!("  SETTLED {txid}");
     await_confirmation(&client, &txid);
 }
