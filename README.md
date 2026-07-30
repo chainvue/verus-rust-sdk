@@ -1,8 +1,9 @@
 # verus-rust-sdk
 
-> **Offline Verus transaction SDK, in Rust.** Builds and signs bytes — transparent
-> and shielded — without a node, a wallet daemon, or a network connection.
-> Your application broadcasts.
+> **Offline-first Verus SDK, in Rust.** Builds and signs bytes — transparent and
+> shielded — without a node, a wallet daemon, or a network connection. Behind
+> the `network` feature it also looks up, composes and broadcasts whole
+> operations through a public node, which never sees a key.
 
 > [!WARNING]
 > **Early development. Nothing here is ready for mainnet funds.** The crates are
@@ -20,9 +21,45 @@ compiles anywhere — a native desktop wallet links it directly, a browser
 extension reaches it through wasm, and the consensus-critical bytes live in one
 auditable place instead of three.
 
+## Quickstart
+
+One dependency line is a working testnet wallet:
+
+```toml
+[dependencies]
+verus-sdk = { git = "https://github.com/chainvue/verus-rust-sdk", features = ["network"] }
+```
+
+```rust,no_run
+use verus_sdk::money::Amount;
+use verus_sdk::network::{send, spendable, HttpTransport, RpcClient};
+use verus_sdk::verus_keys::PrivateKey;
+
+fn main() {
+    let key = PrivateKey::from_wif(&std::env::var("VERUS_WIF").unwrap()).unwrap();
+    let me = key.address().to_string();
+
+    let node = RpcClient::new(HttpTransport::new("https://api.verustest.net").unwrap());
+    let funding = spendable(&node, &me).unwrap();
+    println!("{me}: {} VRSCTEST at tip {}", funding.total, funding.tip);
+
+    let sent = send(&node, &node, &key, &me, Amount::from_coins_str("0.1").unwrap()).unwrap();
+    println!("txid {}", sent.txid);
+}
+```
+
+Generate a key with `cargo run -p verus-sdk --example keygen`, send the printed
+address some VRSCTEST from any testnet wallet (or ask in the Verus Discord —
+testnet coins are free), and the code above runs as-is.
+The node is only ever asked questions and handed finished bytes — lookup,
+build, sign and broadcast all happen locally, and the key never leaves the
+process. Without the `network` and `light` features the same crate is the
+offline half alone: builders in, bytes out, no socket anywhere in the
+dependency tree.
+
 ## Design
 
-**Correctness is proven against the network, not against itself.** Three
+**Correctness is proven against the network, not against itself.** Four
 independent checks, none of which is self-referential:
 
 1. Real transactions a Verus daemon produced and accepted (`fixtures/daemon/`)
@@ -37,6 +74,9 @@ independent checks, none of which is self-referential:
 A green suite that only agrees with itself would prove nothing about consensus.
 
 ### Accepted on chain
+
+The firsts are told below; the complete ledger of every proven capability and
+its txid is [`PROVEN.md`](./PROVEN.md).
 
 VRSCTEST txid
 [`59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3`](https://testex.verus.io/tx/59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3),
@@ -146,13 +186,14 @@ same way. The first shield here landed at index 0, the second at index 1. Find
 it by trial decryption; guessing builds a witness for the wrong leaf, which
 proves and serializes happily before failing.
 
-The offline gate covers what the chain has not:
+The offline gate re-proves the whole shielded path on every opt-in run,
+with no chain and no coins:
 
 ```sh
 cargo run --release -p verus-sapling --features prover,multicore --example prove_and_verify
 ```
 
-It shields, spends the very note that created, and checks every proof and
+It shields, spends the very note it created, and checks every proof and
 signature with `SaplingVerificationContext` — the verifier a consensus node
 runs. Every shielded flow is now also proven on chain; tokens remain
 byte-identical to the TypeScript SDK and never broadcast.
@@ -164,49 +205,59 @@ strings. There is no float in the value path.
 transparent path. That is a security property *and* what makes byte-for-byte
 differential testing possible at all.
 
-**Keys are handled deliberately.** Private key material zeroizes on drop, and no
-crate here ever opens a socket.
+**Keys are handled deliberately.** Private key material zeroizes on drop, and
+outside the `network`/`light` features nothing in the dependency tree can open
+a socket — a test pins that. The networked crates ask questions and hand over
+finished bytes; they can never ask a node to sign.
 
 ## Layout
 
 | Crate | What it does |
 |---|---|
-| `verus-wire` | v4 transaction serialization, ZIP-243 sighashes. No keys, no network. |
+| `verus-wire` | v4 transaction serialization and parsing, ZIP-243 sighashes. No keys, no network. |
 | `verus-keys` | WIF, base58check, `R`/`i` addresses, P2PKH scripts, ECDSA |
-| `verus-tx` | transparent transactions, tokens, and reading VerusIDs |
+| `verus-tx` | transparent transactions: sends, tokens, VerusIDs, offers, conversions, multisig, currency launch |
 | `verus-sapling` | shielded: note scanning, ZIP-32 derivation, and t→z / z→z / z→t building behind `prover` |
+| `verus-rpc` | typed read-only JSON-RPC client + broadcast; can never ask a node to sign |
+| `verus-flows` | lookup → build → sign → broadcast, composed into operations a wallet calls |
+| `verus-light` | Sapling chain data from a lightwalletd server, over grpc-web |
 | `verus-sdk` | the facade you actually depend on |
 
 ```toml
 [dependencies]
-verus-sdk = { git = "https://github.com/chainvue/verus-rust-sdk" }   # transparent
+verus-sdk = { git = "https://github.com/chainvue/verus-rust-sdk" }   # offline builders only
+verus-sdk = { git = "…", features = ["network"] }                   # + node lookup, flows, broadcast
 verus-sdk = { git = "…", features = ["shielded"] }                  # + find notes, derive keys
 verus-sdk = { git = "…", features = ["prover"] }                    # + build shielded transactions
+verus-sdk = { git = "…", features = ["light"] }                     # + scan/witness notes via lightwalletd
 ```
 
 The shielded half is priced in two steps, because seeing your notes and spending
 them cost very different things. `shielded` is trial decryption and ZIP-32 —
 milliseconds, no bellman in the dependency graph. `prover` adds Groth16 and
 expects ~50 MB of Sapling parameters at runtime. A balance-only wallet takes the
-first and stops.
+first and stops. The networked half is priced the same way: without `network`,
+nothing in the tree can open a socket — and a test pins that.
 
 ## Status
 
+Everything below marked **on chain** was built and signed by this SDK and
+accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
+
 | | |
 |---|---|
-| Workspace, CI, fixtures | ✅ |
-| `verus-wire` — serializer + sighashes | ✅ proven against daemon transactions |
-| `verus-keys` — WIF, addresses, ECDSA | ✅ signature matches the TypeScript SDK |
-| `verus-tx` — native VRSC send | ✅ **accepted on chain** (VRSCTEST 59a1097f…) |
-| `verus-tx` — read a VerusID | ✅ 16 live identities decode field-for-field vs `getidentity` |
-| `verus-tx` — re-encode a VerusID | ✅ all 16 outputs rebuild byte-for-byte |
-| `verus-tx` — pay a VerusID | ✅ **accepted on chain** (VRSCTEST 5e19de6d…) |
-| `verus-tx` — token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
-| `verus-sapling` — note scanning + ZIP-32 | ✅ ported |
-| `verus-sapling` — t→z shield | ✅ **accepted on chain** (VRSCTEST 35eccaca…) |
-| `verus-sapling` — z→t spend | ✅ **accepted on chain** (VRSCTEST 4c16d1e7…) |
-| `verus-sapling` — z→z | ✅ **accepted on chain** (VRSCTEST 9478fe9b…) |
-| VerusID registration, currency launch, wasm bindings | ⬜ later |
+| Native and VerusID-addressed sends | ✅ **on chain**, incl. through the public node via `flows` |
+| Token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
+| VerusID lifecycle — commit, register, referred, sub-ID, update, 2-of-2 multisig, revoke, recover | ✅ **on chain**, all eight |
+| VerusID message signing / login | ✅ verified live against the daemon, both directions |
+| Shielded — t→z, z→t, z→z, multi-note, via lightwalletd end to end | ✅ **on chain** |
+| Marketplace offers — make, inspect against the chain, take | ✅ **on chain** (native legs; token demands byte-verified) |
+| Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
+| Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
+| Transparent P2SH multisig, SIGHASH variants, identity timelocks | ✅ byte-verified, not broadcast |
+| Mint new supply | ❌ blocked on identity-held funding — see [`PROVEN.md`](./PROVEN.md) |
+| wasm bindings | ⬜ next |
+| PBaaS / cross-chain export | ⬜ needs a second system |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
 promise about stability.
