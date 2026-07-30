@@ -259,3 +259,164 @@ fn a_preallocating_definition_still_builds() {
     }];
     assert!(build_launch_outputs(&definition, &context(&fixture)).is_ok());
 }
+
+// ----------------------------------------------------------------- assembling
+
+use verus_keys::PrivateKey;
+use verus_tx::currency_launch::{build_currency_launch, LaunchParams};
+use verus_tx::{Expiry, Txid, Utxo};
+
+fn signer() -> PrivateKey {
+    PrivateKey::from_bytes(&[0x51; 32], true).unwrap()
+}
+
+/// An identity this key actually controls, so the launch can be signed.
+fn controlled(fixture: &serde_json::Value) -> (Identity, [u8; 20]) {
+    let (mut identity, _) = identity(fixture);
+    identity.primary_addresses = vec![verus_tx::Destination::PubKeyHash(signer().address().hash())];
+    let address = verus_tx::register::identity_id(&identity.name, Some(identity.parent));
+    (identity, address)
+}
+
+fn identity_utxo(identity: &Identity, address: [u8; 20]) -> Utxo {
+    Utxo {
+        txid: Txid::from_internal([0xaa; 32]),
+        vout: 0,
+        satoshis: Amount::ZERO,
+        script_pubkey: verus_tx::identity_primary_script(
+            address,
+            identity.to_bytes().unwrap(),
+            identity.revocation_authority,
+            identity.recovery_authority,
+        )
+        .unwrap(),
+    }
+}
+
+fn funding(amount: &str) -> Vec<Utxo> {
+    vec![Utxo {
+        txid: Txid::from_internal([0xbb; 32]),
+        vout: 0,
+        satoshis: coins(amount),
+        script_pubkey: signer().address().p2pkh_script_pubkey().unwrap(),
+    }]
+}
+
+/// The registration fee leaves the transaction **without an output**, so a
+/// launch costs more than its outputs add up to.
+///
+/// Verified against the daemon's own transaction: 205 in, 105 out, 100
+/// unaccounted — exactly `launch_fee - reserve_deposit`. A builder that funded
+/// only the outputs would come up 100 short and be rejected.
+#[test]
+fn the_registration_fee_is_funded_even_though_no_output_carries_it() {
+    let fixture = fixture();
+    let (identity, address) = controlled(&fixture);
+    let mut context = context(&fixture);
+    context.identity = identity.clone();
+    context.identity_address = address;
+
+    let mut definition = token_definition(&fixture);
+    definition.name = identity.name.clone();
+
+    let utxo = identity_utxo(&identity, address);
+    let coins_in = funding("205.00000000");
+    let signed = build_currency_launch(
+        &signer(),
+        &[&signer()],
+        &LaunchParams {
+            identity_output: &utxo,
+            definition: &definition,
+            context: &context,
+            utxos: &coins_in,
+            change_address: signer().address(),
+            expiry: Expiry::AtHeight(context.height + 20),
+            fee_per_kb: 100_000,
+        },
+    )
+    .unwrap();
+
+    let tx = verus_wire::TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+    // Six consensus outputs plus change.
+    assert_eq!(tx.outputs.len(), 7);
+    assert_eq!(
+        tx.inputs.len(),
+        2,
+        "the identity output and one funding coin"
+    );
+
+    let out: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    let unaccounted = coins("205.00000000").to_sat() - out;
+    // 100 for the registration fee, plus the miner fee.
+    assert!(
+        unaccounted > coins("100.00000000").to_sat(),
+        "only {unaccounted} left the transaction; the registration fee alone is 100"
+    );
+    assert!(
+        unaccounted < coins("100.10000000").to_sat(),
+        "{unaccounted} is far more than the fee plus a miner fee"
+    );
+}
+
+/// Funding that covers the outputs but not the invisible registration fee must
+/// be refused here, not by the daemon.
+#[test]
+fn funding_that_ignores_the_registration_fee_is_refused() {
+    let fixture = fixture();
+    let (identity, address) = controlled(&fixture);
+    let mut context = context(&fixture);
+    context.identity = identity.clone();
+    context.identity_address = address;
+    let mut definition = token_definition(&fixture);
+    definition.name = identity.name.clone();
+
+    let utxo = identity_utxo(&identity, address);
+    // Enough for the reserve deposit and a fee, nothing for the burn.
+    let coins_in = funding("101.00000000");
+    assert!(build_currency_launch(
+        &signer(),
+        &[&signer()],
+        &LaunchParams {
+            identity_output: &utxo,
+            definition: &definition,
+            context: &context,
+            utxos: &coins_in,
+            change_address: signer().address(),
+            expiry: Expiry::AtHeight(context.height + 20),
+            fee_per_kb: 100_000,
+        },
+    )
+    .is_err());
+}
+
+/// A key that is not one of the identity's primaries cannot sign its output, and
+/// the daemon would only say so at broadcast.
+#[test]
+fn a_key_that_does_not_control_the_identity_is_refused() {
+    let fixture = fixture();
+    let (identity, address) = controlled(&fixture);
+    let mut context = context(&fixture);
+    context.identity = identity.clone();
+    context.identity_address = address;
+    let mut definition = token_definition(&fixture);
+    definition.name = identity.name.clone();
+
+    let stranger = PrivateKey::from_bytes(&[0x99; 32], true).unwrap();
+    let utxo = identity_utxo(&identity, address);
+    let coins_in = funding("205.00000000");
+    let err = build_currency_launch(
+        &stranger,
+        &[&stranger],
+        &LaunchParams {
+            identity_output: &utxo,
+            definition: &definition,
+            context: &context,
+            utxos: &coins_in,
+            change_address: stranger.address(),
+            expiry: Expiry::AtHeight(context.height + 20),
+            fee_per_kb: 100_000,
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("primary"), "{err}");
+}
