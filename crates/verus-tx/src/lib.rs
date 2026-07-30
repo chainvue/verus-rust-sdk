@@ -50,6 +50,7 @@ pub mod cc;
 pub mod convert;
 mod currency;
 pub mod currency_definition;
+pub mod currency_launch;
 pub mod decode;
 mod error;
 mod expiry;
