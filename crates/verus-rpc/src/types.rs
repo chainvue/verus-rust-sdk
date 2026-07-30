@@ -90,6 +90,18 @@ pub struct CurrencyPolicy {
     pub id_referral_levels: u32,
     /// `idimportfees`, burned natively by a sub-identity registration.
     pub id_import_fee: Amount,
+    /// `currencyregistrationfee` — what it costs to define a currency under
+    /// this one.
+    ///
+    /// The figure a launch is built against, and the one value in it there is no
+    /// safe default for: half becomes the reserve deposit and half is consumed
+    /// by consensus, so a wrong number produces a transaction the daemon
+    /// rejects. 200 native on VRSCTEST at the time of writing, but read it
+    /// rather than assume it — it is chain policy and can change.
+    ///
+    /// Absent from a currency whose definition does not carry one, in which case
+    /// this is zero.
+    pub currency_registration_fee: Amount,
     /// Which fee-output shape a sub-identity under this parent needs.
     pub proof_protocol: u32,
 }
@@ -228,6 +240,8 @@ pub(crate) struct RawCurrency<'a> {
     pub idreferrallevels: u32,
     #[serde(borrow)]
     pub idimportfees: &'a RawValue,
+    #[serde(borrow, default)]
+    pub currencyregistrationfee: Option<&'a RawValue>,
     #[serde(default)]
     pub proofprotocol: u32,
 }
@@ -241,6 +255,10 @@ impl RawCurrency<'_> {
             id_registration_fee: json::coins(self.idregistrationfees, "idregistrationfees")?,
             id_referral_levels: self.idreferrallevels,
             id_import_fee: json::coins(self.idimportfees, "idimportfees")?,
+            currency_registration_fee: match self.currencyregistrationfee {
+                Some(raw) => json::coins(raw, "currencyregistrationfee")?,
+                None => Amount::ZERO,
+            },
             proof_protocol: self.proofprotocol,
         })
     }

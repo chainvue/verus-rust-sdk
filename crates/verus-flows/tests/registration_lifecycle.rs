@@ -33,6 +33,7 @@ fn vrsctest_policy() -> CurrencyPolicy {
         id_registration_fee: Amount::from_sat(100_00000000),
         id_referral_levels: 3,
         id_import_fee: Amount::from_sat(2_000_000),
+        currency_registration_fee: Amount::from_sat(200_00000000),
         proof_protocol: 1,
     }
 }
