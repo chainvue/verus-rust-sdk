@@ -49,6 +49,7 @@ mod assemble;
 pub mod cc;
 pub mod convert;
 mod currency;
+pub mod currency_definition;
 pub mod decode;
 mod error;
 mod expiry;
