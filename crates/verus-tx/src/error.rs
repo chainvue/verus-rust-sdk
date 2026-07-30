@@ -205,6 +205,10 @@ pub enum TxError {
     #[error("invalid offer: {0}")]
     InvalidOffer(String),
 
+    /// A currency definition this crate will not encode as described.
+    #[error("invalid currency definition: {0}")]
+    InvalidCurrencyDefinition(String),
+
     /// A multisig arrangement this crate will not build.
     #[error("invalid multisig: {0}")]
     InvalidMultisig(String),
