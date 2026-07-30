@@ -453,8 +453,13 @@ pub fn build_conversion(
         }
     }
 
+    // The auxiliary destination is the refund address, so it exists only where
+    // there is something to refund. A burn destroys the value deliberately and a
+    // mint creates value that did not exist, so both carry a plain destination —
+    // the daemon's own templates for each have the bare type byte, not the
+    // aux-flagged one.
     let destination = match kind {
-        ConversionKind::Burn => {
+        ConversionKind::Burn | ConversionKind::Mint { .. } => {
             TransferDestination::plain(Destination::PubKeyHash(recipient.hash()))
         }
         _ => TransferDestination::converting(Destination::PubKeyHash(recipient.hash())),
@@ -1097,5 +1102,51 @@ mod preconvert_tests {
             collapsed.serialize().unwrap(),
             "paying someone else must not refund to them"
         );
+    }
+}
+
+#[cfg(test)]
+mod mint_destination_tests {
+    use super::*;
+
+    /// A mint built through [`build_conversion`] must carry a **plain**
+    /// destination.
+    ///
+    /// This is the gap the unit tests missed: `a_mint_matches_the_daemon`
+    /// constructs the transfer by hand with `plain`, so it passed while
+    /// `build_conversion` — the path every flow actually takes — still attached
+    /// an auxiliary. The chain rejected it with `bad-txns-failed-precheck` and
+    /// the diff was a single type byte: 0x42 where the daemon writes 0x02.
+    #[test]
+    fn a_built_mint_has_no_auxiliary_destination() {
+        let source = CurrencyId::from_bytes([0x11; 20]);
+        let token = CurrencyId::from_bytes([0x22; 20]);
+        let recipient: Address = "RJGYC29RTSGQbWMrstQziJxfQaiDCjm5iP".parse().unwrap();
+
+        let mint = build_conversion(
+            source,
+            Amount::from_sat(1),
+            ConversionKind::Mint { currency: token },
+            recipient,
+            source,
+            Amount::from_sat(1),
+        )
+        .unwrap();
+        assert!(
+            mint.destination.auxiliary.is_empty(),
+            "a mint has nothing to refund, so it carries no auxiliary destination"
+        );
+
+        // A conversion through the same path still has one.
+        let converting = build_conversion(
+            source,
+            Amount::from_sat(1),
+            ConversionKind::IntoFractional { fractional: token },
+            recipient,
+            source,
+            Amount::from_sat(1),
+        )
+        .unwrap();
+        assert_eq!(converting.destination.auxiliary.len(), 1);
     }
 }
