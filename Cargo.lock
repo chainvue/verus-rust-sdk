@@ -1598,7 +1598,10 @@ version = "0.0.0"
 dependencies = [
  "hex",
  "serde_json",
+ "verus-flows",
  "verus-keys",
+ "verus-light",
+ "verus-rpc",
  "verus-sapling",
  "verus-tx",
  "verus-wire",
