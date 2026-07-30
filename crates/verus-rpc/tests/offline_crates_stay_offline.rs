@@ -12,6 +12,15 @@
 
 use std::process::Command;
 
+/// The facade features that must never pull in an HTTP stack. One list, used
+/// both to build the `--features` argument under test and to classify the
+/// feature set — two copies would let a feature be "classified offline" while
+/// never actually being screened.
+const OFFLINE_FEATURES: &[&str] = &["transparent", "shielded", "prover", "multicore", "serde"];
+
+/// The facade features that exist to pull the network half in.
+const NETWORK_FEATURES: &[&str] = &["network", "light"];
+
 /// Anything that can open a socket.
 const NETWORK_CRATES: &[&str] = &[
     "ureq",
@@ -29,18 +38,11 @@ const NETWORK_CRATES: &[&str] = &[
     "openssl",
 ];
 
-fn dependency_tree(package: &str) -> String {
+fn dependency_tree_with(package: &str, feature_args: &[&str]) -> String {
+    let mut args = vec!["tree", "-p", package, "-e", "normal", "--prefix", "none"];
+    args.extend_from_slice(feature_args);
     let output = Command::new(env!("CARGO"))
-        .args([
-            "tree",
-            "-p",
-            package,
-            "-e",
-            "normal",
-            "--all-features",
-            "--prefix",
-            "none",
-        ])
+        .args(&args)
         .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
         .output()
         .expect("cargo tree runs");
@@ -50,6 +52,10 @@ fn dependency_tree(package: &str) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+fn dependency_tree(package: &str) -> String {
+    dependency_tree_with(package, &["--all-features"])
 }
 
 #[test]
@@ -70,18 +76,88 @@ fn the_offline_crates_pull_in_no_http_stack() {
     }
 }
 
-/// The facade must stay usable without a network stack too — a consumer taking
+/// The facade must stay usable without a network stack — a consumer taking
 /// `verus-sdk` for its builders should not link an HTTP client to get them.
+///
+/// Checked with every *offline* feature enabled, not `--all-features`: the
+/// `network` and `light` features exist precisely to pull the HTTP half in, so
+/// the claim being defended is "you get a socket only by asking for one".
 #[test]
-fn the_facade_pulls_in_no_http_stack_by_default() {
-    let tree = dependency_tree("verus-sdk");
+fn the_facade_pulls_in_no_http_stack_without_network() {
+    let features = OFFLINE_FEATURES.join(",");
+    let tree = dependency_tree_with("verus-sdk", &["--features", &features]);
     for network in NETWORK_CRATES {
         let found = tree
             .lines()
             .any(|line| line.split_whitespace().next() == Some(network));
         assert!(
             !found,
-            "verus-sdk depends on {network} with all features on\n{tree}"
+            "verus-sdk depends on {network} without the network feature\n{tree}"
+        );
+    }
+}
+
+/// And opting in does what it says: `network` carries the HTTP client. This is
+/// the detectability check for the test above — if the feature wiring broke,
+/// both halves of the claim should fail, not silently pass.
+#[test]
+fn the_facades_network_feature_carries_the_http_stack() {
+    let tree = dependency_tree_with("verus-sdk", &["--features", "network"]);
+    assert!(
+        tree.lines()
+            .any(|line| line.split_whitespace().next() == Some("ureq")),
+        "verus-sdk --features network should carry ureq; the wiring is broken:\n{tree}"
+    );
+}
+
+/// Same for `light`: it must actually wire in the lightwalletd client. `ureq`
+/// alone would not prove that — it already arrives through the implied
+/// `network` — so this looks for `verus-light` itself.
+#[test]
+fn the_facades_light_feature_carries_the_lightwalletd_client() {
+    let tree = dependency_tree_with("verus-sdk", &["--features", "light"]);
+    assert!(
+        tree.lines()
+            .any(|line| line.split_whitespace().next() == Some("verus-light")),
+        "verus-sdk --features light should carry verus-light; the wiring is broken:\n{tree}"
+    );
+}
+
+/// The offline feature list above is hardcoded, and that is a drift risk: a
+/// feature added to `verus-sdk` later would silently escape the no-HTTP check.
+/// This pins the full feature set, so adding one fails *here* until the person
+/// adding it decides which side of the offline/network line it lives on.
+#[test]
+fn every_facade_feature_is_classified_as_offline_or_network() {
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .output()
+        .expect("cargo metadata runs");
+    assert!(output.status.success(), "cargo metadata failed");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits JSON");
+
+    let features: Vec<&str> = metadata["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .find(|p| p["name"] == "verus-sdk")
+        .expect("verus-sdk is in the workspace")["features"]
+        .as_object()
+        .expect("features")
+        .keys()
+        .map(String::as_str)
+        .collect();
+
+    for feature in features {
+        assert!(
+            feature == "default"
+                || OFFLINE_FEATURES.contains(&feature)
+                || NETWORK_FEATURES.contains(&feature),
+            "verus-sdk grew a feature {feature:?} this test does not classify: add it to \
+             OFFLINE_FEATURES (which also puts it under the no-HTTP screen) or to \
+             NETWORK_FEATURES, whichever is true"
         );
     }
 }

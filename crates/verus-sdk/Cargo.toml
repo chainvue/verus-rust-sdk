@@ -1,6 +1,6 @@
 [package]
 name = "verus-sdk"
-description = "Offline Verus transaction SDK: transparent and shielded, in one API"
+description = "Verus SDK: build and sign offline, look up and broadcast behind a feature"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# docs.rs builds with no features by default, which would hide the shielded and
+# networked halves — and the crate-root docs link into them.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["transparent"]
@@ -25,12 +30,23 @@ prover = ["shielded", "verus-sapling/prover"]
 multicore = ["shielded", "verus-sapling/multicore"]
 # Persist pending state: amounts, UTXOs, identities, partial transactions.
 serde = ["verus-tx?/serde"]
+# The networked half: read chain state and compose lookup → build → sign →
+# broadcast into operations, through `verus-rpc` and `verus-flows`. Off by
+# default, so the plain build stays socket-free — usable from an air-gapped
+# signer, and deterministically testable.
+network = ["transparent", "dep:verus-rpc", "dep:verus-flows"]
+# Shielded over the network: find, value and witness notes against a
+# lightwalletd server. Implies `network` and `shielded`.
+light = ["network", "shielded", "dep:verus-light", "verus-flows/shielded"]
 
 [dependencies]
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 verus-tx = { path = "../verus-tx", optional = true }
 verus-sapling = { path = "../verus-sapling", optional = true }
+verus-rpc = { path = "../verus-rpc", optional = true }
+verus-flows = { path = "../verus-flows", optional = true }
+verus-light = { path = "../verus-light", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
