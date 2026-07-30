@@ -387,6 +387,18 @@ impl ReserveTransfer {
     /// conserve, which the daemon rejects — or, worse, one that quietly hands
     /// the difference to a miner.
     pub fn native_value(&self, chain_currency: CurrencyId) -> Result<Amount, TxError> {
+        // A mint does not spend its amount — it creates it. The output carries
+        // the fee and nothing else, however the value slot is filled in.
+        // Funding the amount natively would ask a caller to hold what they are
+        // about to issue, which is the opposite of what minting is for, and the
+        // daemon's own template carries exactly the fee.
+        if matches!(self.kind, ConversionKind::Mint { .. }) {
+            return if self.fee_currency == chain_currency {
+                Ok(self.fee)
+            } else {
+                Ok(Amount::ZERO)
+            };
+        }
         if self.source == chain_currency {
             self.amount
                 .checked_add(self.fee)
@@ -1019,6 +1031,39 @@ mod preconvert_tests {
         assert_eq!(flags, RT_VALID | RT_MINT_CURRENCY);
         assert_eq!(flags & RT_CONVERT, 0);
         assert_eq!(flags, 33);
+    }
+
+    /// A mint's output carries the fee, not the amount.
+    ///
+    /// Funding the amount natively would ask an issuer to already hold what
+    /// they are about to create. The daemon's template carries 0.0002 for a
+    /// 1.0 mint, and this is what that means in the builder.
+    #[test]
+    fn a_mint_funds_only_its_fee() {
+        let vrsctest = CurrencyId::from_bytes(hash("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"));
+        let token = CurrencyId::from_bytes([0x22; 20]);
+        let fee = Amount::from_coins_str("0.0002").unwrap();
+
+        let mint = ReserveTransfer {
+            source: vrsctest,
+            amount: Amount::from_coins_str("500.0").unwrap(),
+            fee_currency: vrsctest,
+            fee,
+            destination: TransferDestination::plain(Destination::PubKeyHash([0x33; 20])),
+            kind: ConversionKind::Mint { currency: token },
+        };
+        assert_eq!(mint.native_value(vrsctest).unwrap(), fee);
+
+        // The same shape as a conversion would fund the amount as well, which
+        // is the difference this guards.
+        let converting = ReserveTransfer {
+            kind: ConversionKind::IntoFractional { fractional: token },
+            ..mint.clone()
+        };
+        assert_eq!(
+            converting.native_value(vrsctest).unwrap(),
+            Amount::from_coins_str("500.0002").unwrap()
+        );
     }
 
     /// A preconvert is `VALID | CONVERT | PRECONVERT`, and the bit that makes it
