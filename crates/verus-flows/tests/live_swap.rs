@@ -21,8 +21,11 @@
 //!     the taker pays from a reserve input, unlocks it with a CryptoCondition
 //!     fulfillment rather than a P2PKH `scriptSig`, and takes the surplus back
 //!     as token change. That composition had no oracle behind it at all: the
-//!     TypeScript SDK has no offers, so there are no bytes to be identical to,
-//!     and the settled order above was native legs only.
+//!     TypeScript SDK has no offers, so there were no bytes to be identical to,
+//!     and the settled order above carries native legs only. **Settled
+//!     2026-07-31 at block 1170750**, txid
+//!     `6a9256a4ecf4f7cfc9fb46c6c87a875f1cdd12efbcce0612e7d7bfa871c414ab` —
+//!     five tokens in, one to the maker and four back as change.
 
 use std::str::FromStr;
 

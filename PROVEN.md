@@ -57,7 +57,17 @@ transaction, so it has no row here.
 | Capability | Txid | Block |
 |---|---|---|
 | Marketplace order settled — two keys, two signatures, nothing escrowed | `92fc291cca681972b763cb9cc029bd62cd59b6131887e4e77f6b0c30e77fe4c6` | 1167825 |
+| **Token demand settled** — maker paid in `sdkcuralpha` from a reserve input, surplus returned as token change | `6a9256a4ecf4f7cfc9fb46c6c87a875f1cdd12efbcce0612e7d7bfa871c414ab` | 1170750 |
 | Conversion: 1 VRSCTEST → 0.99443551 shylock, exactly the estimate | `f56eb3cfbfe1feb0eddf864c26e8434690a00d705aef8f4308cb077ab133cc83` | 1167717 |
+
+The token demand is the one that had **no oracle at all** until it settled: the
+TypeScript SDK has no offers, so there were no bytes to be identical to, and
+the order above it carries native legs only. Its four outputs as the daemon
+reports them — 1 `sdkcuralpha` to the maker, 0.5 VRSCTEST to the taker, 4
+`sdkcuralpha` back as change, then native change — are five tokens in and five
+out. The part no amount of self-consistent reasoning could settle is that the
+reserve input is unlocked by a CryptoCondition fulfillment rather than a P2PKH
+`scriptSig`; the network accepting it is the proof.
 
 ## Currency launch
 
@@ -80,7 +90,6 @@ acceptance:
 
 - **Token send** — byte-identical to `@chainvue/verus-sdk`
 - **Burn** — byte-identical to the daemon's `sendcurrency` burn template
-- **Token demands when taking an offer** — reserve inputs, compact-signature fulfillments
 - **P2SH multisig** — reproduces `createmultisig` exactly
 - **SIGHASH `NONE` / `SINGLE` / `ANYONECANPAY`** — only `0x83` has been on chain (inside the settled order)
 - **Identity timelocks**

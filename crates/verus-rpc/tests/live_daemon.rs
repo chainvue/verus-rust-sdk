@@ -485,15 +485,46 @@ fn the_daemon_agrees_about_reserve_transfers_and_deposits() {
 
     let mut transfers = 0;
     let mut deposits = 0;
-    // Twelve blocks is plenty on VRSCTEST — the first probe found one of each
-    // in the first two — and it bounds the request count.
-    for height in (tip.saturating_sub(12)..=tip).rev() {
+    // How far back to look for fresh material.
+    //
+    // This was twelve, on the evidence that the first probe found one of each
+    // in the first two blocks. That did not hold: on 2026-07-31 neither the
+    // last twelve blocks of VRSCTEST nor the last **250** carried either kind.
+    // The test failed on a quiet chain rather than on a defect — in a
+    // *scheduled* job, where a false alarm is expensive because it trains you
+    // to ignore the real one.
+    //
+    // So scanning cannot be the only source. It is kept, because fresh data is
+    // what catches schema drift and a pinned vector never will; but when the
+    // chain has been quiet it falls back to two transactions that are known to
+    // carry one of each. Spent outputs still read fine through
+    // `getrawtransaction`, so pinning them is stable in a way that pinning an
+    // *unspent* outpoint would not be.
+    //
+    // What is deliberately NOT done is softening the assertion below. A scan
+    // that finds nothing must fail rather than pass vacuously; the fix is to
+    // give it something real to check, not to accept an empty result.
+    const SCAN_BLOCKS: u32 = 60;
+    const PINNED: [&str; 2] = [
+        // A reserve transfer, block 1170450.
+        "18273a8f0722753c3103d7fd253c32985ee5047b97aea85f271d822a0a974bf3",
+        // A reserve deposit, block 1170449.
+        "1b6817f2b573afefbed5d3eb7c10576765a4a9eb86ea256baffcb2aebb3633dc",
+    ];
+
+    let mut candidates: Vec<String> = Vec::new();
+    for height in (tip.saturating_sub(SCAN_BLOCKS)..=tip).rev() {
         let block = probe("getblock", &format!("[{height}]"));
-        let Some(txids) = block["result"]["tx"].as_array() else {
-            continue;
-        };
-        for txid in txids {
-            let txid = txid.as_str().expect("txid");
+        if let Some(txids) = block["result"]["tx"].as_array() {
+            candidates.extend(txids.iter().filter_map(|t| t.as_str().map(str::to_string)));
+        }
+    }
+    let scanned = candidates.len();
+    candidates.extend(PINNED.iter().map(|t| (*t).to_string()));
+
+    {
+        for txid in &candidates {
+            let txid = txid.as_str();
             let transaction = client.raw_transaction(txid).expect("getrawtransaction");
             for output in transaction["vout"].as_array().unwrap_or(&Vec::new()) {
                 let script_json = &output["scriptPubKey"];
@@ -569,17 +600,19 @@ fn the_daemon_agrees_about_reserve_transfers_and_deposits() {
                 }
                 eprintln!("{where_}: daemon agrees");
             }
-        }
-        if transfers > 0 && deposits > 0 {
-            break;
+            if transfers > 0 && deposits > 0 {
+                break;
+            }
         }
     }
+    eprintln!("  {scanned} transactions scanned from the last {SCAN_BLOCKS} blocks");
 
     // A scan that found nothing would pass while proving nothing.
     assert!(
         transfers > 0 && deposits > 0,
-        "found {transfers} transfers and {deposits} deposits in the last 12 blocks; \
-         this test proves nothing unless it sees at least one of each"
+        "found {transfers} transfers and {deposits} deposits across {} scanned and pinned \
+         transactions; this test proves nothing unless it sees at least one of each",
+        candidates.len()
     );
 }
 
@@ -612,4 +645,144 @@ fn probe(method: &str, params: &str) -> Value {
         .output()
         .expect("curl is available");
     serde_json::from_slice(&response.stdout).expect("the endpoint returned JSON")
+}
+
+/// The daemon's own reading of a token-demand order.
+///
+/// This composition — a maker demanding a token, a taker paying it from a
+/// reserve input with a CryptoCondition fulfillment and taking the surplus back
+/// as change — is the one entry in `PROVEN.md` with no oracle behind it: the
+/// TypeScript SDK has no offers, so there are no bytes to be identical to, and
+/// the settled order at `92fc291c` had native legs only.
+///
+/// A settlement needs two funded keys and is gated separately in
+/// `verus-flows`. This is what can be had *without* funds, and it is not
+/// nothing: `decoderawtransaction` parses without checking that the inputs
+/// exist, so the whole transaction can be built from invented outpoints and the
+/// daemon still has to agree about what every output holds. If our reserve
+/// encoding were wrong, the currency ids or the amounts below would not match.
+///
+/// What it does NOT prove: that the signatures verify, or that the network
+/// accepts it. Those need the settlement.
+#[test]
+fn the_daemon_reads_a_token_demand_the_way_we_built_it() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    use std::str::FromStr;
+    use verus_tx::offer::{
+        make_offer, offer_funding_script, take_offer, OfferParams, TakeParams, Wanted,
+    };
+    use verus_tx::{Amount, CurrencyId, Expiry, Txid, Utxo};
+
+    // `sdkcuralpha` on VRSCTEST — a currency that really exists, so the daemon
+    // resolves it by name and a wrong id would show up as a different one
+    // rather than as a blob it echoes back.
+    const SDKCURALPHA: &str = "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7";
+    let currency =
+        CurrencyId::from_bytes(verus_keys::Address::from_str(SDKCURALPHA).unwrap().hash());
+
+    let maker = verus_keys::PrivateKey::from_bytes(&[0x21; 32], true).unwrap();
+    let taker = verus_keys::PrivateKey::from_bytes(&[0x22; 32], true).unwrap();
+
+    let offered = Amount::from_sat(1_00000000);
+    let wanted = Amount::from_sat(2_00000000);
+    let held = Amount::from_sat(3_00000000);
+
+    let funding = Utxo {
+        txid: Txid::from_internal([0x71; 32]),
+        vout: 0,
+        satoshis: offered,
+        script_pubkey: offer_funding_script(maker.address().hash()).unwrap(),
+    };
+    let offer = make_offer(
+        &maker,
+        &OfferParams::new(
+            &funding,
+            Wanted::Token {
+                currency,
+                amount: wanted,
+                recipient: maker.address().hash(),
+            },
+            Expiry::AtHeight(1_200_000),
+        ),
+    )
+    .expect("make a token offer");
+
+    let utxos = [
+        // The token, as a reserve output the taker controls.
+        Utxo {
+            txid: Txid::from_internal([0x72; 32]),
+            vout: 1,
+            satoshis: Amount::ZERO,
+            script_pubkey: verus_tx::cc::reserve_output_script(
+                taker.address().hash(),
+                currency,
+                held.to_sat(),
+            )
+            .unwrap(),
+        },
+        // Native, to pay the miner fee.
+        Utxo {
+            txid: Txid::from_internal([0x73; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(1_00000000),
+            script_pubkey: taker.address().p2pkh_script_pubkey().unwrap(),
+        },
+    ];
+    let raw = take_offer(
+        &taker,
+        &TakeParams::new(
+            &offer.hex,
+            &utxos,
+            taker.address().hash(),
+            taker.address(),
+            offered,
+            10_000,
+        ),
+    )
+    .expect("take the token offer");
+
+    let decoded = probe(
+        "decoderawtransaction",
+        &format!("[\"{}\"]", hex::encode(&raw)),
+    );
+    let result = &decoded["result"];
+    assert!(
+        !result.is_null(),
+        "the daemon refused to parse our token demand: {decoded}"
+    );
+
+    // Every currency amount the daemon sees, per output.
+    let seen: Vec<Option<f64>> = result["vout"]
+        .as_array()
+        .expect("vout")
+        .iter()
+        .map(|out| {
+            out["scriptPubKey"]["reserveoutput"]["currencyvalues"][SDKCURALPHA]
+                .as_f64()
+                .or_else(|| out["scriptPubKey"]["currencyvalues"][SDKCURALPHA].as_f64())
+        })
+        .collect();
+    eprintln!("  daemon sees per-output {SDKCURALPHA}: {seen:?}");
+
+    // Output 0 is the maker's demand and must carry exactly what was asked. It
+    // is the output their signature commits to, so a mismatch here is not a
+    // rounding detail — it is the trade being for the wrong amount.
+    assert_eq!(
+        seen[0],
+        Some(2.0),
+        "the daemon must see the demanded amount in output 0: {result}"
+    );
+
+    // Tokens in must equal tokens out. The surplus rides in a change output,
+    // and anything unaccounted for is burned.
+    let total: f64 = seen.iter().flatten().sum();
+    assert!(
+        (total - 3.0).abs() < 1e-8,
+        "three tokens went in, so the daemon must see three come out, saw {total}: {result}"
+    );
+
+    eprintln!("  daemon agrees: 2 demanded + 1 change, from a 3-token input");
 }
