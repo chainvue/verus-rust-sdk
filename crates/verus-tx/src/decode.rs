@@ -31,11 +31,30 @@ const OP_PUSHDATA2: u8 = 0x4d;
 const OP_PUSHDATA4: u8 = 0x4e;
 
 /// What an output turned out to be.
+///
+/// `#[non_exhaustive]` for the same reason [`TxError`] is: this crate learns to
+/// read new output shapes over time, and a downstream `match` should get a
+/// wildcard arm once rather than break on every discovery.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputKind {
     /// A plain pay-to-public-key-hash output: native value only.
     PubKeyHash {
         /// The 20-byte hash it pays to.
+        hash: [u8; 20],
+    },
+    /// A pay-to-public-key output: native value only.
+    ///
+    /// The shape a proof-of-work coinbase pays itself with, so any address that
+    /// has ever mined holds some. It carries no payload and cannot hold a
+    /// currency — recognising it matters because the alternative is refusing
+    /// the whole output as unreadable, and "unreadable" would be wrong: this
+    /// crate cannot *spend* a P2PK output, but it can be certain there is no
+    /// token hiding in one.
+    PubKey {
+        /// The public key it pays, 33 bytes compressed or 65 uncompressed.
+        pubkey: Vec<u8>,
+        /// The hash of that key — the `R` address that controls it.
         hash: [u8; 20],
     },
     /// A CryptoCondition output holding token (reserve) value.
@@ -69,6 +88,23 @@ pub enum OutputKind {
         /// The eval code found.
         eval_code: u8,
     },
+}
+
+/// The public key a `PUSH(len) <pubkey> OP_CHECKSIG` script pays, if it is one.
+///
+/// Only the two lengths secp256k1 defines are accepted; a push of any other
+/// size is not a public key and this crate should not claim to recognise it.
+fn pay_to_pubkey(script: &[u8]) -> Option<&[u8]> {
+    const OP_CHECKSIG: u8 = 0xac;
+    let (&length, rest) = script.split_first()?;
+    if length != 33 && length != 65 {
+        return None;
+    }
+    let length = usize::from(length);
+    if rest.len() != length + 1 || rest[length] != OP_CHECKSIG {
+        return None;
+    }
+    Some(&rest[..length])
 }
 
 /// Read pushes out of a script, rejecting anything malformed.
@@ -219,6 +255,15 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
         let mut hash = [0u8; 20];
         hash.copy_from_slice(&script[3..23]);
         return Ok(OutputKind::PubKeyHash { hash });
+    }
+
+    // P2PK: `PUSH(33|65) <pubkey> OP_CHECKSIG`. Native-only by construction —
+    // there is nowhere in this script for a payload to live.
+    if let Some(pubkey) = pay_to_pubkey(script) {
+        return Ok(OutputKind::PubKey {
+            hash: verus_keys::hash160(pubkey),
+            pubkey: pubkey.to_vec(),
+        });
     }
 
     // Not a CryptoCondition output either? Then it is something this crate has

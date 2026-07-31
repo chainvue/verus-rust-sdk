@@ -39,41 +39,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Decoded from outputs already fetched: no extra request, and the same
     // decoder `build_token_send` uses to select them.
-    let held = funding.token_balances()?;
-    if held.is_empty() {
-        if !funding.other.is_empty() {
-            println!(
-                "  {} CryptoCondition output(s), carrying no currency — identities, most likely",
-                funding.other.len()
-            );
+    //
+    // Reported rather than propagated, and deliberately AFTER the native
+    // figures. Counting fails closed — an output this SDK cannot read might
+    // carry a currency it cannot see, so no total is better than a small one —
+    // and a proof-of-stake coinbase pays its first output to a stakeguard
+    // CryptoCondition this SDK does not decode. So any address that has staked
+    // recently cannot be given a token total, and aborting over that would
+    // withhold the native balance it already knows, which helps nobody.
+    match funding.token_balances() {
+        Err(error) => println!("  tokens   unknown: {error}"),
+        Ok(held) if held.is_empty() => {
+            if !funding.other.is_empty() {
+                println!(
+                    "  {} CryptoCondition output(s) carrying no currency — identities, most likely",
+                    funding.other.len()
+                );
+            }
         }
-        return Ok(());
+        Ok(held) => {
+            // Names cost one request each, so they are asked for once, here,
+            // and only because there is something to display. A node that
+            // cannot be reached is an error; one that simply does not know a
+            // currency leaves it unnamed.
+            let names = currency_names(&node, held.keys().copied()).unwrap_or_default();
+            println!("  tokens:");
+            for (currency, amount) in &held {
+                let id = verus_sdk::verus_keys::Address::new(
+                    verus_sdk::verus_keys::AddressKind::Identity,
+                    currency.to_bytes(),
+                )
+                .to_string();
+                match names.get(currency) {
+                    // A name comes from the node and is shown to a person, so
+                    // it is printed beside the id that cannot lie rather than
+                    // instead of it.
+                    Some(name) => println!("    {amount:>16}  {name}@  ({id})"),
+                    None => println!("    {amount:>16}  {id}"),
+                }
+            }
+        }
     }
 
-    // Names cost one request each, so they are asked for once, here, and only
-    // because there is something to display.
-    let names = currency_names(&node, held.keys().copied());
-    println!("  tokens:");
-    for (currency, amount) in &held {
-        let id = verus_sdk::verus_keys::Address::new(
-            verus_sdk::verus_keys::AddressKind::Identity,
-            currency.to_bytes(),
-        )
-        .to_string();
-        match names.get(currency) {
-            Some(name) => println!("    {amount:>16}  {name}@  ({id})"),
-            None => println!("    {amount:>16}  {id}"),
+    match funding.immature_token_balances() {
+        Ok(stuck) if stuck.is_empty() => {}
+        Ok(stuck) => {
+            println!("  tokens in outputs that are not spendable yet:");
+            for (currency, amount) in &stuck {
+                println!("    {amount:>16}  {}", hex::encode(currency.to_bytes()));
+            }
         }
-    }
-
-    let stuck = funding.immature_token_balances()?;
-    if !stuck.is_empty() {
-        println!(
-            "  tokens in immature outputs (unexpected — see Funding::immature_token_balances):"
-        );
-        for (currency, amount) in &stuck {
-            println!("    {amount} of {}", hex::encode(currency.to_bytes()));
-        }
+        Err(error) => println!("  unspendable outputs could not be counted: {error}"),
     }
     Ok(())
 }

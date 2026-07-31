@@ -52,13 +52,20 @@ impl Funding {
         balances_of(&self.other)
     }
 
-    /// Tokens held in outputs that are not yet spendable.
+    /// Tokens held in outputs that are **not currently spendable**.
     ///
-    /// Expected to be empty, and checked anyway. Only coinbase outputs can be
-    /// immature and coinbase outputs are native, so a token appearing here
-    /// would mean an assumption in [`crate::spendable`] had stopped holding —
-    /// which is exactly the moment a wallet should not be quietly reporting a
-    /// smaller balance than the chain shows.
+    /// Named for coinbase maturity because that is the usual cause, but the
+    /// bucket is wider than that: [`crate::spendable`] routes any output the
+    /// node reports as unspendable here, whatever its age or script. So a
+    /// token can legitimately appear, and a wallet showing only
+    /// [`Funding::token_balances`] would be understating what its user owns.
+    ///
+    /// Note this can also *fail* rather than come back empty: a proof-of-stake
+    /// coinbase pays its first output to a stakeguard CryptoCondition, which
+    /// this SDK cannot decode, so a recent staker's immature set is uncountable
+    /// rather than tokenless. Treat an error here as "unknown", not as zero —
+    /// which is why it is a separate call from the spendable figure rather
+    /// than folded into it.
     pub fn immature_token_balances(&self) -> Result<TokenBalances, FlowError> {
         balances_of(&self.immature)
     }
@@ -72,21 +79,154 @@ impl Funding {
 /// display, and cache what it returns — a currency's name is fixed when it is
 /// registered and cannot change, so the cache never needs invalidating.
 ///
-/// A currency the node will not resolve is left out rather than failing the
-/// lookup: a missing *name* is a display problem, and it must not stop a wallet
-/// reporting a balance it already knows.
+/// A currency the **node** says it does not know is left out rather than
+/// failing the lookup: a missing name is a display problem, and it must not
+/// stop a wallet reporting a balance it already knows.
+///
+/// A node that could not be *reached*, though, is an error. The two used to be
+/// treated alike, and that is worse than it sounds given the advice to cache:
+/// one network blip would have written "this currency has no name" into a
+/// cache that is never invalidated, and an unreachable node would have been
+/// indistinguishable from an address holding nothing but unknown currencies.
+///
+/// # Trust
+///
+/// The names come from the node and are displayed to a user. Verus names
+/// permit far more than they look like they do, so treat a name as untrusted
+/// display text: escape it, constrain it to one line, and do not let it
+/// impersonate an address or a number. The id in the key is the part that
+/// cannot lie, and this checks the node's answer against it.
 pub fn currency_names(
     reader: &impl ChainReader,
     currencies: impl IntoIterator<Item = CurrencyId>,
-) -> BTreeMap<CurrencyId, String> {
+) -> Result<BTreeMap<CurrencyId, String>, FlowError> {
     let mut names = BTreeMap::new();
     for currency in currencies {
         let address =
             verus_keys::Address::new(verus_keys::AddressKind::Identity, currency.to_bytes())
                 .to_string();
-        if let Ok(policy) = reader.currency(&address) {
-            names.insert(currency, policy.name);
+        match reader.currency(&address) {
+            Ok(policy) => {
+                // Free consistency check: a node that answers about a
+                // different currency than the one asked for is confused or
+                // hostile, and either way its answer is not a name for this
+                // token.
+                if policy.currency_id == address {
+                    names.insert(currency, policy.name);
+                }
+            }
+            // The node answered, and its answer was "no such currency".
+            Err(verus_rpc::RpcError::Node { .. }) => {}
+            Err(error) => return Err(error.into()),
         }
     }
-    names
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spendable;
+    use crate::testing::ScriptedReader;
+    use verus_tx::Amount;
+
+    const ADDRESS: &str = "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX";
+
+    /// `ScriptedReader::with_reserve_utxo` builds this currency.
+    const TOKEN: CurrencyId = CurrencyId::from_bytes([0x22; 20]);
+
+    /// **The method must read the outputs that hold tokens.** Reading the
+    /// wrong set — `immature` rather than `other` — returns an empty map for
+    /// every real address, and nothing else in the workspace notices.
+    #[test]
+    fn spendable_tokens_come_from_the_outputs_that_hold_them() {
+        let node = ScriptedReader::new(1_000)
+            .with_utxo(ADDRESS, 900, 5_000_000)
+            .with_reserve_utxo(ADDRESS, 900);
+        let funding = spendable(&node, ADDRESS).unwrap();
+
+        assert_eq!(funding.utxos.len(), 1, "the native output funds a send");
+        assert_eq!(funding.other.len(), 1, "the reserve output does not");
+
+        let held = funding.token_balances().unwrap();
+        assert_eq!(
+            held.get(&TOKEN),
+            Some(&Amount::from_sat(1_000_000)),
+            "the token the address holds must be counted"
+        );
+        assert!(
+            funding.immature_token_balances().unwrap().is_empty(),
+            "nothing here is immature"
+        );
+    }
+
+    /// And the two buckets must not be the same bucket: a token in an
+    /// unspendable output is reported by the immature method and *not* by the
+    /// spendable one, or "you have 500 but can spend 20" cannot be said.
+    #[test]
+    fn an_unspendable_token_is_reported_separately_and_not_as_spendable() {
+        let node = ScriptedReader::new(1_000)
+            .with_utxo(ADDRESS, 990, 5_000_000)
+            .with_reserve_utxo(ADDRESS, 990)
+            .with_coinbase_at(990);
+        let funding = spendable(&node, ADDRESS).unwrap();
+
+        assert!(
+            funding.token_balances().unwrap().is_empty(),
+            "an immature token is not spendable"
+        );
+        assert_eq!(
+            funding.immature_token_balances().unwrap().get(&TOKEN),
+            Some(&Amount::from_sat(1_000_000)),
+            "and it must still be reported somewhere, or it vanishes"
+        );
+    }
+
+    #[test]
+    fn an_address_with_no_tokens_reports_none() {
+        let node = ScriptedReader::new(1_000).with_utxo(ADDRESS, 900, 5_000_000);
+        let funding = spendable(&node, ADDRESS).unwrap();
+        assert!(funding.token_balances().unwrap().is_empty());
+    }
+
+    /// A name is looked up by the currency's own i-address and must be the
+    /// name, not the id echoed back.
+    #[test]
+    fn a_name_is_resolved_for_the_currency_that_was_asked_about() {
+        let id = verus_keys::Address::new(verus_keys::AddressKind::Identity, TOKEN.to_bytes())
+            .to_string();
+        let node = ScriptedReader::new(1_000).with_policy(verus_rpc::CurrencyPolicy {
+            currency_id: id.clone(),
+            name: "sometoken".into(),
+            ..policy()
+        });
+        let names = currency_names(&node, [TOKEN]).unwrap();
+        assert_eq!(names.get(&TOKEN).map(String::as_str), Some("sometoken"));
+        assert_ne!(names[&TOKEN], id, "the id is not a name");
+    }
+
+    /// A node that answers about a different currency than the one asked for
+    /// is confused or hostile; either way its answer is not this token's name.
+    #[test]
+    fn an_answer_about_a_different_currency_is_not_used_as_a_name() {
+        let node = ScriptedReader::new(1_000).with_policy(verus_rpc::CurrencyPolicy {
+            currency_id: verus_keys::Address::new(verus_keys::AddressKind::Identity, [0x99; 20])
+                .to_string(),
+            name: "somethingelse".into(),
+            ..policy()
+        });
+        assert!(currency_names(&node, [TOKEN]).unwrap().is_empty());
+    }
+
+    fn policy() -> verus_rpc::CurrencyPolicy {
+        verus_rpc::CurrencyPolicy {
+            currency_id: String::new(),
+            name: String::new(),
+            id_registration_fee: Amount::ZERO,
+            id_referral_levels: 0,
+            id_import_fee: Amount::ZERO,
+            currency_registration_fee: Amount::ZERO,
+            proof_protocol: 1,
+        }
+    }
 }

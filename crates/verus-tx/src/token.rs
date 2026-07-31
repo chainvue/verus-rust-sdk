@@ -177,6 +177,17 @@ pub fn build_token_send(
             let (tokens, is_cryptocondition) = match decode_output_script(&utxo.script_pubkey)? {
                 OutputKind::PubKeyHash { .. } => (Vec::new(), false),
                 OutputKind::ReserveOutput { tokens, .. } => (tokens, true),
+                // Native value, but not value this crate can sign for: the
+                // scriptSig for a P2PK input is a bare signature, and every
+                // signing path here builds the P2PKH form. Refused rather than
+                // selected, so the failure is "cannot spend this output"
+                // instead of a transaction the network rejects.
+                OutputKind::PubKey { .. } => {
+                    return Err(TxError::UnsupportedFundingScript {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                    })
+                }
                 // Identity-held funds are spendable only with the identity's
                 // authority, not this key's. Building a spend would produce a
                 // transaction nobody can satisfy.

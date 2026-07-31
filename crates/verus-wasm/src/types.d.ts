@@ -166,9 +166,13 @@ export interface TokenAmount {
 
 /** What an output turned out to be. Switch on `kind`. */
 export interface DecodedOutput {
-    kind: "pubKeyHash" | "reserveOutput" | "identityPayment" | "identityPrimary"
-        | "unsupportedCryptoCondition";
-    /** The address paid or held for. Absent when the output could not be read. */
+    kind: "pubKeyHash" | "pubKey" | "reserveOutput" | "identityPayment"
+        | "identityPrimary" | "unsupportedCryptoCondition" | "unknown";
+    /**
+     * The address paid or held for. Absent when the output could not be read.
+     * For `pubKey` — the shape a proof-of-work coinbase pays — this is the
+     * address controlling the key, and the output carries native value only.
+     */
     address?: string;
     /** For `reserveOutput`: token value carried, IN ADDITION to native value. */
     tokens?: TokenAmount[];

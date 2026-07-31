@@ -128,9 +128,27 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             minimum_signatures: Some(identity.min_sigs),
             ..blank
         },
+        OutputKind::PubKey { hash, .. } => DecodedOutput {
+            kind: "pubKey".into(),
+            // Native value only. A proof-of-work coinbase pays this shape, and
+            // the address shown is the one that controls the key.
+            address: Some(
+                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string(),
+            ),
+            ..blank
+        },
         OutputKind::UnsupportedCryptoCondition { eval_code } => DecodedOutput {
             kind: "unsupportedCryptoCondition".into(),
             eval_code: Some(eval_code),
+            ..blank
+        },
+        // `OutputKind` is non-exhaustive: this crate can learn to read a new
+        // shape between releases. Reported as unknown rather than guessed at,
+        // and with no address, so a caller switching on `kind` treats it the
+        // way it treats anything else it does not recognise — by leaving the
+        // output alone.
+        _ => DecodedOutput {
+            kind: "unknown".into(),
             ..blank
         },
     })
@@ -251,6 +269,10 @@ mod tests {
 /// same convention as everywhere else here. Native value is not included: it
 /// has no currency id, and folding the two together is how double-counting
 /// starts.
+///
+/// Pass each outpoint at most once — this sums what it is given and cannot
+/// tell a second output from the same one listed twice, which matters when a
+/// caller concatenates paged RPC results.
 ///
 /// ```js
 /// const utxos = await rpc("getaddressutxos", [{ addresses: [key.address()] }]);
