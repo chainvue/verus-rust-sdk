@@ -197,17 +197,52 @@ mod tests {
             assert_eq!(
                 declared,
                 field_names(&T::default()),
-                "{name}::SHAPE does not match what {name} serializes"
+                "{name} does not match what the Rust type serializes"
             );
+        }
+
+        /// The nested shape guarding `field`, or a failure naming what is
+        /// missing.
+        ///
+        /// Following the pointer is the point. Comparing only field *names*
+        /// would pass while a nested shape was `None` — and `None` means that
+        /// object is not guarded at all, which is the exact bug the nested
+        /// shapes were added to fix.
+        fn nested(shape: &Shape, field: &str) -> &'static Shape {
+            shape
+                .fields
+                .iter()
+                .find(|(name, _)| *name == field)
+                .unwrap_or_else(|| panic!("no field {field}"))
+                .1
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{field} carries objects but declares no nested shape, so a stray key \
+                         inside one would be silently dropped"
+                    )
+                })
         }
 
         check::<SendRequest>("SendRequest", &SendRequest::SHAPE);
         check::<TokenSendRequest>("TokenSendRequest", &TokenSendRequest::SHAPE);
         check::<SignRequest>("SignRequest", &SignRequest::SHAPE);
         check::<VerifyRequest>("VerifyRequest", &VerifyRequest::SHAPE);
-        check::<JsUtxo>("JsUtxo", &JsUtxo::SHAPE);
-        check::<JsRecipient>("JsRecipient", &JsRecipient::SHAPE);
-        check::<JsTokenRecipient>("JsTokenRecipient", &JsTokenRecipient::SHAPE);
+
+        // Every field that carries objects, reached through the pointer the
+        // guard actually follows rather than through the type it ought to be.
+        check::<JsUtxo>("SendRequest.utxos", nested(&SendRequest::SHAPE, "utxos"));
+        check::<JsRecipient>(
+            "SendRequest.recipients",
+            nested(&SendRequest::SHAPE, "recipients"),
+        );
+        check::<JsUtxo>(
+            "TokenSendRequest.utxos",
+            nested(&TokenSendRequest::SHAPE, "utxos"),
+        );
+        check::<JsTokenRecipient>(
+            "TokenSendRequest.recipients",
+            nested(&TokenSendRequest::SHAPE, "recipients"),
+        );
     }
 
     /// Both checks must be able to fail, or they prove nothing. The

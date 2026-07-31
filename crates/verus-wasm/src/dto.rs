@@ -88,30 +88,64 @@ pub fn from_js<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult
 ///
 /// `path` names the position for an error message — `""` at the top level,
 /// then `utxos[1].` and so on.
+///
+/// # Why the recursion cannot follow the input
+///
+/// An earlier version of this recursed on whatever it found: an array element
+/// that was itself an array went round the array branch again. That handed the
+/// **caller** control of the recursion depth, and a request whose `utxos` was
+/// an array nested a few thousand deep overflowed the wasm stack — not into a
+/// catchable error, but into `RuntimeError: memory access out of bounds` that
+/// left the stack pointer corrupt, so every later call to *any* export in the
+/// module failed the same way. One malformed request bricked the instance for
+/// the life of the page, taking already-imported keys with it. `utxos` and
+/// `recipients` are exactly the fields a wallet fills from JSON it did not
+/// author, so this was reachable from a hostile RPC reply.
+///
+/// The fix is not a depth limit — it is that an array's elements are read as
+/// *objects*, never as arrays. Recursion now alternates array → object →
+/// declared nested field, so its depth is bounded by [`Shape`], which is a
+/// compile-time constant, whatever the input looks like. An element that turns
+/// out to be an array is passed through untouched for serde to reject as the
+/// type error it is.
 fn sanitize(value: JsValue, shape: &Shape, path: &str) -> WasmResult<JsValue> {
-    use wasm_bindgen::JsCast;
-
-    // A non-object is left to serde, which reports the type mismatch far better
-    // than a key walk could. `null` and `undefined` land here too.
-    if !value.is_object() {
-        return Ok(value);
-    }
-    let object: &js_sys::Object = value.unchecked_ref();
-
     if js_sys::Array::is_array(&value) {
         let array = js_sys::Array::from(&value);
         let copy = js_sys::Array::new_with_length(array.length());
         for (index, element) in array.iter().enumerate() {
-            let nested_path = format!("{path}[{index}].");
+            let index = u32::try_from(index).map_err(|_| {
+                WasmError::new("InvalidArgument", format!("{path} has too many entries"))
+            })?;
             copy.set(
-                u32::try_from(index).map_err(|_| {
-                    WasmError::new("InvalidArgument", format!("{path} has too many entries"))
-                })?,
-                sanitize(element, shape, &nested_path)?,
+                index,
+                sanitize_object(element, shape, &format!("{path}[{index}]."))?,
             );
         }
         return Ok(copy.into());
     }
+    sanitize_object(value, shape, path)
+}
+
+/// The object half of [`sanitize`]. Never recurses into an array directly —
+/// only through a declared nested field, which is what bounds the depth.
+fn sanitize_object(value: JsValue, shape: &Shape, path: &str) -> WasmResult<JsValue> {
+    use wasm_bindgen::JsCast;
+
+    // A non-object — or an array where an object belongs — is left to serde,
+    // which reports the type mismatch far better than a key walk could. `null`
+    // and `undefined` land here too.
+    if !value.is_object() || js_sys::Array::is_array(&value) {
+        return Ok(value);
+    }
+    let object: &js_sys::Object = value.unchecked_ref();
+
+    // Positions are spelled `utxos[0].` with a trailing separator; a nested
+    // field arrives without one, so add it rather than reporting `utxos0`.
+    let path = &if path.is_empty() || path.ends_with('.') {
+        path.to_string()
+    } else {
+        format!("{path}.")
+    };
 
     // A class instance, or anything else with its own prototype, is refused
     // rather than silently stripped: its accessors live on that prototype, and

@@ -247,14 +247,49 @@ console.log("\nrefusals");
 
   // A stray key inside a NESTED object. `currency` on a native recipient is
   // what a caller writes when they meant `sendToken`; it used to be dropped,
-  // and native coins moved instead.
+  // and native coins moved instead. Covered on BOTH send paths: removing the
+  // nested shape from `TokenSendRequest` alone left the whole gate green.
   throws("nested recipient", () => key.send({
     ...base,
     recipients: [{ ...base.recipients[0], currency: VRSCTEST }],
   }), (e) => e.name === "UnknownField" && /currency/.test(e.message));
   throws("nested utxo", () => key.send({ ...base, utxos: [{ ...utxo, extra: 1 }] }),
     (e) => e.name === "UnknownField");
-  ok("a stray key inside a nested object is refused too");
+  throws("nested token recipient", () => key.sendToken({
+    ...tokenBase,
+    recipients: [{ ...tokenBase.recipients[0], satoshis: "1" }],
+  }), (e) => e.name === "UnknownField" && /satoshis/.test(e.message));
+  throws("nested token utxo", () => key.sendToken({ ...tokenBase, utxos: [{ ...utxo, extra: 1 }] }),
+    (e) => e.name === "UnknownField");
+  ok("a stray key inside a nested object is refused on both send paths");
+
+  // The error must say WHICH entry, not merely that one was bad.
+  try {
+    key.send({ ...base, utxos: [utxo, { ...utxo, extra: 1 }] });
+    assert.fail("should have thrown");
+  } catch (e) {
+    assert.match(e.message, /utxos\[1\]\.extra/, `the position must be named, got: ${e.message}`);
+  }
+  ok("a stray key names its position, not just its name");
+
+  // Depth must not be the caller's to choose. A `utxos` nested a few thousand
+  // arrays deep used to overflow the wasm stack — not into a catchable error
+  // but into an uncatchable trap that left the stack pointer corrupt, so every
+  // later call to ANY export failed the same way and the module was dead for
+  // the life of the page. `utxos` is filled from JSON a wallet did not author.
+  {
+    let deep = base.utxos;
+    for (let i = 0; i < 20000; i++) deep = [deep];
+    assert.throws(() => key.send({ ...base, utxos: deep }), (e) => e instanceof Error);
+    // The assertion that matters is the next one: the module survived.
+    assert.equal(parseCoins("1.1"), "110000000", "the module was bricked by a deep input");
+    assert.equal(
+      key.send({ ...base, expiryHeight: 1170000 }).hex,
+      key.send({ ...base, expiryHeight: 1170000 }).hex,
+      "signing still works after a deep input",
+    );
+  }
+  ok("a deeply nested input is refused without poisoning the module");
 
   // The guard must ask the same question the deserializer does. Each of these
   // hid a field from `Object.keys` while `Reflect.get` still returned it, and
