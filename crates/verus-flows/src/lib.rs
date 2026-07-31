@@ -27,6 +27,8 @@
 //!   joining them cannot be recovered from the chain.
 //! * [`funding`] — which coins can actually be spent right now, which is not the
 //!   same as which coins exist.
+//! * [`history`] — what already happened, which a UTXO set cannot tell you:
+//!   an output that arrived and was spent is simply gone from it.
 //! * [`broadcast`](mod@broadcast) — and the one failure that must never be retried
 //!   automatically.
 //!
@@ -68,6 +70,7 @@ pub mod broadcast;
 pub mod convert;
 pub mod error;
 pub mod funding;
+pub mod history;
 pub mod identity;
 pub mod launch;
 pub mod login;

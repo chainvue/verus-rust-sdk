@@ -786,3 +786,49 @@ fn the_daemon_reads_a_token_demand_the_way_we_built_it() {
 
     eprintln!("  daemon agrees: 2 demanded + 1 change, from a 3-token input");
 }
+
+/// The address index still reports what `fixtures/rpc/getaddressdeltas.json`
+/// froze, and still reports it the same way.
+///
+/// This is the drift half of the pair. The fixture proves the parser handles
+/// the bytes; only a live run notices a daemon that renames `currencyvalues`,
+/// stops signing `satoshis`, or starts quoting either — none of which the
+/// frozen copy could ever fail on.
+///
+/// Pinned against a settled transaction rather than "whatever is recent", so it
+/// cannot go quiet the way the earlier reserve-transfer scan did when the last
+/// N blocks happened to hold nothing of interest.
+#[test]
+fn the_address_index_still_reports_signed_movements() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+
+    const TAKER: &str = "RGRTws8PJQC5oBqftKMCAaBD1Vj5MHKKSz";
+    const TOKEN: &str = "i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7";
+
+    let deltas = client()
+        .address_deltas(&[TAKER], Some((1_170_740, 1_170_760)))
+        .expect("getaddressdeltas");
+    assert_eq!(deltas.len(), 7, "the settled swap and its funding");
+
+    // A spend is negative. If the daemon ever reports magnitudes instead, a
+    // wallet built on this shows every payment out as a payment in.
+    let spends: Vec<_> = deltas.iter().filter(|d| d.spending).collect();
+    assert!(!spends.is_empty(), "the swap spends outputs");
+    assert!(
+        spends.iter().any(|d| d.satoshis.is_negative()),
+        "a native spend must carry its sign"
+    );
+
+    // The token side of the settlement: 5 in, 5 spent, 4 back as change.
+    let token: i64 = deltas
+        .iter()
+        .filter_map(|d| d.currency_values.get(TOKEN))
+        .map(|v| v.to_sat())
+        .sum();
+    assert_eq!(token, 400_000_000, "4 sdkcuralpha left after paying 1");
+
+    eprintln!("{} deltas, token nets to {token} sats", deltas.len());
+}

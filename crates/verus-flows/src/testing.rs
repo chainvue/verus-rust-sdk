@@ -17,7 +17,7 @@ use std::cell::RefCell;
 
 use serde_json::json;
 use verus_rpc::{
-    AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, CurrencyPolicy,
+    AddressBalance, AddressDelta, AddressUtxo, Broadcaster, ChainInfo, ChainReader, CurrencyPolicy,
     IdentityRecord, RpcError,
 };
 use verus_tx::{Amount, Txid, Utxo};
@@ -38,6 +38,7 @@ pub struct ScriptedReader {
     broadcasts: RefCell<Vec<String>>,
     broadcast_failure: RefCell<Option<RpcError>>,
     estimate: RefCell<Option<verus_rpc::ConversionEstimate>>,
+    deltas: RefCell<Vec<AddressDelta>>,
     pub(crate) raw_transactions: RefCell<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -57,6 +58,7 @@ impl ScriptedReader {
             broadcasts: RefCell::new(Vec::new()),
             broadcast_failure: RefCell::new(None),
             estimate: RefCell::new(None),
+            deltas: RefCell::new(Vec::new()),
             raw_transactions: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -166,6 +168,17 @@ impl ScriptedReader {
         self.identities
             .borrow_mut()
             .push((name.to_string(), record));
+        self
+    }
+
+    /// Movements `address_deltas` will report.
+    ///
+    /// Handed over verbatim and in the order given, because the cases worth
+    /// scripting here are the ones a live index will not produce on demand: a
+    /// token leg with no native value, a spend and its change in one
+    /// transaction, rows arriving out of chain order.
+    pub fn with_deltas(self, deltas: Vec<AddressDelta>) -> Self {
+        *self.deltas.borrow_mut() = deltas;
         self
     }
 
@@ -279,6 +292,25 @@ impl ChainReader for ScriptedReader {
             .borrow()
             .iter()
             .filter(|utxo| addresses.contains(&utxo.address.as_str()))
+            .cloned()
+            .collect())
+    }
+
+    fn address_deltas(
+        &self,
+        addresses: &[&str],
+        range: Option<(u32, u32)>,
+    ) -> Result<Vec<AddressDelta>, RpcError> {
+        self.count();
+        Ok(self
+            .deltas
+            .borrow()
+            .iter()
+            .filter(|delta| addresses.contains(&delta.address.as_str()))
+            .filter(|delta| match range {
+                Some((start, end)) => delta.height >= start && delta.height <= end,
+                None => true,
+            })
             .cloned()
             .collect())
     }

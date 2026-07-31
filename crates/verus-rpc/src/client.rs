@@ -11,9 +11,9 @@ use crate::json;
 use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
-    AddressBalance, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy, IdentityRecord,
-    RawAddressBalance, RawAddressUtxo, RawChainInfo, RawConversionEstimate, RawCurrency,
-    RawIdentity,
+    AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy,
+    IdentityRecord, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
+    RawConversionEstimate, RawCurrency, RawIdentity,
 };
 
 /// Asking a node questions.
@@ -67,6 +67,38 @@ pub trait ChainReader {
     /// together, irreversibly and in its logs. Ask separately when that linkage
     /// matters more than the round trip.
     fn address_utxos(&self, addresses: &[&str]) -> Result<Vec<AddressUtxo>, RpcError>;
+    /// Every movement of value at these addresses.
+    ///
+    /// This is what a transaction list is built from, and it is the one thing
+    /// [`ChainReader::address_utxos`] cannot give you: a UTXO set is the
+    /// present tense. An output that was received and later spent has no UTXO
+    /// at all, so a wallet showing only unspent outputs shows a history with
+    /// every completed payment missing.
+    ///
+    /// Ordering is the daemon's: ascending **within** each address, with the
+    /// addresses concatenated. It is deliberately not described as oldest-first
+    /// overall, because for more than one address it is not. Sort, or use
+    /// `verus_flows::history`, which does.
+    ///
+    /// `range` bounds the search to `(start, end)` heights inclusive, and both
+    /// must be **greater than zero** — the daemon answers `-5, "Start and end
+    /// is expected to be greater than zero"` otherwise. `None` asks for the
+    /// whole chain, which on a busy address is a large reply; the transport's
+    /// size ceiling applies, so page with explicit ranges rather than
+    /// discovering it.
+    ///
+    /// **Two rows per output over its lifetime**, positive when created and
+    /// negative when spent, and a token output reports `satoshis` of zero with
+    /// the value in `currency_values`. Both are why `verus_flows::history`
+    /// exists rather than a caller folding these by hand.
+    ///
+    /// Needs the node's address index. A node without one answers with an
+    /// error rather than an empty list.
+    fn address_deltas(
+        &self,
+        addresses: &[&str],
+        range: Option<(u32, u32)>,
+    ) -> Result<Vec<AddressDelta>, RpcError>;
     /// What these addresses hold, native and per-currency.
     ///
     /// Cheaper than [`ChainReader::address_utxos`] when only a total is wanted,
@@ -297,6 +329,78 @@ impl<T: Transport> ChainReader for RpcClient<T> {
             }
         }
         Ok(found)
+    }
+
+    fn address_deltas(
+        &self,
+        addresses: &[&str],
+        range: Option<(u32, u32)>,
+    ) -> Result<Vec<AddressDelta>, RpcError> {
+        let params = match range {
+            Some((start, end)) => {
+                json!([{ "addresses": addresses, "start": start, "end": end }])
+            }
+            // Omitted rather than sent as 0/0. The daemon *refuses* a zero
+            // bound outright — `-5, "Start and end is expected to be greater
+            // than zero"`, confirmed against `api.verustest.net` — so an
+            // absent range is the only way to ask for the whole chain.
+            None => json!([{ "addresses": addresses }]),
+        };
+        let body = self.call_raw(Method::GetAddressDeltas, params)?;
+        let result = result_of(&body, Method::GetAddressDeltas)?;
+        let raw: Vec<RawAddressDelta<'_>> = serde_json::from_str(result.get())
+            .map_err(|e| RpcError::Unexpected(format!("getaddressdeltas: {e}")))?;
+
+        let deltas: Vec<AddressDelta> = raw
+            .into_iter()
+            .map(RawAddressDelta::into_typed)
+            .collect::<Result<_, _>>()?;
+
+        // Same check as `address_utxos`, and it matters more here: a delta for
+        // an address nobody asked about would be folded into a balance-like
+        // total by any caller summing these, with nothing downstream to catch
+        // it. A transaction is not being built, so no sighash rejects it later.
+        //
+        // The repeat check is the same idea: a row duplicated by a buggy index
+        // or a hostile one inflates every total folded from these.
+        //
+        // **The address is part of the key, and leaving it out was a bug.** The
+        // daemon's index is keyed per address, so uniqueness only holds within
+        // one. A single output can be indexed under several addresses at once —
+        // a CryptoCondition output with more than one destination, or an
+        // identity's `i` address alongside a primary `R` address — and asking
+        // about two of them returns two rows agreeing on `(txid, spending,
+        // index)` and differing only here. Keyed without the address, a wallet
+        // that owns such an output could never fetch its history at all.
+        //
+        // What was actually checked against the live index is narrower than the
+        // earlier comment claimed: 87 rows over three addresses that share no
+        // output, so 87 distinct triples. That shows those addresses do not
+        // collide; it says nothing about addresses that do.
+        let mut seen = std::collections::HashSet::with_capacity(deltas.len());
+        for delta in &deltas {
+            if !addresses.contains(&delta.address.as_str()) {
+                return Err(RpcError::Unexpected(format!(
+                    "node returned a delta for {}, which was not asked about",
+                    delta.address
+                )));
+            }
+            if !seen.insert((
+                delta.address.as_str(),
+                delta.txid,
+                delta.spending,
+                delta.index,
+            )) {
+                return Err(RpcError::Unexpected(format!(
+                    "node returned the delta {}:{} ({}) for {} more than once",
+                    delta.txid.to_display_hex(),
+                    delta.index,
+                    if delta.spending { "spend" } else { "receive" },
+                    delta.address
+                )));
+            }
+        }
+        Ok(deltas)
     }
 
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError> {

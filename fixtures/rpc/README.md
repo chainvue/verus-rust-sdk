@@ -37,6 +37,7 @@ meaning anything:
 | `err_baddecode.json` | `-22`, `sendrawtransaction` refusing bad hex |
 | `err_methodmissing.json` | `-32601` — "refused", which is not the same as "absent"; see below |
 | `getaddressbalance.json` | the same balance in satoshis *and* in coins, in one reply |
+| `getaddressdeltas.json` | signed movements — a spend row, a token leg with `satoshis` of zero, and the settled swap's economics |
 
 ## `-32601` is not proof a method is missing
 

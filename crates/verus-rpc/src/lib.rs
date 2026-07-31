@@ -72,6 +72,6 @@ pub use method::{callable_methods, CallableMethod};
 pub use transport::HttpTransport;
 pub use transport::{RequestBody, Transport};
 pub use types::{
-    spendable_at, AddressBalance, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy,
-    IdentityRecord, COINBASE_MATURITY,
+    spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate,
+    CurrencyPolicy, IdentityRecord, SignedAmount, COINBASE_MATURITY,
 };
