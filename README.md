@@ -73,6 +73,52 @@ each says whether running it spends testnet coins.
 | `make_offer_online` | fund and sign a marketplace offer (the hex *is* the offer) |
 | `take_offer_online` | inspect an offer against the chain, then take it at the verified terms |
 
+### In a browser
+
+```bash
+wasm-pack build crates/verus-wasm --target web --out-dir pkg --release
+```
+
+```js
+import init, { Key, parseCoins } from "./pkg/verus_wasm.js";
+await init();
+
+const key   = Key.fromWif(wif);
+const utxos = await rpc("getaddressutxos", [{ addresses: [key.address()] }]);
+const tip   = await rpc("getblockcount", []);
+
+const signed = key.send({
+  utxos: utxos.map(u => ({
+    txid: u.txid, vout: u.outputIndex,
+    satoshis: String(u.satoshis), scriptPubKey: u.script,
+  })),
+  recipients: [{ address: to, satoshis: parseCoins("1.5") }],
+  changeAddress: key.address(),
+  expiryHeight: tip + 20,
+});
+
+await rpc("sendrawtransaction", [signed.hex]);
+key.free();
+```
+
+`verus-wasm` builds and signs; it does **not** fetch or broadcast. That split is
+deliberate. `verus-rpc` is built on a synchronous transport and a browser has no
+synchronous `fetch`, so binding the flows would mean an async duplicate of every
+one of them — while the thing that would wrap, JSON-RPC over HTTP, is a few
+lines of JavaScript with the app's own auth, retries and node choice. So:
+**JavaScript asks the questions, WebAssembly holds the key and makes the bytes.**
+
+Two conventions carry through the whole JS API. Money is a **decimal string**,
+never a `number` — `satoshis: 1e8` throws, because a float64 cannot hold a
+satoshi count above 2^53 and 90 million coins is not a hypothetical on a chain
+capped at 83.5 million. And errors are thrown `Error`s whose `.name` is the
+cause, so `catch (e) { if (e.name === "InsufficientFunds") … }` works.
+
+Covered: native and token sends, VerusID message signing and verification (log
+in with Verus), VDXF key derivation, identity ids, and output decoding. The
+package ships hand-written TypeScript declarations, pinned against the Rust
+types by a test so they cannot drift.
+
 ## Design
 
 **Correctness is proven against the network, not against itself.** Four
@@ -243,6 +289,7 @@ finished bytes; they can never ask a node to sign.
 | `verus-flows` | lookup → build → sign → broadcast, composed into operations a wallet calls |
 | `verus-light` | Sapling chain data from a lightwalletd server, over grpc-web |
 | `verus-sdk` | the facade you actually depend on |
+| `verus-wasm` | the browser binding: the same builders, from JavaScript, with the key inside the module |
 
 ```toml
 [dependencies]
@@ -277,7 +324,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
 | Transparent P2SH multisig, SIGHASH variants, identity timelocks | ✅ byte-verified, not broadcast |
 | Mint new supply, spend from a VerusID | ✅ **on chain** — spent-by-identity, per consensus |
-| wasm bindings | ⬜ next |
+| wasm bindings — build and sign from JavaScript | ✅ **byte-identical to the TypeScript SDK**, checked under node in CI |
 | PBaaS / cross-chain export | ⬜ needs a second system |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a

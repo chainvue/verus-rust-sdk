@@ -11,6 +11,16 @@ cargo test --workspace --all-features
 cargo check -p verus-sdk --no-default-features     # feature gates must hold
 ```
 
+If you touched `crates/verus-wasm`, or anything it depends on, run the browser
+half too. `wasm-bindgen` is inert on the host, so the generated glue, the
+`JsValue` marshalling and the thrown `Error` are exercised **only** here:
+
+```bash
+cargo check -p verus-wasm --target wasm32-unknown-unknown --all-targets
+wasm-pack build crates/verus-wasm --target nodejs --out-dir pkg --release
+node crates/verus-wasm/tests/node/differential.mjs crates/verus-wasm/pkg
+```
+
 The toolchain is pinned to **1.95.0** in `rust-toolchain.toml`. The same version
 appears in `.github/workflows/ci.yml` (`dtolnay/rust-toolchain` reads its version
 from the workflow, not from the file) — **change one, change the other.**

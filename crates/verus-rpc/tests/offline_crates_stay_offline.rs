@@ -60,7 +60,18 @@ fn dependency_tree(package: &str) -> String {
 
 #[test]
 fn the_offline_crates_pull_in_no_http_stack() {
-    for package in ["verus-wire", "verus-keys", "verus-tx", "verus-sapling"] {
+    // `verus-wasm` is on this list for a sharper reason than the rest: it is
+    // the crate a browser loads, and a browser is the one place where an HTTP
+    // client compiled into the module would be both useless — `wasm32` has no
+    // sockets — and a misrepresentation of what the page talks to. It builds
+    // and signs; the page does the fetching.
+    for package in [
+        "verus-wire",
+        "verus-keys",
+        "verus-tx",
+        "verus-sapling",
+        "verus-wasm",
+    ] {
         let tree = dependency_tree(package);
         for network in NETWORK_CRATES {
             // Match a crate name at the start of a line, so `tokio-util` in
