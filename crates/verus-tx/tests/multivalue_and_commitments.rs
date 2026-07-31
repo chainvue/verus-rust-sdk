@@ -108,7 +108,7 @@ fn a_multi_currency_reserve_output_reads_exactly_what_the_daemon_reports() {
 /// `unsupported TokenOutput version 2147483649` instead of a number.
 #[test]
 fn a_multi_currency_output_is_countable() {
-    let held = token_balances(&[utxo(script(MULTIVALUE), 10)]).expect("countable");
+    let held = token_balances(&[utxo(script(MULTIVALUE), 10)], None).expect("countable");
     assert_eq!(held.len(), DAEMON_VALUES.len());
     for (id, amount) in DAEMON_VALUES {
         let currency = CurrencyId::from_bytes(id.parse::<Address>().expect("i-address").hash());
@@ -138,7 +138,7 @@ fn an_ordinary_name_commitment_decodes_and_holds_nothing() {
     );
     assert!(tokens.is_empty(), "the daemon reports currencyvalues: {{}}");
 
-    assert!(token_balances(&[utxo(script(COMMITMENT), 0)])
+    assert!(token_balances(&[utxo(script(COMMITMENT), 0)], None)
         .expect("countable")
         .is_empty());
 }
@@ -202,7 +202,7 @@ fn an_advanced_commitment_carries_its_token_output() {
         other => panic!("expected an advanced commitment, got {other:?}"),
     }
     assert_eq!(
-        token_balances(&[utxo(script, 0)]).expect("countable")[&currency],
+        token_balances(&[utxo(script, 0)], None).expect("countable")[&currency],
         Amount::from_sat(40_000_000)
     );
 }

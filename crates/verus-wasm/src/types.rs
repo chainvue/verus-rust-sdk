@@ -181,6 +181,12 @@ mod tests {
                 eval_code: Some(0),
                 may_carry_currency: Some(false),
                 commitment: Some(String::new()),
+                controlling_currency: Some(String::new()),
+                flags: Some(0),
+                fee_currency: Some(String::new()),
+                fees: Some(String::new()),
+                destination_currency: Some(String::new()),
+                recipient: Some(String::new()),
             },
         );
     }

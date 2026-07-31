@@ -75,7 +75,8 @@ fn every_destination_kind_decodes_and_keeps_its_kind() {
 /// The point of reading them: an identity's holdings are countable.
 #[test]
 fn tokens_held_by_an_identity_are_counted() {
-    let held = token_balances(&[utxo(Destination::Identity(IDENTITY), 900, 0)]).expect("countable");
+    let held =
+        token_balances(&[utxo(Destination::Identity(IDENTITY), 900, 0)], None).expect("countable");
     assert_eq!(held[&CURRENCY], Amount::from_sat(900));
 }
 

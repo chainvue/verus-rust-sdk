@@ -106,7 +106,24 @@ if (output.kind === "identityCommitment") {
   const carried: TokenAmount[] | undefined = output.tokens;
   void [commitment, carried];
 }
-const balances: TokenAmount[] = tokenBalances([utxo]);
+if (output.kind === "reserveTransfer") {
+  const flags: number | undefined = output.flags;
+  const fees: string | undefined = output.fees;
+  // The real recipient, which is not `address` — that is the protocol's
+  // transfer address, identical for every transfer on the chain.
+  const recipient: string | undefined = output.recipient;
+  void [flags, fees, recipient, output.feeCurrency, output.destinationCurrency];
+}
+if (output.kind === "reserveDeposit") {
+  const controlling: string | undefined = output.controllingCurrency;
+  void controlling;
+}
+
+// `null` for "I do not know the chain's own currency id" — only reserve
+// deposits and transfers need it, and they are refused without it.
+const balances: TokenAmount[] = tokenBalances([utxo], null);
+const balancesOnChain: TokenAmount[] = tokenBalances([utxo], "iJhCez…");
+void balancesOnChain;
 const owed: string = balances[0].amount;
 const which: string = balances[0].currency;
 void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null), owed, which];

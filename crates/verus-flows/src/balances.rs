@@ -34,9 +34,28 @@ use crate::error::FlowError;
 use crate::funding::Funding;
 
 /// Count the tokens in outputs a node reported.
-fn balances_of(found: &[AddressUtxo]) -> Result<TokenBalances, FlowError> {
+fn balances_of(
+    found: &[AddressUtxo],
+    native: Option<CurrencyId>,
+) -> Result<TokenBalances, FlowError> {
     let utxos: Vec<Utxo> = found.iter().map(|f| f.utxo.clone()).collect();
-    Ok(token_balances(&utxos)?)
+    Ok(token_balances(&utxos, native)?)
+}
+
+/// The chain's own currency id.
+///
+/// One request, and worth making once and keeping: it never changes for a
+/// given chain. [`Funding::token_balances`] needs it to tell the chain's own
+/// currency apart from a token when an output names both, and a wallet
+/// otherwise has no offline way to know which id that is.
+///
+/// Derived from the chain's name rather than read from `getcurrency`, because
+/// a root chain's currency id *is* the id of its name — the same derivation
+/// [`verus_tx::vdxf::root_namespace`] does offline. The request here is only
+/// to learn which chain the node is on.
+pub fn native_currency(reader: &impl ChainReader) -> Result<CurrencyId, FlowError> {
+    let info = reader.chain_info()?;
+    Ok(verus_tx::root_namespace(&info.name)?)
 }
 
 impl Funding {
@@ -48,8 +67,15 @@ impl Funding {
     /// be able to explain.
     ///
     /// Costs nothing — the outputs are already in hand.
-    pub fn token_balances(&self) -> Result<TokenBalances, FlowError> {
-        balances_of(&self.other)
+    ///
+    /// `native` is the chain's own currency id, from [`native_currency`], and
+    /// `None` is a legitimate answer meaning "I do not know it". It is needed
+    /// only for reserve deposits and transfers, which name the chain's own
+    /// currency in their payload as well as carrying it as satoshis; without
+    /// it those two are refused by name rather than double-counted. Nothing an
+    /// ordinary address holds is affected either way.
+    pub fn token_balances(&self, native: Option<CurrencyId>) -> Result<TokenBalances, FlowError> {
+        balances_of(&self.other, native)
     }
 
     /// Tokens held in outputs that are **not currently spendable**.
@@ -70,8 +96,11 @@ impl Funding {
     /// proof-of-stake coinbase pays a stakeguard CryptoCondition, and neither
     /// can carry currency. See [`verus_tx::may_carry_currency`] for what is
     /// left that cannot be counted.
-    pub fn immature_token_balances(&self) -> Result<TokenBalances, FlowError> {
-        balances_of(&self.immature)
+    pub fn immature_token_balances(
+        &self,
+        native: Option<CurrencyId>,
+    ) -> Result<TokenBalances, FlowError> {
+        balances_of(&self.immature, native)
     }
 }
 
@@ -152,14 +181,14 @@ mod tests {
         assert_eq!(funding.utxos.len(), 1, "the native output funds a send");
         assert_eq!(funding.other.len(), 1, "the reserve output does not");
 
-        let held = funding.token_balances().unwrap();
+        let held = funding.token_balances(None).unwrap();
         assert_eq!(
             held.get(&TOKEN),
             Some(&Amount::from_sat(1_000_000)),
             "the token the address holds must be counted"
         );
         assert!(
-            funding.immature_token_balances().unwrap().is_empty(),
+            funding.immature_token_balances(None).unwrap().is_empty(),
             "nothing here is immature"
         );
     }
@@ -176,11 +205,11 @@ mod tests {
         let funding = spendable(&node, ADDRESS).unwrap();
 
         assert!(
-            funding.token_balances().unwrap().is_empty(),
+            funding.token_balances(None).unwrap().is_empty(),
             "an immature token is not spendable"
         );
         assert_eq!(
-            funding.immature_token_balances().unwrap().get(&TOKEN),
+            funding.immature_token_balances(None).unwrap().get(&TOKEN),
             Some(&Amount::from_sat(1_000_000)),
             "and it must still be reported somewhere, or it vanishes"
         );
@@ -213,7 +242,7 @@ mod tests {
 
         assert_eq!(
             funding
-                .immature_token_balances()
+                .immature_token_balances(None)
                 .expect("a staker's holdings must be countable")
                 .get(&TOKEN),
             Some(&Amount::from_sat(1_000_000)),
@@ -238,7 +267,7 @@ mod tests {
         let funding = spendable(&node, &identity.to_string()).unwrap();
 
         assert_eq!(
-            funding.token_balances().expect("countable").get(&TOKEN),
+            funding.token_balances(None).expect("countable").get(&TOKEN),
             Some(&Amount::from_sat(4_200_000))
         );
     }
@@ -247,7 +276,7 @@ mod tests {
     fn an_address_with_no_tokens_reports_none() {
         let node = ScriptedReader::new(1_000).with_utxo(ADDRESS, 900, 5_000_000);
         let funding = spendable(&node, ADDRESS).unwrap();
-        assert!(funding.token_balances().unwrap().is_empty());
+        assert!(funding.token_balances(None).unwrap().is_empty());
     }
 
     /// A name is looked up by the currency's own i-address and must be the

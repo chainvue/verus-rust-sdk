@@ -48,13 +48,17 @@
 //! landed — everything an ordinary address holds was being refused for other
 //! reasons first, so nothing had ever reached them.
 //!
+//! **Reserve deposits and reserve transfers** are counted too, given `native`
+//! — see below. They are the two shapes that name the chain's own currency in
+//! their payload while also carrying it as satoshis, so counting them without
+//! knowing which currency that is would report the same money twice.
+//!
 //! # What is genuinely still uncountable
 //!
-//! Three eval codes, refused by name rather than under-counted:
-//! `EVAL_RESERVE_TRANSFER` (8), `EVAL_RESERVE_DEPOSIT` (11) and
-//! `EVAL_CROSSCHAIN_IMPORT` (13). The first two hold currency this crate does
-//! not decode; the third holds currency the chain itself says cannot be
-//! computed from one output in isolation. See [`crate::may_carry_currency`].
+//! One eval code: `EVAL_CROSSCHAIN_IMPORT` (13). It holds currency, and the
+//! chain itself says the amount "cannot be calculated in isolation as an
+//! input" — so it is not a decoding gap that could be closed by reading harder.
+//! See [`crate::may_carry_currency`].
 
 use std::collections::BTreeMap;
 
@@ -70,6 +74,11 @@ use crate::Utxo;
 /// output, and folding the two together is how double-counting starts.
 pub type TokenBalances = BTreeMap<CurrencyId, Amount>;
 
+/// Why a reserve deposit or transfer cannot be counted without `native`.
+const NEEDS_NATIVE: &str = "it is a reserve deposit or transfer, which names the chain's own \
+     currency in its payload as well as carrying it as satoshis; pass the chain's currency id as \
+     `native` so that part can be left out instead of counted twice";
+
 /// Sum the token value carried by `utxos`.
 ///
 /// Native satoshis are ignored — a reserve output carries native value *as well
@@ -78,7 +87,30 @@ pub type TokenBalances = BTreeMap<CurrencyId, Amount>;
 /// `utxos` must hold each outpoint at most once: this sums what it is given and
 /// cannot tell a genuine second output from the same one listed twice, so a
 /// caller concatenating paged results should deduplicate first.
-pub fn token_balances(utxos: &[Utxo]) -> Result<TokenBalances, TxError> {
+///
+/// # `native`
+///
+/// The chain's own currency id — `VRSCTEST`'s, `VRSC`'s, or a PBaaS chain's —
+/// or `None` if the caller does not know it.
+///
+/// Two output shapes need it and no other does. A reserve deposit and a
+/// reserve transfer both name the chain's own currency **inside their
+/// payload**, for the chain's accounting, while carrying that same value as
+/// ordinary satoshis in the output. `CScript::ReserveOutValue` erases it
+/// before returning, and so does this: counting it would report the same money
+/// twice, once as native and once as a token. On both real VRSCTEST vectors
+/// this crate tests against, the erase is what takes the answer to empty.
+///
+/// Passing `None` is not a shortcut — it refuses those two shapes by name
+/// rather than guessing, which is exactly what this function did before it
+/// could decode them at all. Everything else is counted either way.
+///
+/// [`crate::vdxf::root_namespace`] derives the id from a chain's name offline,
+/// and `getcurrency` returns it.
+pub fn token_balances(
+    utxos: &[Utxo],
+    native: Option<CurrencyId>,
+) -> Result<TokenBalances, TxError> {
     let mut held = TokenBalances::new();
     for utxo in utxos {
         let uncountable = |reason: String| TxError::UncountableOutput {
@@ -98,6 +130,27 @@ pub fn token_balances(utxos: &[Utxo]) -> Result<TokenBalances, TxError> {
             // advanced form carries anything.
             OutputKind::ReserveOutput { tokens, .. }
             | OutputKind::IdentityCommitment { tokens, .. } => tokens,
+            // The two shapes that name the chain's own currency in their
+            // payload while also carrying it as satoshis. Countable only with
+            // `native` in hand; refused by name without it, which is what this
+            // function did for them before it could read them at all.
+            OutputKind::ReserveDeposit { tokens, .. } => {
+                let Some(native) = native else {
+                    return Err(uncountable(NEEDS_NATIVE.into()));
+                };
+                tokens
+                    .into_iter()
+                    .filter(|(currency, _)| *currency != native)
+                    .collect()
+            }
+            OutputKind::ReserveTransfer { transfer, .. } => {
+                let Some(native) = native else {
+                    return Err(uncountable(NEEDS_NATIVE.into()));
+                };
+                transfer
+                    .reserve_value(native)
+                    .map_err(|error| uncountable(error.to_string()))?
+            }
             // Native value — held plainly, paid to a public key, or held for
             // an identity — and the output that *is* an identity, which is a
             // definition rather than a balance. None carries a currency
@@ -177,17 +230,20 @@ mod tests {
 
     #[test]
     fn a_native_only_address_holds_no_tokens() {
-        assert!(token_balances(&[native()]).unwrap().is_empty());
+        assert!(token_balances(&[native()], None).unwrap().is_empty());
     }
 
     #[test]
     fn balances_accumulate_across_outputs_and_currencies() {
-        let held = token_balances(&[
-            native(),
-            reserve_output(A, 100),
-            reserve_output(A, 250),
-            reserve_output(B, 7),
-        ])
+        let held = token_balances(
+            &[
+                native(),
+                reserve_output(A, 100),
+                reserve_output(A, 250),
+                reserve_output(B, 7),
+            ],
+            None,
+        )
         .unwrap();
         assert_eq!(held.get(&A), Some(&Amount::from_sat(350)));
         assert_eq!(held.get(&B), Some(&Amount::from_sat(7)));
@@ -201,17 +257,25 @@ mod tests {
     fn the_native_value_of_a_reserve_output_is_not_token_value() {
         let utxo = reserve_output(A, 100);
         assert_eq!(utxo.satoshis, Amount::from_sat(10_000));
-        assert_eq!(token_balances(&[utxo]).unwrap()[&A], Amount::from_sat(100));
+        assert_eq!(
+            token_balances(&[utxo], None).unwrap()[&A],
+            Amount::from_sat(100)
+        );
     }
 
     /// **Why this is fallible.** The decoder reports an unreadable
     /// CryptoCondition as a value, not an error, so a `continue` here would
     /// silently drop whatever it carries.
     ///
-    /// Eval code 11 is `EVAL_RESERVE_DEPOSIT`, one of the five the chain's own
-    /// `CScript::ReserveOutValue` reads currency out of. That is what makes it
-    /// the right shape for this test: an output that genuinely could be hiding
-    /// a token this crate cannot see.
+    /// Eval code 13 is `EVAL_CROSSCHAIN_IMPORT`, the last of the five the
+    /// chain's own `CScript::ReserveOutValue` reads currency out of that this
+    /// crate still does not decode. That is what makes it the right shape for
+    /// this test: an output that genuinely could be hiding a token.
+    ///
+    /// It used to be eval 11. Eval 11 became decodable, and the test had to
+    /// move rather than be deleted — the property is "an undecoded
+    /// currency-bearing shape refuses the balance", and it stays true as long
+    /// as any such shape is left.
     #[test]
     fn an_unreadable_output_that_could_hold_currency_is_refused_not_counted_as_nothing() {
         let utxo = Utxo {
@@ -220,23 +284,23 @@ mod tests {
             satoshis: Amount::from_sat(1),
             script_pubkey: cc::cc_script(
                 &cc::OptCcParams::one_of_one(
-                    crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                    crate::currency_launch::EVAL_CROSSCHAIN_IMPORT,
                     Destination::PubKeyHash([0x44; 20]),
                 ),
                 &cc::OptCcParams::one_of_one(
-                    crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                    crate::currency_launch::EVAL_CROSSCHAIN_IMPORT,
                     Destination::PubKeyHash([0x44; 20]),
                 ),
             )
             .unwrap(),
         };
-        match token_balances(&[reserve_output(A, 100), utxo]) {
+        match token_balances(&[reserve_output(A, 100), utxo], None) {
             Err(TxError::UncountableOutput { txid, vout, reason }) => {
                 // Named, or a wallet cannot tell a user which output to look at.
                 assert!(txid.starts_with("5555"), "{txid}");
                 assert_eq!(vout, 3);
                 assert!(
-                    reason.contains("11"),
+                    reason.contains("13"),
                     "the eval code must be named: {reason}"
                 );
             }
@@ -275,7 +339,7 @@ mod tests {
                 satoshis: Amount::from_sat(1),
                 script_pubkey: script,
             };
-            let counted = token_balances(&[utxo]).is_ok();
+            let counted = token_balances(&[utxo], None).is_ok();
             assert_eq!(
                 counted,
                 !crate::may_carry_currency(eval_code),
@@ -308,7 +372,7 @@ mod tests {
             satoshis: Amount::from_sat(600_000_000),
             script_pubkey: script,
         };
-        let held = token_balances(&[utxo, reserve_output(A, 100)])
+        let held = token_balances(&[utxo, reserve_output(A, 100)], None)
             .expect("a miner must still be able to see their tokens");
         assert_eq!(held[&A], Amount::from_sat(100));
         assert_eq!(held.len(), 1, "a P2PK output contributes no currency");
@@ -355,7 +419,7 @@ mod tests {
             }
         );
 
-        let held = token_balances(&[utxo, reserve_output(A, 100)])
+        let held = token_balances(&[utxo, reserve_output(A, 100)], None)
             .expect("a staker must still be able to see their tokens");
         assert_eq!(held[&A], Amount::from_sat(100));
         assert_eq!(
@@ -393,7 +457,7 @@ mod tests {
             script_pubkey: script,
         };
         assert_eq!(
-            token_balances(&[utxo]).expect("an identity's tokens are countable")[&A],
+            token_balances(&[utxo], None).expect("an identity's tokens are countable")[&A],
             Amount::from_sat(250_000_000)
         );
     }
@@ -411,7 +475,7 @@ mod tests {
             // A CryptoCondition prefix with nothing decodable after it.
             script_pubkey: vec![0x4c, 0x0f, 0xcc],
         };
-        match token_balances(&[utxo]) {
+        match token_balances(&[utxo], None) {
             Err(TxError::UncountableOutput { txid, vout, .. }) => {
                 assert!(txid.starts_with("8888"), "{txid}");
                 assert_eq!(vout, 9);
@@ -428,12 +492,12 @@ mod tests {
         let huge = reserve_output(A, u64::MAX);
         let more = reserve_output(A, 1);
         assert!(matches!(
-            token_balances(&[huge, more]),
+            token_balances(&[huge, more], None),
             Err(TxError::ValueOverflow)
         ));
         // One output at the ceiling is reported, not refused.
         assert_eq!(
-            token_balances(&[reserve_output(A, u64::MAX)]).unwrap()[&A],
+            token_balances(&[reserve_output(A, u64::MAX)], None).unwrap()[&A],
             Amount::from_sat(u64::MAX)
         );
     }
@@ -442,8 +506,10 @@ mod tests {
     /// for a currency a user does not have is noise.
     #[test]
     fn a_zero_amount_does_not_create_a_holding() {
-        assert!(token_balances(&[reserve_output(A, 0)]).unwrap().is_empty());
-        let held = token_balances(&[reserve_output(A, 0), reserve_output(B, 5)]).unwrap();
+        assert!(token_balances(&[reserve_output(A, 0)], None)
+            .unwrap()
+            .is_empty());
+        let held = token_balances(&[reserve_output(A, 0), reserve_output(B, 5)], None).unwrap();
         assert_eq!(held.len(), 1);
         assert_eq!(held[&B], Amount::from_sat(5));
     }
@@ -458,6 +524,6 @@ mod tests {
             satoshis: Amount::from_sat(1_000),
             script_pubkey: crate::identity_payment_script([0x77; 20]).unwrap(),
         };
-        assert!(token_balances(&[utxo]).unwrap().is_empty());
+        assert!(token_balances(&[utxo], None).unwrap().is_empty());
     }
 }

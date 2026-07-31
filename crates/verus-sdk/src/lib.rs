@@ -200,7 +200,7 @@ pub mod network {
     pub use verus_flows::offer::take;
     pub use verus_flows::{
         broadcast, burn, convert, currency_names, estimate, identity_held, inspect,
-        launch_currency, mint, plan_conversion, prepare_registration,
+        launch_currency, mint, native_currency, plan_conversion, prepare_registration,
         prepare_registration_with_salt, prepare_send, send, send_from_identity, send_token,
         sign_login, spendable, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
         ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn, LoginPolicy, LoginRequest,
