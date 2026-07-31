@@ -180,6 +180,7 @@ mod tests {
                 minimum_signatures: Some(0),
                 eval_code: Some(0),
                 may_carry_currency: Some(false),
+                commitment: Some(String::new()),
             },
         );
     }

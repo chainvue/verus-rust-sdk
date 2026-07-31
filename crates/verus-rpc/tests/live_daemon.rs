@@ -356,6 +356,111 @@ fn the_daemon_agrees_about_what_each_output_shape_holds() {
     assert!(!verus_tx::may_carry_currency(1));
 }
 
+/// **Multi-currency outputs and name commitments, against the daemon's reader.**
+///
+/// The scripts are real and their expected contents are not written down here
+/// — they are read back out of the same node. That is the difference between
+/// a fixture, which is frozen at the day it was captured, and an oracle: if a
+/// daemon upgrade changes what these bytes mean, this fails.
+///
+/// The multi-currency one matters most. Misreading a `CCurrencyValueMap` does
+/// not throw — the amount is a fixed eight-byte `int64` and the currency ids
+/// are opaque, so reading it as a VARINT would report a plausible balance in
+/// currencies that do not exist.
+#[test]
+fn the_daemon_agrees_about_multi_currency_outputs_and_commitments() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    let client = client();
+
+    for (txid, vout) in [
+        // Nine currencies in one output.
+        (
+            "9d0859212eb5dd5bbcd5d8a171e8e0080e16d5629ed84bd596573aae9b086443",
+            10usize,
+        ),
+        // An ordinary name commitment.
+        (
+            "3a6f6a02f2fb74dc16a5e9d49cb02966100a72656acd30d9c28d5eae554edaca",
+            0,
+        ),
+    ] {
+        let transaction = client.raw_transaction(txid).expect("getrawtransaction");
+        let output = &transaction["vout"][vout];
+        let script = hex::decode(
+            output["scriptPubKey"]["hex"]
+                .as_str()
+                .expect("a script in hex"),
+        )
+        .expect("hex");
+
+        // Whatever the daemon says this output holds, keyed by i-address and
+        // in coins. Both shapes report it, under different keys.
+        let reported = output["scriptPubKey"]["reserveoutput"]["currencyvalues"]
+            .as_object()
+            .or_else(|| output["scriptPubKey"]["commitmenthash"]["currencyvalues"].as_object())
+            .unwrap_or_else(|| panic!("{txid}:{vout} reports no currency values"));
+
+        let decoded = verus_tx::decode_output_script(&script).expect("decodes");
+        let tokens = match &decoded {
+            verus_tx::OutputKind::ReserveOutput { tokens, .. }
+            | verus_tx::OutputKind::IdentityCommitment { tokens, .. } => tokens.clone(),
+            other => panic!("{txid}:{vout} decoded as {other:?}"),
+        };
+
+        assert_eq!(
+            tokens.len(),
+            reported.len(),
+            "{txid}:{vout}: {} currencies read, {} reported\n{decoded:?}",
+            tokens.len(),
+            reported.len()
+        );
+        for (currency, amount) in &tokens {
+            let id =
+                verus_keys::Address::new(verus_keys::AddressKind::Identity, currency.to_bytes())
+                    .to_string();
+            let theirs = reported
+                .get(&id)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or_else(|| panic!("{txid}:{vout}: the daemon reports nothing for {id}"));
+            // Coins, so the comparison is against the figure a person sees.
+            // The daemon's JSON is a float; one satoshi of tolerance is the
+            // honest allowance for that, not for our own arithmetic.
+            #[allow(clippy::cast_precision_loss)] // -- compared with a tolerance
+            let ours = *amount as f64 / 100_000_000.0;
+            assert!(
+                (ours - theirs).abs() < 1e-8,
+                "{txid}:{vout}: {id} read as {ours} and reported as {theirs}"
+            );
+        }
+        eprintln!(
+            "{txid}:{vout}: daemon agrees on {} currencies",
+            tokens.len()
+        );
+    }
+
+    // The sentinel that decides whether a commitment carries currency at all,
+    // against the node that issues it.
+    let issued = probe(
+        "getvdxfid",
+        "[\"vrsc::system.identity.advancedcommitmenthash\"]",
+    );
+    assert_eq!(
+        issued["result"]["vdxfid"].as_str(),
+        Some(
+            verus_keys::Address::new(
+                verus_keys::AddressKind::Identity,
+                verus_tx::ADVANCED_COMMITMENT_KEY
+            )
+            .to_string()
+            .as_str()
+        ),
+        "the advanced commitment key is not the one this node issues: {issued}"
+    );
+}
+
 /// Ask the endpoint directly, for methods the typed client has no variant for.
 ///
 /// Returns the whole envelope rather than a result, because for these probes the

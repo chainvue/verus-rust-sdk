@@ -43,24 +43,18 @@
 //! whose destination happens to be an identity, and the decoder now reads the
 //! destination kind instead of insisting on a key hash.
 //!
+//! **Several currencies in one output** are counted, and **name commitments**
+//! are read rather than refused. Both were invisible until the two fixes above
+//! landed — everything an ordinary address holds was being refused for other
+//! reasons first, so nothing had ever reached them.
+//!
 //! # What is genuinely still uncountable
 //!
-//! Two shapes, both refused by name rather than under-counted:
-//!
-//! * A **multi-currency reserve output** — `CTokenOutput` serialized with
-//!   `VERSION_MULTIVALUE` (`0x80000000`), which holds a whole
-//!   `CCurrencyValueMap` instead of one currency and one amount.
-//!   [`crate::decode_output_script`] refuses the payload rather than misread
-//!   the bytes after the version, so an address holding one gets no balance.
-//!   Real example on VRSCTEST: output 10 of
-//!   `9d0859212eb5dd5bbcd5d8a171e8e0080e16d5629ed84bd596573aae9b086443`,
-//!   nine currencies in one output.
-//! * **Eval code 17**, `EVAL_IDENTITY_COMMITMENT`. Its payload carries
-//!   `reserveValues`, so [`crate::may_carry_currency`] says `true` and the
-//!   balance is refused — correctly, until the commitment is decoded.
-//!
-//! Both were invisible before, because everything an ordinary address holds
-//! was being refused for other reasons first.
+//! Three eval codes, refused by name rather than under-counted:
+//! `EVAL_RESERVE_TRANSFER` (8), `EVAL_RESERVE_DEPOSIT` (11) and
+//! `EVAL_CROSSCHAIN_IMPORT` (13). The first two hold currency this crate does
+//! not decode; the third holds currency the chain itself says cannot be
+//! computed from one output in isolation. See [`crate::may_carry_currency`].
 
 use std::collections::BTreeMap;
 
@@ -98,7 +92,12 @@ pub fn token_balances(utxos: &[Utxo]) -> Result<TokenBalances, TxError> {
         let decoded = decode_output_script(&utxo.script_pubkey)
             .map_err(|error| uncountable(error.to_string()))?;
         let tokens = match decoded {
-            OutputKind::ReserveOutput { tokens, .. } => tokens,
+            // A commitment is one of the five kinds consensus reads currency
+            // out of, so its tokens are counted rather than assumed away. In
+            // practice the list is empty for every ordinary one — only the
+            // advanced form carries anything.
+            OutputKind::ReserveOutput { tokens, .. }
+            | OutputKind::IdentityCommitment { tokens, .. } => tokens,
             // Native value — held plainly, paid to a public key, or held for
             // an identity — and the output that *is* an identity, which is a
             // definition rather than a balance. None carries a currency

@@ -527,6 +527,61 @@ console.log("\noffline derivation");
   );
   assert.equal(formatCoins(owned.tokens[0].amount), "0.4", "the daemon reads the same 0.4");
   ok("tokens held by a VerusID are read and counted");
+
+  // Several currencies in one output. Real script: output 10 of
+  // 9d0859212eb5dd5bbcd5d8a171e8e0080e16d5629ed84bd596573aae9b086443 on
+  // VRSCTEST, which getrawtransaction reports as holding these nine.
+  const multivalue =
+    "1b040300010115040d70e777403b2fa1e52b09853be00beb8ac88762cc4d200104030901011504" +
+    "0d70e777403b2fa1e52b09853be00beb8ac887624d020186fefeff010944a25b3d593e0bb4f0b7" +
+    "00b98d3c625c891a61bf00076b7a070700004aa2555d465e133e03c7e084177b21d32373717100" +
+    "48c66fefa00a006ac68d215ec4da6375ca23b89f211c810881b83a0048c66fefa00a0074c096ce" +
+    "2c9a09f237b0b512cfe3e71579ab03b70048c66fefa00a0084d881e355c1c87dd84baa2e068dc3" +
+    "829e140d3c0078562014b10000c0bfd996f3716d9d397db9b1070756b4d8ac9a5a0088e1b24c09" +
+    "0100ca1753f4d2f16990d8db6e7972525daf603609640048c66fefa00a00d173589004f1ddb99f" +
+    "cd6952f84c148d45407309000814fd1d000000e5548cd120855cfb556307543f86d63d0fec02b5" +
+    "00f47cab871a000075";
+  const daemonValues = {
+    i9jRsqnfMnQmGc3LJnMt9Z6T4CoDkv6Q9o: "77287",
+    iAH9uQ4GnREmbpVKd1fU9zrePte3odZGFd: "29917000",
+    iDD6uzji8SpCvHs3hgq9Z4tKqr9CKrL73S: "29917000",
+    iE7rXeqXV6ec93heNqZ35xcswZ8yzHoQQw: "29917000",
+    iFawzbS99RqGs7J2TNxME1TmmayBGuRkA2: "1947000",
+    iM3gzspfspD8SqsNpHSaVJA2BZQrbTc7TL: "2917000",
+    iMu5sgTiGcaWryiwGwNTWcHxQo589xMXK8: "29917000",
+    iNZzqYdmfCPCcVSTBjbPT8Q7rqeFohxATu: "1288",
+    iQP7TeWNDNsF7aaaCkQzNyS4jDjdKncNWf: "291700",
+  };
+  const many = tokenBalances([
+    { txid: "ff".repeat(32), vout: 10, satoshis: "0", scriptPubKey: multivalue },
+  ]);
+  assert.deepEqual(
+    Object.fromEntries(many.map((t) => [t.currency, formatCoins(t.amount)])),
+    daemonValues,
+    "nine currencies from one output, in coins, exactly as the daemon reports them",
+  );
+  ok("a multi-currency output is counted currency by currency");
+
+  // A name commitment. Real script: output 0 of
+  // 3a6f6a02f2fb74dc16a5e9d49cb02966100a72656acd30d9c28d5eae554edaca. The
+  // daemon reports currencyvalues {} for it — read, not assumed.
+  const commitment =
+    "1b040300010115040d70e777403b2fa1e52b09853be00beb8ac88762cc3c0403110101150" +
+    "40d70e777403b2fa1e52b09853be00beb8ac8876220089ce908e263013785c59404a6b88c" +
+    "47e30e52e32dedde094f8c5ade74ebb9ed75";
+  const reserved = decodeOutput(commitment);
+  assert.equal(reserved.kind, "identityCommitment");
+  assert.equal(
+    reserved.commitment,
+    "089ce908e263013785c59404a6b88c47e30e52e32dedde094f8c5ade74ebb9ed",
+    "the daemon prints this reversed; these are the bytes in the script",
+  );
+  assert.deepEqual(reserved.tokens, []);
+  assert.deepEqual(
+    tokenBalances([{ txid: "ab".repeat(32), vout: 0, satoshis: "0", scriptPubKey: commitment }]),
+    [],
+  );
+  ok("a name commitment is read rather than refused");
   key.free();
 }
 

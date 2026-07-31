@@ -28,8 +28,9 @@ use crate::types::{DecodedOutputValue, JsText, TokenBalancesValue, UtxoListValue
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecodedOutput {
-    /// One of `pubKeyHash`, `reserveOutput`, `identityPayment`,
-    /// `identityPrimary`, `unsupportedCryptoCondition`.
+    /// One of `pubKeyHash`, `pubKey`, `reserveOutput`, `identityPayment`,
+    /// `identityPrimary`, `identityCommitment`,
+    /// `unsupportedCryptoCondition`.
     pub kind: String,
     /// For `pubKeyHash`: the `R…` address paid. For `identityPayment` and
     /// `identityPrimary`: the `i…` address of the identity. For
@@ -66,6 +67,13 @@ pub struct DecodedOutput {
     /// The output is still unspendable by this SDK either way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub may_carry_currency: Option<bool>,
+    /// For `identityCommitment`: the 32-byte commitment as hex, in the order
+    /// the script holds it.
+    ///
+    /// The daemon prints this reversed, the way it prints every hash. Reverse
+    /// it before comparing with `registernamecommitment` output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<String>,
 }
 
 /// How much of which token.
@@ -90,6 +98,7 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
         minimum_signatures: None,
         eval_code: None,
         may_carry_currency: None,
+        commitment: None,
     };
     Ok(match decode_output_script(&script)? {
         OutputKind::PubKeyHash { hash } => DecodedOutput {
@@ -147,6 +156,28 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             // the address shown is the one that controls the key.
             address: Some(
                 verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string(),
+            ),
+            ..blank
+        },
+        OutputKind::IdentityCommitment {
+            destination,
+            commitment,
+            tokens,
+        } => DecodedOutput {
+            kind: "identityCommitment".into(),
+            address: Some(destination_address(&destination)),
+            commitment: Some(hex::encode(commitment)),
+            // Empty for every ordinary commitment; the advanced form carries
+            // a token output alongside the hash, and that is read rather than
+            // assumed away.
+            tokens: Some(
+                tokens
+                    .into_iter()
+                    .map(|(currency, amount)| TokenAmount {
+                        currency: dto::identity_address(currency.to_bytes()),
+                        amount: amount.to_string(),
+                    })
+                    .collect(),
             ),
             ..blank
         },
