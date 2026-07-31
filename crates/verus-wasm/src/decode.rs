@@ -16,9 +16,9 @@ use wasm_bindgen::prelude::*;
 
 use verus_tx::{decode_output_script, OutputKind};
 
-use crate::dto;
+use crate::dto::{self, JsUtxo};
 use crate::error::{WasmError, WasmResult};
-use crate::types::{DecodedOutputValue, JsText};
+use crate::types::{DecodedOutputValue, JsText, TokenBalancesValue, UtxoListValue};
 
 /// What an output turned out to be.
 ///
@@ -235,4 +235,39 @@ mod tests {
         let error = decode("zzzz").expect_err("not hex");
         assert_eq!(error.code(), "InvalidHex");
     }
+}
+
+/// The total of each currency a set of outputs carries.
+///
+/// The loop every wallet would otherwise write for itself, with the two traps
+/// it would otherwise hit. A reserve output carries native satoshis **as well
+/// as** its token payload, so `satoshis` is not the token amount and must not
+/// be added to one. And an output whose eval code this SDK cannot decode may
+/// carry currency it cannot see, so this **throws** rather than returning a
+/// total that quietly omits it — a balance that is wrong downward tells a user
+/// they hold nothing when they hold something.
+///
+/// Amounts come back as decimal strings in the currency's smallest unit, the
+/// same convention as everywhere else here. Native value is not included: it
+/// has no currency id, and folding the two together is how double-counting
+/// starts.
+///
+/// ```js
+/// const utxos = await rpc("getaddressutxos", [{ addresses: [key.address()] }]);
+/// for (const { currency, amount } of tokenBalances(utxos.map(toUtxo))) {
+///   console.log(currency, formatCoins(amount));
+/// }
+/// ```
+#[wasm_bindgen(js_name = tokenBalances)]
+pub fn token_balances(utxos: UtxoListValue) -> Result<TokenBalancesValue, WasmError> {
+    let list: Vec<JsUtxo> = dto::from_js_list(utxos.into(), &JsUtxo::SHAPE)?;
+    let held = verus_tx::token_balances(&dto::utxos(&list)?)?;
+    let reported: Vec<TokenAmount> = held
+        .into_iter()
+        .map(|(currency, amount)| TokenAmount {
+            currency: dto::identity_address(currency.to_bytes()),
+            amount: dto::sats_string(amount),
+        })
+        .collect();
+    Ok(crate::to_js(&reported)?.unchecked_into())
 }

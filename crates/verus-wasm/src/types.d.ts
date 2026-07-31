@@ -150,7 +150,13 @@ export interface VerifyResult {
     reason?: "stale" | "future" | "threshold";
 }
 
-/** How much of which token. */
+/**
+ * How much of which token.
+ *
+ * Returned by `tokenBalances`, and carried inside a decoded `reserveOutput`.
+ * The amount is in the currency's smallest unit and is NOT the output's
+ * satoshi value — a reserve output carries native value as well as its token.
+ */
 export interface TokenAmount {
     /** The currency, as its `i…` address. */
     currency: string;

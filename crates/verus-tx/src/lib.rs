@@ -46,6 +46,7 @@
 
 mod amount;
 mod assemble;
+pub mod balances;
 pub mod cc;
 pub mod convert;
 mod currency;
@@ -70,6 +71,7 @@ pub mod update;
 pub mod vdxf;
 
 pub use amount::{Amount, SATS_PER_COIN};
+pub use balances::{token_balances, TokenBalances};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use convert::{
     build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,

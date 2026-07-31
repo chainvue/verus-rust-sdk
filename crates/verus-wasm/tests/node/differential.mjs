@@ -22,8 +22,8 @@ import assert from "node:assert/strict";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
-const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, verifyMessage,
-        signatureBlockHeight, vdxfKey, rootNamespace, identityId } = wasm;
+const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, tokenBalances,
+        verifyMessage, signatureBlockHeight, vdxfKey, rootNamespace, identityId } = wasm;
 
 const vectors = JSON.parse(
   readFileSync(resolve(here, "../../../../fixtures/transparent/vectors.json"), "utf8"),
@@ -434,6 +434,41 @@ console.log("\noffline derivation");
   assert.equal(decoded.kind, "pubKeyHash");
   assert.equal(decoded.address, key.address());
   ok("an output decodes to the address it pays");
+
+  // Token balances, off the same fixture the token differential uses: its
+  // UTXOs carry a real reserve output, so this counts something real.
+  const tokenVector = vectors.vectors.find((v) => v.outputs.some((o) => o.currency !== null));
+  const utxos = tokenVector.utxos.map((u) => ({
+    txid: u.txid, vout: u.vout,
+    satoshis: String(u.satoshis), scriptPubKey: u.script_pubkey,
+  }));
+  const held = tokenBalances(utxos);
+  assert.ok(held.length > 0, "the token fixture must carry a token");
+  for (const entry of held) {
+    assert.match(entry.currency, /^i/, "a currency is named by its i-address");
+    assert.match(entry.amount, /^[0-9]+$/, "an amount is a decimal string");
+    // The native satoshis a reserve output also carries are NOT token value.
+    assert.notEqual(entry.amount, String(tokenVector.utxos[0].satoshis));
+  }
+  assert.deepEqual(tokenBalances([]), [], "no outputs, no balances");
+  assert.deepEqual(
+    tokenBalances([{ txid: "aa".repeat(32), vout: 0, satoshis: "1", scriptPubKey: key.scriptPubKey() }]),
+    [],
+    "a plain output carries no currency",
+  );
+  ok("token balances are counted from the outputs, native value excluded");
+
+  // An output this SDK cannot decode may carry currency it cannot see, so a
+  // balance must not be reported at all rather than reported short.
+  const opaque = "4c0f" + "00".repeat(15);
+  assert.throws(
+    () => tokenBalances([{ txid: "bb".repeat(32), vout: 2, satoshis: "1", scriptPubKey: opaque }]),
+    (e) => e instanceof Error,
+    "an unreadable output must not be counted as zero",
+  );
+  assert.throws(() => tokenBalances({ txid: "aa" }), (e) => e.name === "InvalidArgument",
+    "a single object is not a list of outputs");
+  ok("an output that cannot be read refuses the whole balance");
   key.free();
 }
 

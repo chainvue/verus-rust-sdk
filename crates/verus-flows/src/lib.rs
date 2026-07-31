@@ -63,6 +63,7 @@
 
 #![doc(html_no_source)]
 
+pub mod balances;
 pub mod broadcast;
 pub mod convert;
 pub mod error;
@@ -79,6 +80,7 @@ pub mod shielded;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use balances::currency_names;
 pub use broadcast::broadcast;
 pub use convert::{burn, convert, estimate, mint, plan_conversion, ConversionPlan};
 pub use error::FlowError;
@@ -99,4 +101,4 @@ pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};
 #[cfg(feature = "http")]
 pub use verus_rpc::HttpTransport;
 pub use verus_rpc::{Broadcaster, ChainReader, RpcClient, RpcError};
-pub use verus_tx::{Amount, CurrencyId, Expiry, TxError};
+pub use verus_tx::{token_balances, Amount, CurrencyId, Expiry, TokenBalances, TxError};

@@ -50,6 +50,13 @@ extern "C" {
     #[wasm_bindgen(typescript_type = "DecodedOutput")]
     pub type DecodedOutputValue;
 
+    /// TypeScript `Utxo[]`.
+    #[wasm_bindgen(typescript_type = "Utxo[]")]
+    pub type UtxoListValue;
+    /// TypeScript `TokenAmount[]`.
+    #[wasm_bindgen(typescript_type = "TokenAmount[]")]
+    pub type TokenBalancesValue;
+
     /// A `string`, taken as a `JsValue` so a non-string can be *refused*
     /// rather than trapping the module.
     ///

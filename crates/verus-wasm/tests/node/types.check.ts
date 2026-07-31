@@ -23,6 +23,7 @@ import {
   verifyMessage,
   signatureBlockHeight,
   decodeOutput,
+  tokenBalances,
   vdxfKey,
   identityId,
   type SendRequest,
@@ -32,6 +33,7 @@ import {
   type VerifyResult,
   type DecodedOutput,
   type Utxo,
+  type TokenAmount,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -94,7 +96,10 @@ if (output.kind === "unsupportedCryptoCondition") {
   const evalCode: number | undefined = output.evalCode;
   void evalCode;
 }
-void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null)];
+const balances: TokenAmount[] = tokenBalances([utxo]);
+const owed: string = balances[0].amount;
+const which: string = balances[0].currency;
+void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null), owed, which];
 
 // --- What the types must REFUSE. Each line fails the build if it compiles. ---
 
