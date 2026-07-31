@@ -116,16 +116,26 @@ impl From<hex::FromHexError> for WasmError {
 impl From<serde_wasm_bindgen::Error> for WasmError {
     fn from(error: serde_wasm_bindgen::Error) -> Self {
         // Reached when the object JavaScript passed does not have the shape the
-        // DTO declares: a missing field, an unexpected one, or a `number` where
-        // a decimal string is required. That last case is the common one and
-        // the message says so, because passing `satoshis: 1e8` as a float is
-        // exactly the mistake the string-typed money fields exist to catch.
+        // DTO declares. The money hint is worth appending for the case it was
+        // written for — a `number` where a decimal string belongs, which is the
+        // mistake the string-typed fields exist to catch — and is noise on
+        // `missing field \`utxos\``, so it is attached only when the message
+        // shows a number arriving where one does not belong.
+        let message = error.to_string();
+        let numeric = message.contains("floating point")
+            || message.contains("integer")
+            || message.contains("expected a string");
         Self::new(
             "InvalidArgument",
-            format!(
-                "{error} — amounts must be decimal strings, not numbers, and \
-                 hashes and scripts must be hex strings"
-            ),
+            if numeric {
+                format!(
+                    "{message} — amounts are decimal strings rather than numbers, because a \
+                     float64 cannot hold every satoshi value; pass `String(n)` or a bigint's \
+                     `.toString()`"
+                )
+            } else {
+                message
+            },
         )
     }
 }

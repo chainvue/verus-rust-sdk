@@ -26,7 +26,9 @@ use wasm_bindgen::prelude::*;
 
 use verus_keys::PrivateKey;
 
+use crate::dto;
 use crate::error::{WasmError, WasmResult};
+use crate::types::JsText;
 
 /// A private key, and the operations that need one.
 #[wasm_bindgen]
@@ -46,9 +48,10 @@ impl Key {
     /// Import a WIF private key — what `dumpprivkey` prints and every Verus
     /// wallet imports.
     #[wasm_bindgen(js_name = fromWif)]
-    pub fn from_wif(wif: &str) -> Result<Key, WasmError> {
+    pub fn from_wif(wif: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: PrivateKey::from_wif(wif).map_err(WasmError::from)?,
+            inner: PrivateKey::from_wif(&dto::text("wif", wif.as_ref())?)
+                .map_err(WasmError::from)?,
         })
     }
 
@@ -75,9 +78,10 @@ impl Key {
     /// yourself is cheap to brute-force offline; import one a wallet generated,
     /// or use [`Key::from_entropy`].
     #[wasm_bindgen(js_name = fromSeedPhrase)]
-    pub fn from_seed_phrase(phrase: &str) -> Result<Key, WasmError> {
+    pub fn from_seed_phrase(phrase: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: verus_keys::private_key_from_seed_phrase(phrase).map_err(WasmError::from)?,
+            inner: verus_keys::private_key_from_seed_phrase(&dto::text("phrase", phrase.as_ref())?)
+                .map_err(WasmError::from)?,
         })
     }
 
@@ -87,9 +91,20 @@ impl Key {
     /// rest of this type exists to avoid — a string the garbage collector may
     /// copy and will not wipe. Call it to show a user their backup, and not for
     /// anything else.
+    ///
+    /// The JavaScript string is built straight from the zeroizing buffer, so
+    /// no plaintext copy is left behind on the Rust side. That is a deliberate
+    /// detail rather than an incidental one: returning a `String` would clone
+    /// the WIF into an ordinary allocation that is dropped **without** being
+    /// wiped, and wasm's allocator does not zero freed memory — so a single
+    /// `toWif()` used to leave the key readable in the module's linear memory
+    /// for the lifetime of the page, surviving even `free()`. What this cannot
+    /// fix is the copy JavaScript now holds; that one is the caller's.
     #[wasm_bindgen(js_name = toWif)]
-    pub fn to_wif(&self) -> String {
-        self.inner.to_wif().to_string()
+    pub fn to_wif(&self) -> JsText {
+        use wasm_bindgen::JsCast;
+        let wif = self.inner.to_wif();
+        JsValue::from_str(wif.as_str()).unchecked_into()
     }
 
     /// The `R…` address this key controls.
@@ -147,10 +162,21 @@ mod tests {
     /// A vector the TypeScript SDK and the daemon both agree on.
     const WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
 
+    /// The bindings take `JsText`, which cannot be constructed on the host, so
+    /// the host tests build the same `Key` through its inner type. What the
+    /// bindings themselves do with a non-string is asserted under node.
+    fn key() -> Key {
+        Key {
+            inner: PrivateKey::from_wif(WIF).unwrap(),
+        }
+    }
+
     #[test]
     fn a_wif_round_trips_and_names_its_address() {
-        let key = Key::from_wif(WIF).unwrap();
-        assert_eq!(key.to_wif(), WIF);
+        let key = key();
+        // `to_wif` returns a JS string, which only exists under wasm; the
+        // round trip itself is asserted in `tests/node/differential.mjs`.
+        assert_eq!(key.private().to_wif().as_str(), WIF);
         assert!(key.address().starts_with('R'), "{}", key.address());
         assert_eq!(key.public_key().len(), 66, "compressed public key");
         assert_eq!(key.hash160().len(), 40);
@@ -160,7 +186,7 @@ mod tests {
     /// node's answer against `scriptPubKey()` would be checking nothing.
     #[test]
     fn the_script_pays_the_address() {
-        let key = Key::from_wif(WIF).unwrap();
+        let key = key();
         let script = hex::decode(key.script_pub_key().unwrap()).unwrap();
         let recovered = verus_keys::Address::from_p2pkh_script_pubkey(&script).unwrap();
         assert_eq!(recovered.to_string(), key.address());
@@ -185,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_wif_is_not_accepted_as_a_seed_phrase() {
-        assert!(Key::from_seed_phrase(WIF).is_err());
-        assert!(Key::from_seed_phrase("   ").is_err());
+        assert!(verus_keys::private_key_from_seed_phrase(WIF).is_err());
+        assert!(verus_keys::private_key_from_seed_phrase("   ").is_err());
     }
 }

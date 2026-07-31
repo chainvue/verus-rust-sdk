@@ -106,6 +106,18 @@ jobs:
       - name: Differential and behaviour, under node
         run: node crates/verus-wasm/tests/node/differential.mjs crates/verus-wasm/pkg
 
+      # The published `.d.ts` is hand-written, so it can be wrong in ways no
+      # Rust test sees. `types.check.ts` USES it the way an application would —
+      # and its `@ts-expect-error` lines fail the build if a rule the API
+      # promises (money is a string, unknown fields are refused, the height
+      # bound is required) stops being expressed in the types.
+      - name: TypeScript declarations
+        working-directory: crates/verus-wasm
+        run: >
+          npx -y -p typescript@5 tsc --noEmit --strict
+          --target esnext --lib esnext --module esnext --moduleResolution bundler
+          tests/node/types.check.ts
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15

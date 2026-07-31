@@ -108,16 +108,27 @@ one of them — while the thing that would wrap, JSON-RPC over HTTP, is a few
 lines of JavaScript with the app's own auth, retries and node choice. So:
 **JavaScript asks the questions, WebAssembly holds the key and makes the bytes.**
 
-Two conventions carry through the whole JS API. Money is a **decimal string**,
+Three conventions carry through the whole JS API. Money is a **decimal string**,
 never a `number` — `satoshis: 1e8` throws, because a float64 cannot hold a
 satoshi count above 2^53 and 90 million coins is not a hypothetical on a chain
-capped at 83.5 million. And errors are thrown `Error`s whose `.name` is the
-cause, so `catch (e) { if (e.name === "InsufficientFunds") … }` works.
+capped at 83.5 million. Errors are thrown `Error`s whose `.name` is the cause,
+so `catch (e) { if (e.name === "InsufficientFunds") … }` works. And an unknown
+field is **refused**: `expiryHieght` is a transposition away from a signed
+transaction that never expires, so requests are rebuilt from their declared
+fields rather than trusted — `serde`'s own `deny_unknown_fields` is inert
+across this boundary, and checking `Object.keys` was not enough either, because
+the deserializer reads through the prototype chain and that does not.
 
 Covered: native and token sends, VerusID message signing and verification (log
 in with Verus), VDXF key derivation, identity ids, and output decoding. The
 package ships hand-written TypeScript declarations, pinned against the Rust
-types by a test so they cannot drift.
+types by one test and type-checked in use by another, so they cannot drift.
+
+Verification is worth a note. `verifyMessage` requires `currentHeight` and
+`maxAgeBlocks` — the height a signature commits to is chosen by whoever signed
+it, so a verifier that resolves the identity at that height and stops has built
+an authentication bypass: a rotated-out key still works, it just stamps an
+older height.
 
 ## Design
 

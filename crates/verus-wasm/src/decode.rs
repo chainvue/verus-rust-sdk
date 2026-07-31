@@ -18,7 +18,7 @@ use verus_tx::{decode_output_script, OutputKind};
 
 use crate::dto;
 use crate::error::{WasmError, WasmResult};
-use crate::types::DecodedOutputValue;
+use crate::types::{DecodedOutputValue, JsText};
 
 /// What an output turned out to be.
 ///
@@ -57,7 +57,7 @@ pub struct DecodedOutput {
 }
 
 /// How much of which token.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenAmount {
     /// The currency, as its `i…` address.
@@ -167,8 +167,9 @@ fn destination_address(destination: &verus_tx::Destination) -> String {
 /// Throws rather than guessing when a CryptoCondition script cannot be
 /// unpacked at all: a smart output that fails to decode is not a native one.
 #[wasm_bindgen(js_name = decodeOutput)]
-pub fn decode_output(script_hex: &str) -> Result<DecodedOutputValue, WasmError> {
-    Ok(crate::to_js(&decode(script_hex)?)?.unchecked_into())
+pub fn decode_output(script_hex: JsText) -> Result<DecodedOutputValue, WasmError> {
+    let script_hex = dto::text("scriptHex", script_hex.as_ref())?;
+    Ok(crate::to_js(&decode(&script_hex)?)?.unchecked_into())
 }
 
 #[cfg(test)]

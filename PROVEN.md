@@ -97,6 +97,11 @@ acceptance:
   node crates/verus-wasm/tests/node/differential.mjs crates/verus-wasm/pkg
   ```
 
+  The same run also pins the boundary's own refusals — a `number` where money
+  belongs, a mistyped field, a polluted prototype, a height outside the
+  verification window — because those are properties of the binding rather than
+  of the bytes, and nothing below this line would catch them.
+
 ## Known not working
 
 - **Cross-chain export / PBaaS launch** — needs a second system to test

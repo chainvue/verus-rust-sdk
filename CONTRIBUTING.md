@@ -19,6 +19,9 @@ half too. `wasm-bindgen` is inert on the host, so the generated glue, the
 cargo check -p verus-wasm --target wasm32-unknown-unknown --all-targets
 wasm-pack build crates/verus-wasm --target nodejs --out-dir pkg --release
 node crates/verus-wasm/tests/node/differential.mjs crates/verus-wasm/pkg
+(cd crates/verus-wasm && npx -y -p typescript@5 tsc --noEmit --strict \
+   --target esnext --lib esnext --module esnext --moduleResolution bundler \
+   tests/node/types.check.ts)
 ```
 
 The toolchain is pinned to **1.95.0** in `rust-toolchain.toml`. The same version

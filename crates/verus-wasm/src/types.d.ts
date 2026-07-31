@@ -42,10 +42,14 @@ export interface SendRequest {
     /**
      * The height past which this transaction can no longer be mined. Omit, or
      * pass null, for one that never expires — which is a deliberate choice,
-     * not a default.
+     * not a default. `0` is refused: on the wire it means "never", but here it
+     * is far more likely to be an uninitialised counter than a decision.
      */
     expiryHeight?: number | null;
-    /** Fee rate in satoshis per kilobyte, as a decimal string. Omit for the default. */
+    /**
+     * Fee rate in satoshis per kilobyte, as a decimal string. Omit for the
+     * default. Capped at one coin per kilobyte.
+     */
     feePerKb?: string | null;
 }
 
@@ -57,9 +61,9 @@ export interface TokenSendRequest {
     recipients: TokenRecipient[];
     /** Where both token and native change return. Must be an `R…` address. */
     changeAddress: string;
-    /** The height past which this transaction can no longer be mined. */
+    /** The height past which this transaction can no longer be mined. `0` is refused. */
     expiryHeight?: number | null;
-    /** Fee rate in satoshis per kilobyte, as a decimal string. */
+    /** Fee rate in satoshis per kilobyte, as a decimal string. Capped at one coin per kilobyte. */
     feePerKb?: string | null;
 }
 
@@ -114,21 +118,36 @@ export interface VerifyRequest {
     signature: string;
     /**
      * The identity's primary addresses AT THE SIGNATURE'S BLOCK HEIGHT — not
-     * today's. `getidentity` takes a height for exactly this reason.
+     * today's. `getidentity` takes a height for exactly this reason. Read the
+     * height with `signatureBlockHeight` before you fetch these.
      */
     primaryAddresses: string[];
     /** The identity's `minimumsignatures` at that same height. */
     minimumSignatures: number;
+    /**
+     * YOUR current chain tip. Required: the height is chosen by whoever
+     * signed, so without bounding it against your own tip a key that was
+     * rotated out still authenticates — it just stamps an old height.
+     */
+    currentHeight: number;
+    /**
+     * How far back of `currentHeight` a signature may be stamped. Required and
+     * not defaulted: it is how long a login stays signable, and equally how
+     * long a rotated-out key keeps working.
+     */
+    maxAgeBlocks: number;
 }
 
 /** The outcome of a verification. */
 export interface VerifyResult {
-    /** Whether enough of the identity's own keys signed. */
+    /** Whether the signature is within the height window AND meets the threshold. */
     valid: boolean;
     /** The height the signature commits to. */
     blockHeight: number;
     /** Every address recovered, deduplicated — including any that are not the identity's. */
     signers: string[];
+    /** Why `valid` is false, when it is. Absent when it is true. */
+    reason?: "stale" | "future" | "threshold";
 }
 
 /** How much of which token. */

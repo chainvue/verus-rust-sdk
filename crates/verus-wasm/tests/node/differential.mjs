@@ -32,6 +32,25 @@ const vectors = JSON.parse(
 let checks = 0;
 const ok = (name) => { checks += 1; console.log(`  ok  ${name}`); };
 
+/** VRSCTEST's own currency id, and an identity this repo registered on it. */
+const VRSCTEST = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+const IDENTITY = "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm";
+const SIGNED_AT = 1169587;
+
+/** A complete, valid verification request for `key`. */
+const verifyBase = (key, message = "log me in") => ({
+  identity: IDENTITY,
+  systemId: VRSCTEST,
+  message,
+  signature: key.signMessage({
+    identity: IDENTITY, systemId: VRSCTEST, blockHeight: SIGNED_AT, message,
+  }),
+  primaryAddresses: [key.address()],
+  minimumSignatures: 1,
+  currentHeight: SIGNED_AT + 5,
+  maxAgeBlocks: 60,
+});
+
 // ---------------------------------------------------------------------------
 // The differential: the whole vector file, through the bindings.
 // ---------------------------------------------------------------------------
@@ -160,55 +179,130 @@ console.log("\nrefusals");
 {
   const vector = vectors.vectors[0];
   const key = Key.fromWif(vector.wif);
+  const utxo = {
+    txid: vector.utxos[0].txid, vout: vector.utxos[0].vout,
+    satoshis: String(vector.utxos[0].satoshis), scriptPubKey: vector.utxos[0].script_pubkey,
+  };
   const base = {
-    utxos: vector.utxos.map((u) => ({
-      txid: u.txid, vout: u.vout,
-      satoshis: String(u.satoshis), scriptPubKey: u.script_pubkey,
-    })),
+    utxos: [utxo],
     recipients: [{ address: vector.outputs[0].address, satoshis: "50000000" }],
     changeAddress: vector.change_address,
   };
+  const tokenBase = {
+    utxos: [utxo],
+    recipients: [{ address: vector.change_address, currency: VRSCTEST, amount: "1" }],
+    changeAddress: vector.change_address,
+  };
+  const signBase = {
+    identity: IDENTITY, systemId: VRSCTEST, blockHeight: 1169587, message: "hello",
+  };
+  const throws = (name, fn, predicate, why) =>
+    assert.throws(fn, predicate ?? ((e) => e instanceof Error), why ?? name);
 
-  // A float amount must throw, not round. This is the single most important
-  // refusal in the whole binding.
-  assert.throws(
-    () => key.send({ ...base, recipients: [{ address: vector.outputs[0].address, satoshis: 5e7 }] }),
-    (e) => e instanceof Error,
-    "a number amount must be refused",
-  );
+  // A float amount must throw, not round. The single most important refusal.
+  throws("number amount", () => key.send({ ...base, recipients: [{ address: vector.outputs[0].address, satoshis: 5e7 }] }));
   ok("a `number` amount is refused rather than rounded");
 
-  // A mistyped OPTIONAL field must fail, not be ignored. This is the one
-  // serde's `deny_unknown_fields` does not catch under serde-wasm-bindgen, and
-  // it is the dangerous one: `expiryHieght` deserializes as "no expiry", so the
-  // transaction is valid, signed, and minable for the rest of the chain's life.
-  assert.throws(
-    () => key.send({ ...base, expiryHieght: 1170000 }),
-    (e) => e.name === "UnknownField" && /expiryHieght/.test(e.message),
-    "a transposed optional field must be refused",
-  );
-  // Proof it is not merely rejecting everything: the correct spelling works,
-  // and produces a DIFFERENT transaction from the one with no expiry.
-  assert.notEqual(
-    key.send({ ...base, expiryHeight: 1170000 }).hex,
-    key.send(base).hex,
-    "the field the typo targeted really does change the transaction",
-  );
-  ok("a mistyped optional field is refused, not silently ignored");
+  // A number where a string belongs must throw an Error, not trap the module.
+  // A release build has no `typeof` guard, so this used to be
+  // `RuntimeError: memory access out of bounds` — with no `.name` to branch on
+  // and, for parseCoins, on the single likeliest caller mistake there is.
+  for (const [name, call] of [
+    ["parseCoins(1.1)", () => parseCoins(1.1)],
+    ["formatCoins(1)", () => formatCoins(1)],
+    ["Key.fromWif(123)", () => Key.fromWif(123)],
+    ["Key.fromSeedPhrase(1)", () => Key.fromSeedPhrase(1)],
+    ["decodeOutput(123)", () => decodeOutput(123)],
+    ["vdxfKey(1,2,3)", () => vdxfKey(1, 2, 3)],
+    ["rootNamespace(1)", () => rootNamespace(1)],
+    ["identityId(1,null)", () => identityId(1, null)],
+    ["signatureBlockHeight(1)", () => signatureBlockHeight(1)],
+    ["parseCoins(null)", () => parseCoins(null)],
+    ["parseCoins(['1'])", () => parseCoins(["1"])],
+  ]) {
+    throws(name, call, (e) => e.name === "InvalidArgument", `${name} must throw a named Error`);
+  }
+  // …and the module is still usable afterwards, not left in a trapped state.
+  assert.equal(parseCoins("1.1"), "110000000");
+  ok("a non-string argument throws a named Error instead of trapping the module");
 
-  // A typo in a NESTED object is caught a different way — every nested field
-  // is required, so a misspelling reads as a missing one. Asserted because the
-  // key check above only covers the top level, and the scope of a guarantee
-  // should be tested, not assumed.
-  assert.throws(
-    () => key.send({
-      ...base,
-      utxos: [{ ...base.utxos[0], scriptPubkey: base.utxos[0].scriptPubKey, scriptPubKey: undefined }],
-    }),
-    (e) => e instanceof Error,
-    "a misspelled required field must be refused",
+  // A mistyped OPTIONAL field must fail on EVERY entry point. `expiryHieght`
+  // deserialized as "no expiry": a valid, signed transaction minable for the
+  // rest of the chain's life. Only `send` was covered before, and dropping the
+  // guard from `sendToken` left every test green.
+  throws("send", () => key.send({ ...base, expiryHieght: 1170000 }),
+    (e) => e.name === "UnknownField" && /expiryHieght/.test(e.message));
+  throws("sendToken", () => key.sendToken({ ...tokenBase, expiryHieght: 1170000 }),
+    (e) => e.name === "UnknownField" && /expiryHieght/.test(e.message));
+  throws("signMessage", () => key.signMessage({ ...signBase, blockHieght: 1 }),
+    (e) => e.name === "UnknownField" && /blockHieght/.test(e.message));
+  throws("verifyMessage", () => verifyMessage({ ...verifyBase(key), maxAgeBlock: 60 }),
+    (e) => e.name === "UnknownField" && /maxAgeBlock/.test(e.message));
+  ok("every entry point refuses a mistyped optional field");
+
+  // Proof it is not merely rejecting everything: the correct spelling works and
+  // produces a DIFFERENT transaction from the one with no expiry.
+  assert.notEqual(key.send({ ...base, expiryHeight: 1170000 }).hex, key.send(base).hex);
+  ok("the field the typo targeted really does change the transaction");
+
+  // A stray key inside a NESTED object. `currency` on a native recipient is
+  // what a caller writes when they meant `sendToken`; it used to be dropped,
+  // and native coins moved instead.
+  throws("nested recipient", () => key.send({
+    ...base,
+    recipients: [{ ...base.recipients[0], currency: VRSCTEST }],
+  }), (e) => e.name === "UnknownField" && /currency/.test(e.message));
+  throws("nested utxo", () => key.send({ ...base, utxos: [{ ...utxo, extra: 1 }] }),
+    (e) => e.name === "UnknownField");
+  ok("a stray key inside a nested object is refused too");
+
+  // The guard must ask the same question the deserializer does. Each of these
+  // hid a field from `Object.keys` while `Reflect.get` still returned it, and
+  // each one restored the original bug.
+  const hidden = { ...base };
+  Object.defineProperty(hidden, "expiryHieght", { value: 1170000, enumerable: false });
+  throws("non-enumerable", () => key.send(hidden), (e) => e.name === "UnknownField");
+  throws("prototype chain", () => key.send(Object.assign(Object.create({ expiryHieght: 1 }), base)),
+    (e) => e.name === "InvalidArgument");
+  class Request {}
+  throws("class instance", () => key.send(Object.assign(new Request(), base)),
+    (e) => e.name === "InvalidArgument");
+  throws("lying proxy", () => key.send(new Proxy({ ...base, expiryHeight: 1170000 },
+    { ownKeys: () => Object.keys(base) })), (e) => e.name === "InvalidArgument");
+  ok("a field hidden from key enumeration cannot slip past the guard");
+
+  // The other direction: a polluted prototype must not silently SET a field.
+  Object.prototype.expiryHeight = 1170000;
+  try {
+    throws("prototype pollution", () => key.send({ ...base }), (e) => e.name === "InvalidArgument");
+  } finally {
+    delete Object.prototype.expiryHeight;
+  }
+  ok("prototype pollution is refused, not silently applied");
+
+  // A faithful Proxy is what Vue's `reactive()` and MobX hand you, and it must
+  // keep working — the guard has to reject liars, not frameworks.
+  const reactive = (o) => new Proxy(o, {
+    get: (t, k, r) => { const v = Reflect.get(t, k, r); return v && typeof v === "object" ? reactive(v) : v; },
+  });
+  assert.equal(
+    key.send(reactive({ ...base, expiryHeight: 1170000 })).hex,
+    key.send({ ...base, expiryHeight: 1170000 }).hex,
+    "a faithful proxy must produce identical bytes",
   );
-  ok("a misspelled nested field is caught as a missing required one");
+  ok("an ordinary framework proxy still works, byte for byte");
+
+  // `0` is how the WIRE spells "never", and how an uninitialised counter
+  // spells itself. The second is far likelier here, so it is refused.
+  throws("expiryHeight 0", () => key.send({ ...base, expiryHeight: 0 }),
+    (e) => e.name === "InvalidExpiry");
+  ok("expiryHeight 0 is refused rather than silently meaning never");
+
+  // An absurd fee rate wrapped u64 in the size×rate estimate and came out as
+  // the MINIMUM fee — silent, and in the wrong direction.
+  throws("huge feePerKb", () => key.send({ ...base, feePerKb: "9223372036854775808" }),
+    (e) => e.name === "FeeRateTooLarge");
+  ok("a fee rate that would overflow the estimate is refused");
 
   // The error carries a machine-readable cause.
   try {
@@ -229,30 +323,63 @@ console.log("\nrefusals");
 
 console.log("\nlogin");
 {
-  const VRSCTEST = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
-  const identity = "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm";
   const key = Key.fromWif(vectors.vectors[0].wif);
-  const request = {
-    identity, systemId: VRSCTEST, blockHeight: 1169587, message: "log me in",
-  };
-  const signature = key.signMessage(request);
+  const request = verifyBase(key);
 
-  assert.equal(signatureBlockHeight(signature), 1169587);
-  const claim = verifyMessage({
-    identity, systemId: VRSCTEST, message: "log me in", signature,
-    primaryAddresses: [key.address()], minimumSignatures: 1,
-  });
+  assert.equal(signatureBlockHeight(request.signature), SIGNED_AT);
+  const claim = verifyMessage(request);
   assert.equal(claim.valid, true);
-  assert.equal(claim.blockHeight, 1169587);
+  assert.equal(claim.blockHeight, SIGNED_AT);
   assert.deepEqual(claim.signers, [key.address()]);
+  assert.equal(claim.reason, undefined, "a pass carries no reason");
   ok("a signature made in wasm verifies in wasm");
 
-  const tampered = verifyMessage({
-    identity, systemId: VRSCTEST, message: "log me in as someone else", signature,
-    primaryAddresses: [key.address()], minimumSignatures: 1,
-  });
+  const tampered = verifyMessage({ ...request, message: "log me in as someone else" });
   assert.equal(tampered.valid, false, "a changed message must not verify");
+  assert.equal(tampered.reason, "threshold");
   ok("a changed message does not verify");
+
+  // The attack the height window exists for. The SIGNER picks the height, so a
+  // verifier that resolves the identity at whatever height it was handed — and
+  // stops — authenticates a key whose owner rotated it away. The signature here
+  // is cryptographically fine and the threshold IS met; only the age refuses it.
+  const stolen = key;
+  const old = {
+    ...request,
+    signature: stolen.signMessage({
+      identity: IDENTITY, systemId: VRSCTEST,
+      blockHeight: request.currentHeight - 5000, message: "log me in",
+    }),
+  };
+  const stale = verifyMessage(old);
+  assert.equal(stale.valid, false, "a signature 5000 blocks old must not log anyone in");
+  assert.equal(stale.reason, "stale");
+  assert.deepEqual(stale.signers, [stolen.address()], "the signature itself is sound");
+  ok("a signature stamped outside the window is refused, whatever its keys say");
+
+  // And the window is a real dial, not decoration.
+  assert.equal(verifyMessage({ ...old, maxAgeBlocks: 10000 }).valid, true);
+  ok("widening the window accepts the same signature");
+
+  const ahead = {
+    ...request,
+    signature: key.signMessage({
+      identity: IDENTITY, systemId: VRSCTEST,
+      blockHeight: request.currentHeight + 1, message: "log me in",
+    }),
+  };
+  assert.equal(verifyMessage(ahead).valid, false);
+  assert.equal(verifyMessage(ahead).reason, "future");
+  ok("a signature stamped past the verifier's tip is refused");
+
+  // The bound is not optional: a verifier cannot forget to pass it.
+  for (const missing of ["currentHeight", "maxAgeBlocks"]) {
+    const partial = { ...request };
+    delete partial[missing];
+    assert.throws(() => verifyMessage(partial), (e) => e instanceof Error,
+      `${missing} must be required`);
+  }
+  ok("the height bound cannot be omitted");
   key.free();
 }
 
@@ -262,7 +389,6 @@ console.log("\nlogin");
 
 console.log("\noffline derivation");
 {
-  const VRSCTEST = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
   assert.equal(vdxfKey("test", "VRSCTEST", VRSCTEST), "i67adKXncRAtgsmoZpSCRA6iba5U7SPgF4");
   assert.equal(rootNamespace("vrsc"), "i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV");
   assert.equal(identityId("rusttok1168500", VRSCTEST), "iKzX5FyzKzYxtcWKYveYKVfrz2LNXLj4xM");

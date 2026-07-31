@@ -17,7 +17,7 @@ use verus_tx::{
     TokenSendParams,
 };
 
-use crate::dto::{self, JsRecipient, JsSignedTransaction, JsUtxo};
+use crate::dto::{self, JsRecipient, JsSignedTransaction, JsUtxo, Shape};
 use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{SendRequestValue, SignedTransactionValue, TokenSendRequestValue};
@@ -45,15 +45,18 @@ pub struct SendRequest {
 }
 
 impl SendRequest {
-    /// The keys a `SendRequest` object may carry. Pinned against what the type
-    /// serializes by a test in [`crate::types`].
-    pub(crate) const FIELDS: &'static [&'static str] = &[
-        "utxos",
-        "recipients",
-        "changeAddress",
-        "expiryHeight",
-        "feePerKb",
-    ];
+    /// The keys a `SendRequest` object may carry, and the shape of the nested
+    /// ones. Pinned against what the type serializes by a test in
+    /// [`crate::types`].
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("utxos", Some(&JsUtxo::SHAPE)),
+            ("recipients", Some(&JsRecipient::SHAPE)),
+            ("changeAddress", None),
+            ("expiryHeight", None),
+            ("feePerKb", None),
+        ],
+    };
 }
 
 /// What to build for a token send.
@@ -76,18 +79,21 @@ pub struct TokenSendRequest {
 }
 
 impl TokenSendRequest {
-    /// The keys a `TokenSendRequest` object may carry.
-    pub(crate) const FIELDS: &'static [&'static str] = &[
-        "utxos",
-        "recipients",
-        "changeAddress",
-        "expiryHeight",
-        "feePerKb",
-    ];
+    /// The keys a `TokenSendRequest` object may carry, and the shape of the
+    /// nested ones.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("utxos", Some(&JsUtxo::SHAPE)),
+            ("recipients", Some(&JsTokenRecipient::SHAPE)),
+            ("changeAddress", None),
+            ("expiryHeight", None),
+            ("feePerKb", None),
+        ],
+    };
 }
 
 /// One token payment.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JsTokenRecipient {
     /// The `R…` address being paid.
@@ -98,13 +104,45 @@ pub struct JsTokenRecipient {
     pub amount: String,
 }
 
+impl JsTokenRecipient {
+    /// The keys a token recipient object may carry.
+    pub const SHAPE: Shape = Shape {
+        fields: &[("address", None), ("currency", None), ("amount", None)],
+    };
+}
+
 /// The fee rate, or the SDK's default when none was given.
 fn fee_per_kb(supplied: &Option<String>) -> WasmResult<u64> {
     match supplied {
         None => Ok(verus_tx::fee::DEFAULT_FEE_PER_KB),
-        Some(text) => Ok(dto::sats(text)?.to_sat()),
+        Some(text) => {
+            let rate = dto::sats(text)?.to_sat();
+            // The fee estimate multiplies this by the transaction size, and a
+            // release wasm build has overflow checks off — so an absurd rate
+            // wrapped `u64` and came out as the MINIMUM fee, which is the
+            // wrong direction to be silent in. One coin per kilobyte is orders
+            // of magnitude above any real rate and leaves the product nowhere
+            // near 2^64.
+            if rate > MAX_FEE_PER_KB {
+                return Err(WasmError::new(
+                    "FeeRateTooLarge",
+                    format!(
+                        "feePerKb {rate} exceeds the {MAX_FEE_PER_KB} satoshi/kB ceiling; \
+                         that is {} coins per kilobyte and is almost certainly a unit mistake",
+                        verus_tx::Amount::from_sat(rate).to_coins_string()
+                    ),
+                ));
+            }
+            Ok(rate)
+        }
     }
 }
+
+/// The largest fee rate this binding will accept: one coin per kilobyte.
+///
+/// Not a consensus rule — a sanity bound, so that caller-controlled arithmetic
+/// crossing the boundary cannot overflow and land on the minimum fee.
+const MAX_FEE_PER_KB: u64 = verus_tx::SATS_PER_COIN;
 
 /// Build and sign a native send. Host-testable core of [`send`].
 pub(crate) fn build_send(
@@ -195,7 +233,7 @@ impl Key {
     /// always produce the same bytes — a wallet can re-derive and compare
     /// rather than having to store what it sent.
     pub fn send(&self, request: SendRequestValue) -> Result<SignedTransactionValue, WasmError> {
-        let request: SendRequest = dto::from_js(request.into(), SendRequest::FIELDS)?;
+        let request: SendRequest = dto::from_js(request.into(), &SendRequest::SHAPE)?;
         Ok(crate::to_js(&build_send(self.private(), &request)?)?.unchecked_into())
     }
 
@@ -209,7 +247,7 @@ impl Key {
         &self,
         request: TokenSendRequestValue,
     ) -> Result<SignedTransactionValue, WasmError> {
-        let request: TokenSendRequest = dto::from_js(request.into(), TokenSendRequest::FIELDS)?;
+        let request: TokenSendRequest = dto::from_js(request.into(), &TokenSendRequest::SHAPE)?;
         Ok(crate::to_js(&build_token(self.private(), &request)?)?.unchecked_into())
     }
 }

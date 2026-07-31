@@ -19,7 +19,42 @@
 use wasm_bindgen::prelude::*;
 
 use crate::dto;
-use crate::error::WasmError;
+use crate::error::{WasmError, WasmResult};
+use crate::types::{JsOptionalText, JsText};
+
+/// Host-testable core of [`vdxf_key`].
+pub(crate) fn key_for_uri(uri: &str, chain_name: &str, chain_id: &str) -> WasmResult<String> {
+    let chain = dto::currency("chainId", chain_id)?;
+    Ok(dto::identity_address(
+        verus_tx::qualified_key(uri, chain_name, chain).map_err(WasmError::from)?,
+    ))
+}
+
+/// Host-testable core of [`vdxf_key_in`].
+pub(crate) fn key_in(name: &str, namespace: &str, chain_name: &str) -> WasmResult<String> {
+    let namespace = dto::currency("namespace", namespace)?;
+    Ok(dto::identity_address(
+        verus_tx::data_key(name, namespace, chain_name).map_err(WasmError::from)?,
+    ))
+}
+
+/// Host-testable core of [`root_namespace`].
+pub(crate) fn root_id(name: &str) -> WasmResult<String> {
+    Ok(dto::identity_address(
+        verus_tx::root_namespace(name)
+            .map_err(WasmError::from)?
+            .to_bytes(),
+    ))
+}
+
+/// Host-testable core of [`identity_id`].
+pub(crate) fn id_for(name: &str, parent: Option<&str>) -> WasmResult<String> {
+    let parent = match parent {
+        None => None,
+        Some(text) => Some(dto::identity_id("parent", text)?),
+    };
+    Ok(dto::identity_address(verus_tx::identity_id(name, parent)))
+}
 
 /// The VDXF key for `uri`, as the daemon's `getvdxfid` computes it.
 ///
@@ -40,10 +75,12 @@ use crate::error::WasmError;
 /// vdxfKey("iRRhsKoiBuMoyANFcQ2NMLJXDgfSHjgffS::profile", "VRSCTEST", chainId)
 /// ```
 #[wasm_bindgen(js_name = vdxfKey)]
-pub fn vdxf_key(uri: &str, chain_name: &str, chain_id: &str) -> Result<String, WasmError> {
-    let chain = dto::currency("chainId", chain_id)?;
-    let key = verus_tx::qualified_key(uri, chain_name, chain).map_err(WasmError::from)?;
-    Ok(dto::identity_address(key))
+pub fn vdxf_key(uri: JsText, chain_name: JsText, chain_id: JsText) -> Result<String, WasmError> {
+    key_for_uri(
+        &dto::text("uri", uri.as_ref())?,
+        &dto::text("chainName", chain_name.as_ref())?,
+        &dto::text("chainId", chain_id.as_ref())?,
+    )
 }
 
 /// The VDXF key for `name` inside an explicit namespace.
@@ -52,10 +89,16 @@ pub fn vdxf_key(uri: &str, chain_name: &str, chain_id: &str) -> Result<String, W
 /// namespace is whatever i-address you pass — normally your application
 /// identity's. Prefer this over [`vdxf_key`] when the namespace is known.
 #[wasm_bindgen(js_name = vdxfKeyIn)]
-pub fn vdxf_key_in(name: &str, namespace: &str, chain_name: &str) -> Result<String, WasmError> {
-    let namespace = dto::currency("namespace", namespace)?;
-    let key = verus_tx::data_key(name, namespace, chain_name).map_err(WasmError::from)?;
-    Ok(dto::identity_address(key))
+pub fn vdxf_key_in(
+    name: JsText,
+    namespace: JsText,
+    chain_name: JsText,
+) -> Result<String, WasmError> {
+    key_in(
+        &dto::text("name", name.as_ref())?,
+        &dto::text("namespace", namespace.as_ref())?,
+        &dto::text("chainName", chain_name.as_ref())?,
+    )
 }
 
 /// The id of a top-level name, as an i-address.
@@ -63,9 +106,8 @@ pub fn vdxf_key_in(name: &str, namespace: &str, chain_name: &str) -> Result<Stri
 /// This is what a friendly `ns::` namespace resolves to. Useful for seeing
 /// where a `myapp::` key would actually land before committing to it.
 #[wasm_bindgen(js_name = rootNamespace)]
-pub fn root_namespace(name: &str) -> Result<String, WasmError> {
-    let id = verus_tx::root_namespace(name).map_err(WasmError::from)?;
-    Ok(dto::identity_address(id.to_bytes()))
+pub fn root_namespace(name: JsText) -> Result<String, WasmError> {
+    root_id(&dto::text("name", name.as_ref())?)
 }
 
 /// The i-address of an identity name, given its parent.
@@ -75,12 +117,11 @@ pub fn root_namespace(name: &str) -> Result<String, WasmError> {
 /// uses, exposed because an application usually needs to *address* an identity
 /// long before it registers one.
 #[wasm_bindgen(js_name = identityId)]
-pub fn identity_id(name: &str, parent: Option<String>) -> Result<String, WasmError> {
-    let parent = match parent.as_deref() {
-        None => None,
-        Some(text) => Some(dto::identity_id("parent", text)?),
-    };
-    Ok(dto::identity_address(verus_tx::identity_id(name, parent)))
+pub fn identity_id(name: JsText, parent: JsOptionalText) -> Result<String, WasmError> {
+    id_for(
+        &dto::text("name", name.as_ref())?,
+        dto::optional_text("parent", parent.as_ref())?.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -108,7 +149,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                vdxf_key(uri, "VRSCTEST", VRSCTEST).unwrap(),
+                key_for_uri(uri, "VRSCTEST", VRSCTEST).unwrap(),
                 expected,
                 "{uri}"
             );
@@ -119,11 +160,11 @@ mod tests {
     /// spelled the same way, or one of the two is lying about what it derives.
     #[test]
     fn the_explicit_form_agrees_with_the_uri_form() {
-        let namespace = root_namespace("vrsc").unwrap();
+        let namespace = root_id("vrsc").unwrap();
         assert_eq!(namespace, "i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV");
         assert_eq!(
-            vdxf_key_in("identity.profile", &namespace, "VRSCTEST").unwrap(),
-            vdxf_key("vrsc::identity.profile", "VRSCTEST", VRSCTEST).unwrap()
+            key_in("identity.profile", &namespace, "VRSCTEST").unwrap(),
+            key_for_uri("vrsc::identity.profile", "VRSCTEST", VRSCTEST).unwrap()
         );
     }
 
@@ -137,24 +178,24 @@ mod tests {
         // while the identity actually registered on the chain is a different
         // id entirely.
         assert_eq!(
-            root_namespace("rusttok1168500").unwrap(),
+            root_id("rusttok1168500").unwrap(),
             "iNE3BTd2SEo7UPQrsvDNikLNtfMkztxnSn"
         );
         assert_eq!(
-            identity_id("rusttok1168500", Some(VRSCTEST.into())).unwrap(),
+            id_for("rusttok1168500", Some(VRSCTEST)).unwrap(),
             "iKzX5FyzKzYxtcWKYveYKVfrz2LNXLj4xM"
         );
     }
 
     #[test]
     fn a_name_the_daemon_would_rewrite_is_refused() {
-        assert!(vdxf_key_in("a*b", VRSCTEST, "VRSCTEST").is_err());
-        assert!(root_namespace("a  b").is_err());
+        assert!(key_in("a*b", VRSCTEST, "VRSCTEST").is_err());
+        assert!(root_id("a  b").is_err());
     }
 
     #[test]
     fn a_root_identity_id_needs_no_parent() {
-        let root = identity_id("vrsc", None).unwrap();
-        assert_eq!(root, root_namespace("vrsc").unwrap());
+        let root = id_for("vrsc", None).unwrap();
+        assert_eq!(root, root_id("vrsc").unwrap());
     }
 }

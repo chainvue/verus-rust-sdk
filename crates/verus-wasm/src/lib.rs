@@ -54,9 +54,19 @@
 //!   spells them — a txid in display order, a script as raw hex.
 //! * **Errors are thrown `Error`s whose `.name` is the failure**, so
 //!   `catch (e) { if (e.name === "InsufficientFunds") … }` works. See [`error`].
+//!   Passing a `number` where a string belongs throws too, rather than
+//!   trapping the module — which a release `wasm-bindgen` build does not do on
+//!   its own.
 //! * **Unknown fields are refused**, so a mistyped optional field fails instead
 //!   of being ignored — and the optional fields here choose between materially
-//!   different transactions.
+//!   different transactions. This is enforced by rebuilding each request
+//!   object rather than by `serde`, which cannot see the difference; see
+//!   [`dto::from_js`] for what that costs and why the cheaper version was
+//!   unsound.
+//! * **Requests must be plain objects.** A class instance or an object with a
+//!   custom prototype is refused, and a polluted `Object.prototype` is refused
+//!   rather than silently read. Ordinary framework proxies — Vue's
+//!   `reactive()`, MobX — work unchanged.
 //!
 //! # Trust
 //!

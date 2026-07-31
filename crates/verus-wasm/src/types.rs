@@ -8,9 +8,12 @@
 //!
 //! Hand-written TypeScript beside Rust structs is a drift risk, and it is
 //! answered rather than accepted: `every_field_of_every_dto_is_declared`
-//! serializes each DTO and asserts every field name it produces appears in the
-//! file `types.d.ts`. Adding a field to a request struct fails that test until the
-//! declaration catches up.
+//! serializes each DTO and asserts every field it produces is declared **in
+//! that DTO's own interface**. The per-interface part is the whole strength of
+//! it — an earlier version searched the file as one string, and since field
+//! names repeat across interfaces (`satoshis` in `Utxo` and `Recipient`,
+//! `txid` in three of them) a required field could be deleted from the
+//! interface that needed it and every test stayed green.
 
 use wasm_bindgen::prelude::*;
 
@@ -46,15 +49,30 @@ extern "C" {
     /// TypeScript `DecodedOutput`.
     #[wasm_bindgen(typescript_type = "DecodedOutput")]
     pub type DecodedOutputValue;
+
+    /// A `string`, taken as a `JsValue` so a non-string can be *refused*
+    /// rather than trapping the module.
+    ///
+    /// `wasm-bindgen` types a `&str` parameter as `string` but only enforces
+    /// it in debug builds; in release it reads `.length` off whatever arrived.
+    /// Declaring the TypeScript type here keeps the published signature honest
+    /// while `dto::text` does the checking at runtime.
+    #[wasm_bindgen(typescript_type = "string")]
+    pub type JsText;
+
+    /// An optional `string`, checked the same way.
+    #[wasm_bindgen(typescript_type = "string | null | undefined")]
+    pub type JsOptionalText;
 }
 
 #[cfg(test)]
 mod tests {
     use super::TYPESCRIPT_SOURCE as TYPESCRIPT;
     use serde::Serialize;
+    use std::collections::BTreeSet;
 
     /// Every JSON field name a value serializes to.
-    fn field_names<T: Serialize>(value: &T) -> Vec<String> {
+    fn field_names<T: Serialize>(value: &T) -> BTreeSet<String> {
         let json = serde_json::to_value(value).expect("serializes");
         json.as_object()
             .expect("a DTO is an object")
@@ -63,20 +81,61 @@ mod tests {
             .collect()
     }
 
-    fn assert_declared<T: Serialize>(interface: &str, value: &T) {
-        for field in field_names(value) {
-            assert!(
-                TYPESCRIPT.contains(&format!("{field}:"))
-                    || TYPESCRIPT.contains(&format!("{field}?:")),
-                "{interface}.{field} is not declared in the TypeScript section; \
-                 the .d.ts a caller gets would not mention it"
-            );
+    /// The field names declared by one `export interface` block.
+    ///
+    /// A deliberately small parser: it finds the named block, then takes the
+    /// identifier before each `:` at the block's own brace depth. Anything
+    /// more would be a TypeScript parser, and anything less — searching the
+    /// whole file for `"name:"` — is what let a deleted field pass.
+    fn declared_by(interface: &str) -> BTreeSet<String> {
+        let header = format!("export interface {interface} {{");
+        let start = TYPESCRIPT
+            .find(&header)
+            .unwrap_or_else(|| panic!("types.d.ts declares no interface {interface}"))
+            + header.len();
+        let body = &TYPESCRIPT[start..];
+
+        let mut fields = BTreeSet::new();
+        let mut depth = 0i32;
+        for line in body.lines() {
+            let line = line.trim();
+            if line.starts_with('*') || line.starts_with("/*") || line.starts_with("//") {
+                continue;
+            }
+            if depth == 0 && line.starts_with('}') {
+                break;
+            }
+            if let Some((name, _)) = line.split_once(':') {
+                let name = name.trim().trim_end_matches('?');
+                if depth == 0
+                    && !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+                {
+                    fields.insert(name.to_string());
+                }
+            }
+            depth += i32::try_from(line.matches('{').count()).expect("short line");
+            depth -= i32::try_from(line.matches('}').count()).expect("short line");
         }
+        fields
     }
 
-    /// The drift check. A field added to a request or response struct fails
-    /// here until it is declared, so the published types cannot silently fall
-    /// behind the bindings.
+    fn assert_declared<T: Serialize>(interface: &str, value: &T) {
+        let produced = field_names(value);
+        let declared = declared_by(interface);
+        assert_eq!(
+            produced, declared,
+            "interface {interface} in types.d.ts does not match what the Rust type \
+             serializes; the .d.ts a caller gets would be wrong"
+        );
+    }
+
+    /// The drift check. A field added to, renamed in, or removed from a DTO
+    /// fails here until its interface catches up — and because it compares the
+    /// two *sets*, a field declared in TypeScript that no longer exists in
+    /// Rust fails too.
     #[test]
     fn every_field_of_every_dto_is_declared() {
         use crate::decode::{DecodedOutput, TokenAmount};
@@ -84,105 +143,25 @@ mod tests {
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
 
-        assert_declared(
-            "Utxo",
-            &JsUtxo {
-                txid: String::new(),
-                vout: 0,
-                satoshis: String::new(),
-                script_pubkey: String::new(),
-            },
-        );
-        assert_declared(
-            "Recipient",
-            &JsRecipient {
-                address: String::new(),
-                satoshis: String::new(),
-            },
-        );
-        assert_declared(
-            "TokenRecipient",
-            &JsTokenRecipient {
-                address: String::new(),
-                currency: String::new(),
-                amount: String::new(),
-            },
-        );
-        assert_declared(
-            "SendRequest",
-            &SendRequest {
-                utxos: Vec::new(),
-                recipients: Vec::new(),
-                change_address: String::new(),
-                expiry_height: None,
-                fee_per_kb: None,
-            },
-        );
-        assert_declared(
-            "TokenSendRequest",
-            &TokenSendRequest {
-                utxos: Vec::new(),
-                recipients: Vec::new(),
-                change_address: String::new(),
-                expiry_height: None,
-                fee_per_kb: None,
-            },
-        );
-        assert_declared(
-            "Outpoint",
-            &JsOutpoint {
-                txid: String::new(),
-                vout: 0,
-            },
-        );
-        assert_declared(
-            "SignedTransaction",
-            &JsSignedTransaction {
-                hex: String::new(),
-                txid: String::new(),
-                fee: String::new(),
-                change: String::new(),
-                inputs_used: Vec::new(),
-            },
-        );
-        assert_declared(
-            "SignRequest",
-            &SignRequest {
-                identity: String::new(),
-                system_id: String::new(),
-                block_height: 0,
-                message: String::new(),
-                existing: None,
-            },
-        );
-        assert_declared(
-            "VerifyRequest",
-            &VerifyRequest {
-                identity: String::new(),
-                system_id: String::new(),
-                message: String::new(),
-                signature: String::new(),
-                primary_addresses: Vec::new(),
-                minimum_signatures: 0,
-            },
-        );
+        assert_declared("Utxo", &JsUtxo::default());
+        assert_declared("Recipient", &JsRecipient::default());
+        assert_declared("TokenRecipient", &JsTokenRecipient::default());
+        assert_declared("SendRequest", &SendRequest::default());
+        assert_declared("TokenSendRequest", &TokenSendRequest::default());
+        assert_declared("Outpoint", &JsOutpoint::default());
+        assert_declared("SignedTransaction", &JsSignedTransaction::default());
+        assert_declared("SignRequest", &SignRequest::default());
+        assert_declared("VerifyRequest", &VerifyRequest::default());
+        // Every optional field populated, so `skip_serializing_if` cannot hide
+        // one from the check.
         assert_declared(
             "VerifyResult",
             &VerifyResult {
-                valid: false,
-                block_height: 0,
-                signers: Vec::new(),
+                reason: Some(String::new()),
+                ..VerifyResult::default()
             },
         );
-        assert_declared(
-            "TokenAmount",
-            &TokenAmount {
-                currency: String::new(),
-                amount: String::new(),
-            },
-        );
-        // Every optional field populated, so `skip_serializing_if` cannot hide
-        // one from the check.
+        assert_declared("TokenAmount", &TokenAmount::default());
         assert_declared(
             "DecodedOutput",
             &DecodedOutput {
@@ -197,43 +176,56 @@ mod tests {
         );
     }
 
-    /// The other drift risk: the runtime field lists that make unknown-key
-    /// rejection work (see `dto::from_js`). A field added to a request type
-    /// but missing from its `FIELDS` would be refused as unknown the first
-    /// time a caller passed it; a stale entry left behind would let a typo
-    /// through. Both are caught by comparing against what the type serializes.
+    /// The runtime shapes that make unknown-key rejection work (see
+    /// `dto::from_js`). A field added to a request type but missing from its
+    /// `SHAPE` would be refused as unknown the first time a caller passed it;
+    /// a stale entry left behind would let a typo through. Both are caught by
+    /// comparing against what the type serializes — including the nested
+    /// shapes, which is where the guarantee used to rest on prose alone.
     #[test]
-    fn every_request_types_field_list_matches_the_type() {
+    fn every_shape_matches_the_type_it_guards() {
+        use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::login::{SignRequest, VerifyRequest};
-        use crate::send::{SendRequest, TokenSendRequest};
+        use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
 
-        fn check<T: Serialize + Default>(name: &str, declared: &[&str]) {
-            let mut actual = field_names(&T::default());
-            let mut declared: Vec<String> = declared.iter().map(|s| (*s).to_string()).collect();
-            actual.sort();
-            declared.sort();
+        fn check<T: Serialize + Default>(name: &str, shape: &Shape) {
+            let declared: BTreeSet<String> = shape
+                .fields
+                .iter()
+                .map(|(field, _)| (*field).to_string())
+                .collect();
             assert_eq!(
-                declared, actual,
-                "{name}::FIELDS does not match what {name} serializes"
+                declared,
+                field_names(&T::default()),
+                "{name}::SHAPE does not match what {name} serializes"
             );
         }
 
-        check::<SendRequest>("SendRequest", SendRequest::FIELDS);
-        check::<TokenSendRequest>("TokenSendRequest", TokenSendRequest::FIELDS);
-        check::<SignRequest>("SignRequest", SignRequest::FIELDS);
-        check::<VerifyRequest>("VerifyRequest", VerifyRequest::FIELDS);
+        check::<SendRequest>("SendRequest", &SendRequest::SHAPE);
+        check::<TokenSendRequest>("TokenSendRequest", &TokenSendRequest::SHAPE);
+        check::<SignRequest>("SignRequest", &SignRequest::SHAPE);
+        check::<VerifyRequest>("VerifyRequest", &VerifyRequest::SHAPE);
+        check::<JsUtxo>("JsUtxo", &JsUtxo::SHAPE);
+        check::<JsRecipient>("JsRecipient", &JsRecipient::SHAPE);
+        check::<JsTokenRecipient>("JsTokenRecipient", &JsTokenRecipient::SHAPE);
     }
 
-    /// And the check must be able to fail, or it proves nothing.
+    /// Both checks must be able to fail, or they prove nothing. The
+    /// per-interface parse is the part worth demonstrating: the previous
+    /// whole-file substring search passed the first of these.
     #[test]
-    fn the_drift_check_can_detect_an_undeclared_field() {
-        #[derive(Serialize)]
-        struct Undeclared {
-            #[serde(rename = "aFieldNobodyDeclared")]
-            field: u32,
-        }
-        let names = field_names(&Undeclared { field: 0 });
-        assert_eq!(names, vec!["aFieldNobodyDeclared"]);
-        assert!(!TYPESCRIPT.contains("aFieldNobodyDeclared:"));
+    fn the_drift_checks_can_detect_drift() {
+        // `satoshis` IS in the file — in `Utxo` and in `Recipient` — so a
+        // whole-file search would find it. Asking `Outpoint` for it must not.
+        assert!(!declared_by("Outpoint").contains("satoshis"));
+        assert_eq!(
+            declared_by("Outpoint"),
+            ["txid", "vout"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<BTreeSet<_>>()
+        );
+        // A nested object inside an interface must not leak its keys upward.
+        assert!(!declared_by("DecodedOutput").contains("currency"));
     }
 }

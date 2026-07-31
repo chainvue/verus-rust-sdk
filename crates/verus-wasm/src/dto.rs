@@ -26,9 +26,25 @@ use wasm_bindgen::JsValue;
 
 use crate::error::{WasmError, WasmResult};
 
-/// Read a request object, refusing any field the type does not declare.
+/// The keys an object may carry, and the shape of any object-valued ones.
 ///
-/// # Why this is not `deny_unknown_fields`
+/// A field's `Some(shape)` describes either a nested object or the elements of
+/// a nested array; `None` means the value is a leaf (a string, a number, or an
+/// array of them) that this module does not look inside.
+pub struct Shape {
+    /// `(key, shape of its value)`, in declaration order.
+    pub fields: &'static [(&'static str, Option<&'static Shape>)],
+}
+
+impl Shape {
+    fn names(&self) -> Vec<&'static str> {
+        self.fields.iter().map(|(name, _)| *name).collect()
+    }
+}
+
+/// Read a request object, refusing anything the type does not declare.
+///
+/// # Why `deny_unknown_fields` is not enough, and why checking keys was not either
 ///
 /// The request types carry `#[serde(deny_unknown_fields)]`, and against
 /// `serde_json` it does what it says. Against `serde-wasm-bindgen` it does
@@ -38,34 +54,182 @@ use crate::error::{WasmError, WasmResult};
 ///
 /// That mattered. `expiryHieght: tip + 20` — one transposition — deserialized
 /// as a request with no expiry at all, and produced a perfectly valid,
-/// perfectly signed transaction that can be mined at any height for the rest
-/// of the chain's life. Every field this could happen to is optional by
-/// definition (a mistyped *required* field is caught as a missing one), and
-/// the optional fields are exactly the ones that choose between materially
-/// different transactions: whether it expires, and what it pays the miner.
+/// perfectly signed transaction minable for the rest of the chain's life.
 ///
-/// So the keys are enumerated and checked here, before deserializing. `fields`
-/// is the type's own field list; [`crate::types`]-style tests pin each one
-/// against what the type actually serializes, so it cannot drift.
-pub fn from_js<T: DeserializeOwned>(value: JsValue, fields: &[&str]) -> WasmResult<T> {
-    // A non-object is left to serde, which reports the type mismatch better
-    // than a key enumeration could — and `Object::keys` on `null` throws.
-    if value.is_object() {
-        use wasm_bindgen::JsCast;
-        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {
-            let name = key.as_string().unwrap_or_default();
-            if !fields.contains(&name.as_str()) {
-                return Err(WasmError::new(
-                    "UnknownField",
-                    format!(
-                        "unknown field {name:?}; expected one of {}",
-                        fields.join(", ")
-                    ),
-                ));
-            }
+/// The first fix enumerated the object's own enumerable keys and rejected the
+/// unknown ones. That was still unsound, because it asked a **different
+/// question** than the deserializer: `Object.keys` sees own enumerable string
+/// keys, while `Reflect.get` walks the prototype chain and ignores
+/// enumerability. Every gap between the two was reachable — an inherited
+/// property, a non-enumerable one, a class getter, or a `Proxy` whose
+/// `ownKeys` trap lies — and each one restored the original bug. Worse in the
+/// other direction: `Object.prototype.expiryHeight = …` set the expiry of
+/// transactions built from an ordinary object literal, invisibly, because the
+/// checker never looked where the reader read.
+///
+/// So this does not check the caller's object. It **rebuilds** it: the
+/// prototype must be `Object.prototype` or `null`, every own key (including
+/// symbols and non-enumerable ones, via `Reflect.ownKeys`) must be declared,
+/// and the declared keys are copied by value into a fresh prototype-less
+/// object which is what serde then reads. The reader and the checker cannot
+/// disagree, because they are looking at the same object, and it has nothing
+/// on it that was not checked.
+///
+/// Nested objects and arrays of objects get the same treatment, so a stray key
+/// inside a UTXO or a recipient is refused too — that one was not merely
+/// cosmetic either: `recipients: [{address, satoshis, currency}]` passed to a
+/// **native** send silently dropped `currency` and moved native coins.
+pub fn from_js<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<T> {
+    let checked = sanitize(value, shape, "")?;
+    serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
+}
+
+/// A fresh, prototype-less copy of `value` carrying only `shape`'s fields.
+///
+/// `path` names the position for an error message — `""` at the top level,
+/// then `utxos[1].` and so on.
+fn sanitize(value: JsValue, shape: &Shape, path: &str) -> WasmResult<JsValue> {
+    use wasm_bindgen::JsCast;
+
+    // A non-object is left to serde, which reports the type mismatch far better
+    // than a key walk could. `null` and `undefined` land here too.
+    if !value.is_object() {
+        return Ok(value);
+    }
+    let object: &js_sys::Object = value.unchecked_ref();
+
+    if js_sys::Array::is_array(&value) {
+        let array = js_sys::Array::from(&value);
+        let copy = js_sys::Array::new_with_length(array.length());
+        for (index, element) in array.iter().enumerate() {
+            let nested_path = format!("{path}[{index}].");
+            copy.set(
+                u32::try_from(index).map_err(|_| {
+                    WasmError::new("InvalidArgument", format!("{path} has too many entries"))
+                })?,
+                sanitize(element, shape, &nested_path)?,
+            );
+        }
+        return Ok(copy.into());
+    }
+
+    // A class instance, or anything else with its own prototype, is refused
+    // rather than silently stripped: its accessors live on that prototype, and
+    // copying own properties only would drop them without a word.
+    let prototype = js_sys::Object::get_prototype_of(&value);
+    let plain = js_sys::Object::get_prototype_of(&js_sys::Object::new().into());
+    if prototype != plain && !prototype.is_null() {
+        return Err(WasmError::new(
+            "InvalidArgument",
+            format!(
+                "{}expected a plain object; a class instance or an object with a \
+                 custom prototype cannot be read safely, because its fields may \
+                 live on the prototype where they would be silently ignored",
+                if path.is_empty() { "" } else { path }
+            ),
+        ));
+    }
+
+    let declared = shape.names();
+    // `Object.create(null)` — nothing inherited can reach the deserializer.
+    let copy: js_sys::Object = js_sys::Object::create(JsValue::NULL.unchecked_ref());
+
+    for key in js_sys::Reflect::own_keys(&value)
+        .map_err(|_| WasmError::new("InvalidArgument", "the request object cannot be read"))?
+        .iter()
+    {
+        let Some(name) = key.as_string() else {
+            return Err(WasmError::new(
+                "UnknownField",
+                format!("{path}a symbol key is not a field of this request"),
+            ));
+        };
+        let Some((_, nested)) = shape.fields.iter().find(|(field, _)| *field == name) else {
+            return Err(WasmError::new(
+                "UnknownField",
+                format!(
+                    "unknown field {:?}; expected one of {}",
+                    format!("{path}{name}"),
+                    declared.join(", ")
+                ),
+            ));
+        };
+        let held = js_sys::Reflect::get(object, &key).map_err(|_| {
+            WasmError::new("InvalidArgument", format!("{path}{name} cannot be read"))
+        })?;
+        let held = match nested {
+            None => held,
+            Some(nested) => sanitize(held, nested, &format!("{path}{name}"))?,
+        };
+        js_sys::Reflect::set(&copy, &key, &held).map_err(|_| {
+            WasmError::new("InvalidArgument", format!("{path}{name} cannot be copied"))
+        })?;
+    }
+
+    // The copy is built from own keys, but the deserializer *would* have read
+    // through `Reflect.get`. Anything a declared field can still be reached by
+    // that this copy did not pick up is a disagreement between the two views,
+    // and it is refused rather than resolved. Two ways to get here, and
+    // refusing is right for both:
+    //
+    //   * a `Proxy` whose `ownKeys` hides a field its `get` still returns —
+    //     the field would be silently dropped;
+    //   * `Object.prototype.expiryHeight = …`, where a field nobody wrote
+    //     would otherwise be silently ignored. Loud is better: a page whose
+    //     prototypes are polluted is a page whose transactions should stop,
+    //     not one that should quietly build a different transaction.
+    for (field, _) in shape.fields {
+        if js_sys::Reflect::has(&copy, &JsValue::from_str(field)).unwrap_or(false) {
+            continue;
+        }
+        let reachable =
+            js_sys::Reflect::get(object, &JsValue::from_str(field)).unwrap_or(JsValue::UNDEFINED);
+        if !reachable.is_undefined() {
+            return Err(WasmError::new(
+                "InvalidArgument",
+                format!(
+                    "{path}{field} is reachable on this object but is not one of its own \
+                     properties — it comes from a prototype or a proxy, and reading it \
+                     would mean building a transaction from a value the caller did not set"
+                ),
+            ));
         }
     }
-    serde_wasm_bindgen::from_value(value).map_err(WasmError::from)
+    Ok(copy.into())
+}
+
+/// Read a `string` argument, refusing anything that is not one.
+///
+/// `wasm-bindgen` types a `&str` parameter as `string`, and in a **debug**
+/// build it emits a `typeof` guard to back that up. A release build — the one
+/// CI runs and the one that ships — has no guard: it reads `.length` off
+/// whatever arrived and writes that many bytes, so `parseCoins(1.1)` traps the
+/// module with `RuntimeError: memory access out of bounds`. That is the single
+/// most likely mistake a JavaScript caller makes against this API, since
+/// `parseCoins` exists precisely to stop people using numbers for money, and
+/// it contradicts the crate's promise that failures are `Error`s naming their
+/// cause. So every string parameter arrives as a `JsValue` and comes through
+/// here.
+pub fn text(field: &str, value: &JsValue) -> WasmResult<String> {
+    value.as_string().ok_or_else(|| {
+        WasmError::new(
+            "InvalidArgument",
+            format!(
+                "{field} must be a string. Amounts are decimal strings rather than \
+                 numbers — a float64 cannot hold every satoshi value — so pass \
+                 `String(n)` or a bigint's `.toString()`."
+            ),
+        )
+    })
+}
+
+/// Read an optional `string` argument: absent, `null` or `undefined` give
+/// `None`, and anything that is not a string is refused.
+pub fn optional_text(field: &str, value: &JsValue) -> WasmResult<Option<String>> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    text(field, value).map(Some)
 }
 
 /// Read a decimal integer number of satoshis.
@@ -155,7 +319,7 @@ pub fn identity_address(id: [u8; 20]) -> String {
 /// the reverse of the bytes in the transaction. Getting this backwards produces
 /// a transaction that spends nothing and is rejected, so the field is named for
 /// what a caller sees rather than for what goes on the wire.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JsUtxo {
     /// The transaction that created it, in display order.
@@ -176,6 +340,16 @@ pub struct JsUtxo {
 }
 
 impl JsUtxo {
+    /// The keys a UTXO object may carry.
+    pub const SHAPE: Shape = Shape {
+        fields: &[
+            ("txid", None),
+            ("vout", None),
+            ("satoshis", None),
+            ("scriptPubKey", None),
+        ],
+    };
+
     /// Convert to the SDK's own type.
     pub fn to_utxo(&self) -> WasmResult<Utxo> {
         Ok(Utxo {
@@ -200,7 +374,7 @@ pub fn utxos(list: &[JsUtxo]) -> WasmResult<Vec<Utxo>> {
 }
 
 /// Where value is going.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JsRecipient {
     /// The address being paid.
@@ -209,15 +383,44 @@ pub struct JsRecipient {
     pub satoshis: String,
 }
 
+impl JsRecipient {
+    /// The keys a recipient object may carry.
+    ///
+    /// Small, and worth stating why it is checked at all: `currency` belongs
+    /// to a *token* recipient, and a caller who reaches for `send` when they
+    /// meant `sendToken` writes exactly this object. Dropping the stray key
+    /// silently moved native coins instead.
+    pub const SHAPE: Shape = Shape {
+        fields: &[("address", None), ("satoshis", None)],
+    };
+}
+
 /// When a transaction stops being minable.
 ///
 /// `null` means never, and has to be written: an expiring transaction that
-/// falls out of the mempool is recoverable, while `Never` is a transaction that
-/// can be mined at any height for the rest of the chain's life. The SDK makes
-/// the same distinction non-defaultable for the same reason.
+/// falls out of the mempool is recoverable, while `Never` is a transaction
+/// that can be mined at any height for the rest of the chain's life. The SDK
+/// makes the same distinction non-defaultable for the same reason.
+///
+/// `0` is **refused** rather than read as never. On the wire zero *is* how
+/// never is spelled, and [`Expiry::from_height`] decodes it that way — but on
+/// this boundary zero is overwhelmingly likely to be an accident rather than a
+/// decision: an uninitialised counter, `Number(undefined) || 0`, or a
+/// `getblockcount` that failed and returned nothing. Accepting it would give
+/// the crate two spellings for never, one of them documented and one of them
+/// the single most probable wrong value, which is exactly the shape of the
+/// mistyped-field bug this module exists to stop.
 pub fn expiry(height: Option<u32>) -> WasmResult<Expiry> {
     let expiry = match height {
         None => Expiry::Never,
+        Some(0) => {
+            return Err(WasmError::new(
+                "InvalidExpiry",
+                "expiryHeight 0 is not a height. Omit the field (or pass null) for a \
+                 transaction that never expires — that has to be written, because it \
+                 can be mined at any height for the rest of the chain's life.",
+            ))
+        }
         Some(height) => Expiry::from_height(height),
     };
     expiry.check()?;
@@ -229,7 +432,7 @@ pub fn expiry(height: Option<u32>) -> WasmResult<Expiry> {
 /// `fee` and `change` are reported rather than left implicit because they are
 /// the two numbers a caller cannot recover from the hex without also holding
 /// every prevout — and the fee is the one an accidental unit slip destroys.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsSignedTransaction {
     /// The raw transaction, hex — what `sendrawtransaction` takes.
@@ -245,7 +448,7 @@ pub struct JsSignedTransaction {
 }
 
 /// One outpoint: which output of which transaction.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JsOutpoint {
     /// The transaction, in display order.

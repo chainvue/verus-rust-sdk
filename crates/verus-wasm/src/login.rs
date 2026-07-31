@@ -15,9 +15,22 @@
 //! argument rather than pretending it can look one up: this crate has no node,
 //! and inventing a default here would be inventing the wrong one.
 //!
-//! A verifier that skips the height, or accepts a signature whose height it
-//! did not choose, accepts a signature made by a key the identity's owner may
-//! have rotated away precisely because it was stolen.
+//! **That is only half the rule, and the missing half is the dangerous one.**
+//! The height is chosen by whoever signs. A verifier that dutifully resolves
+//! the identity *at the signature's height* and stops there has built an
+//! authentication bypass: someone holding a key that was rotated out — stolen,
+//! which is usually why it was rotated — signs today's challenge and stamps it
+//! with an old height. The lookup finds that key in the primary set at that
+//! height, the threshold is met, and the answer is yes. Rotation never takes
+//! effect against an attacker who gets to pick when they are.
+//!
+//! So the height must also be **bounded against the verifier's own tip**, and
+//! [`VerifyRequest`] makes that non-optional: `currentHeight` and
+//! `maxAgeBlocks` are required fields, checked before any signature is
+//! recovered. A signature from the future is refused; one older than the
+//! window is refused. Choose the window from how long a login should stay
+//! signable — minutes, not months — and note that it is also the window in
+//! which a stolen key remains usable after rotation.
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -27,10 +40,10 @@ use verus_tx::signature::{
     add_signature, recover_signers, sign_message, verify_message as verify, IdentitySignature,
 };
 
-use crate::dto;
+use crate::dto::{self, Shape};
 use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
-use crate::types::{SignRequestValue, VerifyRequestValue, VerifyResultValue};
+use crate::types::{JsText, SignRequestValue, VerifyRequestValue, VerifyResultValue};
 
 /// What to sign.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -53,8 +66,15 @@ pub struct SignRequest {
 
 impl SignRequest {
     /// The keys a `SignRequest` object may carry.
-    pub(crate) const FIELDS: &'static [&'static str] =
-        &["identity", "systemId", "blockHeight", "message", "existing"];
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("systemId", None),
+            ("blockHeight", None),
+            ("message", None),
+            ("existing", None),
+        ],
+    };
 }
 
 /// What to check.
@@ -73,22 +93,38 @@ pub struct VerifyRequest {
     pub primary_addresses: Vec<String>,
     /// The identity's `minimumsignatures` at that same height.
     pub minimum_signatures: u32,
+    /// The verifier's current chain tip.
+    ///
+    /// Required, because without it the signer chooses the height at which
+    /// they are authenticated — see the module docs.
+    pub current_height: u32,
+    /// How far back of `currentHeight` a signature may be stamped.
+    ///
+    /// Required and not defaulted: the right window is a policy decision about
+    /// how long a login stays signable, and it is also how long a rotated-out
+    /// key keeps working. There is no value this crate could pick for you that
+    /// would be right for both.
+    pub max_age_blocks: u32,
 }
 
 impl VerifyRequest {
     /// The keys a `VerifyRequest` object may carry.
-    pub(crate) const FIELDS: &'static [&'static str] = &[
-        "identity",
-        "systemId",
-        "message",
-        "signature",
-        "primaryAddresses",
-        "minimumSignatures",
-    ];
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("systemId", None),
+            ("message", None),
+            ("signature", None),
+            ("primaryAddresses", None),
+            ("minimumSignatures", None),
+            ("currentHeight", None),
+            ("maxAgeBlocks", None),
+        ],
+    };
 }
 
 /// The outcome of a verification.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyResult {
     /// Whether enough of the identity's own keys signed.
@@ -100,6 +136,15 @@ pub struct VerifyResult {
     /// Includes any that are **not** the identity's: a signature part by a
     /// stranger is not an error, it simply counts for nothing.
     pub signers: Vec<String>,
+    /// Why `valid` is false, when it is.
+    ///
+    /// `"stale"` — older than `maxAgeBlocks`; `"future"` — stamped ahead of
+    /// `currentHeight`; `"threshold"` — not enough of the identity's own keys
+    /// signed. Absent when `valid` is true. Reported rather than collapsed
+    /// into a bare `false` because a verifier that starts refusing every login
+    /// needs to know whether its clock, its node or its users changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Sign, or add to an existing signature. Host-testable core.
@@ -152,6 +197,25 @@ pub(crate) fn check_signature(request: &VerifyRequest) -> WasmResult<VerifyResul
         })
         .collect::<WasmResult<Vec<_>>>()?;
     let signers = recover_signers(&signature, system, identity, message)?;
+    let signer_names: Vec<String> = signers.iter().map(ToString::to_string).collect();
+
+    // The height window is checked BEFORE the threshold, and reported as its
+    // own reason, so a verifier cannot read "not enough signatures" when what
+    // actually happened is "this signature is from six months ago".
+    let height = signature.block_height;
+    let refuse = |reason: &str| VerifyResult {
+        valid: false,
+        block_height: height,
+        signers: signer_names.clone(),
+        reason: Some(reason.to_string()),
+    };
+    if height > request.current_height {
+        return Ok(refuse("future"));
+    }
+    if request.current_height - height > request.max_age_blocks {
+        return Ok(refuse("stale"));
+    }
+
     let valid = verify(
         &signature,
         system,
@@ -162,28 +226,41 @@ pub(crate) fn check_signature(request: &VerifyRequest) -> WasmResult<VerifyResul
     )?;
     Ok(VerifyResult {
         valid,
-        block_height: signature.block_height,
-        signers: signers.iter().map(ToString::to_string).collect(),
+        block_height: height,
+        signers: signer_names,
+        reason: (!valid).then(|| "threshold".to_string()),
     })
 }
 
 /// Verify a message signature against an identity's keys.
 ///
+/// Two obligations, both enforced rather than advised.
+///
 /// `primaryAddresses` and `minimumSignatures` must be the identity's values
-/// **at `blockHeight` of the signature**, not today's — see the module docs.
-/// The returned object reports that height so a caller can fetch the right
-/// ones and check again.
+/// **at the signature's height**, not today's — read the height first with
+/// [`signature_block_height`], then ask `getidentity` for that height. And
+/// `currentHeight`/`maxAgeBlocks` must bound that height against your own tip,
+/// because otherwise the signer chooses when they are authenticated and a
+/// rotated-out key still works. See the module docs.
 ///
 /// ```js
+/// const height = signatureBlockHeight(signature);
+/// const tip    = await rpc("getblockcount", []);
+/// const id     = await rpc("getidentity", [identity, height]);
+///
 /// const claim = verifyMessage({
 ///   identity, systemId, message, signature,
-///   primaryAddresses, minimumSignatures,
+///   primaryAddresses:  id.identity.primaryaddresses,
+///   minimumSignatures: id.identity.minimumsignatures,
+///   currentHeight:     tip,
+///   maxAgeBlocks:      60,          // ~1 hour on Verus
 /// });
 /// if (claim.valid) startSession(identity);
+/// else console.warn("rejected:", claim.reason);   // "stale" | "future" | "threshold"
 /// ```
 #[wasm_bindgen(js_name = verifyMessage)]
 pub fn verify_message(request: VerifyRequestValue) -> Result<VerifyResultValue, WasmError> {
-    let request: VerifyRequest = dto::from_js(request.into(), VerifyRequest::FIELDS)?;
+    let request: VerifyRequest = dto::from_js(request.into(), &VerifyRequest::SHAPE)?;
     Ok(crate::to_js(&check_signature(&request)?)?.unchecked_into())
 }
 
@@ -192,7 +269,12 @@ pub fn verify_message(request: VerifyRequestValue) -> Result<VerifyResultValue, 
 /// A verifier needs this before it can ask a node for the right key set, and
 /// it is the one field readable from the signature alone.
 #[wasm_bindgen(js_name = signatureBlockHeight)]
-pub fn signature_block_height(signature: &str) -> Result<u32, WasmError> {
+pub fn signature_block_height(signature: JsText) -> Result<u32, WasmError> {
+    read_block_height(&dto::text("signature", signature.as_ref())?)
+}
+
+/// Host-testable core of [`signature_block_height`].
+pub(crate) fn read_block_height(signature: &str) -> WasmResult<u32> {
     Ok(IdentitySignature::from_base64(signature)
         .map_err(WasmError::from)?
         .block_height)
@@ -217,7 +299,7 @@ impl Key {
     /// ```
     #[wasm_bindgen(js_name = signMessage)]
     pub fn sign_message(&self, request: SignRequestValue) -> Result<String, WasmError> {
-        let request: SignRequest = dto::from_js(request.into(), SignRequest::FIELDS)?;
+        let request: SignRequest = dto::from_js(request.into(), &SignRequest::SHAPE)?;
         build_signature(self.private(), &request)
     }
 }
@@ -237,11 +319,15 @@ mod tests {
         SignRequest {
             identity: IDENTITY.into(),
             system_id: VRSCTEST.into(),
-            block_height: 1_169_587,
+            block_height: SIGNED_AT,
             message: "log me in".into(),
             existing: None,
         }
     }
+
+    /// The height every fixture signs at, and a tip a few blocks past it.
+    const SIGNED_AT: u32 = 1_169_587;
+    const TIP: u32 = SIGNED_AT + 5;
 
     fn verify_request(signature: String, addresses: Vec<String>, minimum: u32) -> VerifyRequest {
         VerifyRequest {
@@ -251,6 +337,8 @@ mod tests {
             signature,
             primary_addresses: addresses,
             minimum_signatures: minimum,
+            current_height: TIP,
+            max_age_blocks: 60,
         }
     }
 
@@ -265,7 +353,7 @@ mod tests {
         ))
         .unwrap();
         assert!(result.valid);
-        assert_eq!(result.block_height, 1_169_587);
+        assert_eq!(result.block_height, SIGNED_AT);
         assert_eq!(result.signers, vec![signer.address().to_string()]);
     }
 
@@ -341,7 +429,7 @@ mod tests {
         let one = build_signature(&key(0x11), &sign_request()).unwrap();
         let mut later = sign_request();
         later.existing = Some(one);
-        later.block_height = 1_169_600;
+        later.block_height = SIGNED_AT + 13;
         let error = build_signature(&key(0x22), &later).expect_err("heights must match");
         assert_eq!(error.code(), "BlockHeightMismatch", "{error}");
     }
@@ -351,7 +439,7 @@ mod tests {
     #[test]
     fn the_height_is_readable_from_the_signature_alone() {
         let signature = build_signature(&key(0x11), &sign_request()).unwrap();
-        assert_eq!(signature_block_height(&signature).unwrap(), 1_169_587);
+        assert_eq!(read_block_height(&signature).unwrap(), SIGNED_AT);
     }
 
     /// An identity requiring zero signatures would accept anything; the SDK
@@ -360,6 +448,92 @@ mod tests {
     fn a_threshold_of_zero_is_refused() {
         let signature = build_signature(&key(0x11), &sign_request()).unwrap();
         assert!(check_signature(&verify_request(signature, vec![], 0)).is_err());
+    }
+
+    /// **The finding this window exists for.** The signer picks the height. A
+    /// verifier that resolves the identity at whatever height it was handed,
+    /// and stops, authenticates a key its owner rotated away — the attacker
+    /// simply stamps an old height. The key set at that height still contains
+    /// the stolen key, so the threshold is met and the answer is yes.
+    ///
+    /// Note what is asserted: the signature is *cryptographically fine* and
+    /// the threshold *is* met. Only the age refuses it.
+    #[test]
+    fn a_signature_stamped_before_the_window_is_refused() {
+        let stolen = key(0x11);
+        let mut old = sign_request();
+        old.block_height = TIP - 5_000;
+        let signature = build_signature(&stolen, &old).unwrap();
+
+        // Resolved the way a careful verifier would: the identity's keys AT
+        // the signature's height, where the rotated-out key is still present.
+        let mut request = verify_request(signature, vec![stolen.address().to_string()], 1);
+        request.max_age_blocks = 60;
+        let result = check_signature(&request).unwrap();
+        assert!(
+            !result.valid,
+            "a signature 5000 blocks old must not log anyone in"
+        );
+        assert_eq!(result.reason.as_deref(), Some("stale"));
+        assert_eq!(
+            result.signers,
+            vec![stolen.address().to_string()],
+            "the signature itself is sound; it is the age that refuses it"
+        );
+
+        // And the window is a real dial, not decoration.
+        request.max_age_blocks = 10_000;
+        assert!(check_signature(&request).unwrap().valid);
+    }
+
+    /// A height beyond the verifier's own tip cannot be honest.
+    #[test]
+    fn a_signature_stamped_in_the_future_is_refused() {
+        let signer = key(0x11);
+        let mut ahead = sign_request();
+        ahead.block_height = TIP + 1;
+        let signature = build_signature(&signer, &ahead).unwrap();
+        let result = check_signature(&verify_request(
+            signature,
+            vec![signer.address().to_string()],
+            1,
+        ))
+        .unwrap();
+        assert!(!result.valid);
+        assert_eq!(result.reason.as_deref(), Some("future"));
+    }
+
+    /// The three refusals must be distinguishable — a verifier that starts
+    /// rejecting everything needs to know whether its node, its clock or its
+    /// users changed.
+    #[test]
+    fn a_refusal_says_which_of_the_three_it_is() {
+        let signer = key(0x11);
+        let signature = build_signature(&signer, &sign_request()).unwrap();
+        let stranger = check_signature(&verify_request(
+            signature,
+            vec![key(0x77).address().to_string()],
+            1,
+        ))
+        .unwrap();
+        assert!(!stranger.valid);
+        assert_eq!(stranger.reason.as_deref(), Some("threshold"));
+    }
+
+    /// A pass must carry no reason, or a caller checking `reason` for
+    /// trouble would find some on every successful login.
+    #[test]
+    fn a_valid_signature_carries_no_reason() {
+        let signer = key(0x11);
+        let signature = build_signature(&signer, &sign_request()).unwrap();
+        let result = check_signature(&verify_request(
+            signature,
+            vec![signer.address().to_string()],
+            1,
+        ))
+        .unwrap();
+        assert!(result.valid);
+        assert_eq!(result.reason, None);
     }
 
     #[test]
