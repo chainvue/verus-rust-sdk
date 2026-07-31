@@ -12,7 +12,7 @@ curl -s -X POST https://api.verustest.net -H 'content-type: application/json' \
   > fixtures/rpc/getcurrency_vrsctest.json
 ```
 
-Two things must survive any regeneration, or the tests they support stop
+Three things must survive any regeneration, or the tests they support stop
 meaning anything:
 
 - **`getcurrency_vrsctest.json` must keep `"idregistrationfees":100.0`
@@ -20,6 +20,12 @@ meaning anything:
   the builders take satoshis. That token is the whole reason `json.rs` exists;
   if a regeneration rewrites it to `100` or `10000000000`, the exactness test
   passes for the wrong reason.
+- **`getoffers_mainnet_vrsc.json` must keep an offer side with more than one
+  currency and a `1e-8` amount.** Both shapes are absent from VRSCTEST
+  entirely, so a reader that assumes one currency per side, or refuses
+  exponent form, passes every testnet fixture and fails on the chain with the
+  volume. Both files are trimmed by hand to a few representative entries; the
+  full replies are 96 KB and 671 KB.
 - **The `err_*.json` files must keep their exact shape** — in particular that an
   error reply carries **no `result` key at all**, rather than `result: null`.
   That is what breaks the obvious `struct { result: T, error: Option<E> }`.
@@ -37,6 +43,8 @@ meaning anything:
 | `err_baddecode.json` | `-22`, `sendrawtransaction` refusing bad hex |
 | `err_methodmissing.json` | `-32601` — "refused", which is not the same as "absent"; see below |
 | `getaddressbalance.json` | the same balance in satoshis *and* in coins, in one reply |
+| `getoffers_vrsctest.json` | the three bucket shapes, an identity on **either** side, and `tx` alongside `txid` |
+| `getoffers_mainnet_vrsc.json` | an offer side naming several currencies, with a `1e-8` leg — shapes VRSCTEST has none of |
 | `getaddressdeltas.json` | signed movements — a spend row, a token leg with `satoshis` of zero, and the settled swap's economics |
 
 ## `-32601` is not proof a method is missing

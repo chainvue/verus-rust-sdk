@@ -73,5 +73,5 @@ pub use transport::HttpTransport;
 pub use transport::{RequestBody, Transport};
 pub use types::{
     spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate,
-    CurrencyPolicy, IdentityRecord, SignedAmount, COINBASE_MATURITY,
+    CurrencyPolicy, IdentityRecord, OfferListing, OfferSide, SignedAmount, COINBASE_MATURITY,
 };

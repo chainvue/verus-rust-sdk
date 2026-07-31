@@ -31,6 +31,7 @@ pub(crate) enum Method {
     GetIdentity,
     GetIdentityHistory,
     GetVdxfId,
+    GetOffers,
     VerifyMessage,
     // Transactions
     GetRawTransaction,
@@ -58,6 +59,7 @@ impl Method {
             Method::GetIdentity => "getidentity",
             Method::GetIdentityHistory => "getidentityhistory",
             Method::GetVdxfId => "getvdxfid",
+            Method::GetOffers => "getoffers",
             Method::VerifyMessage => "verifymessage",
             Method::GetRawTransaction => "getrawtransaction",
             Method::DecodeRawTransaction => "decoderawtransaction",
@@ -89,6 +91,7 @@ impl Method {
         Method::GetIdentity,
         Method::GetIdentityHistory,
         Method::GetVdxfId,
+        Method::GetOffers,
         Method::VerifyMessage,
         Method::GetRawTransaction,
         Method::DecodeRawTransaction,
