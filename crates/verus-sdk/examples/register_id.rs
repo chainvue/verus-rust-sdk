@@ -172,6 +172,7 @@ fn main() -> Result<(), Error> {
                     ),
                     token_funding: &token_funding,
                     proof_protocol: u32::try_from(p["proof_protocol"].as_u64().unwrap_or(2))?,
+                    transfer_fee: Amount::from_sat(20_000),
                 }),
                 None => None,
             };

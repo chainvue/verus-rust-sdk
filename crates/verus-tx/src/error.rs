@@ -290,9 +290,10 @@ pub enum TxError {
 
     /// A parent currency whose fee output this crate does not build.
     ///
-    /// Only `proofprotocol` 2 — centralized or token — is supported, which pays
-    /// through a plain reserve output. A fractional or PBaaS parent pays through
-    /// a `CReserveTransfer`, an output shape nothing here has tested.
+    /// Retained for callers matching on it; nothing raises it today. Both
+    /// shapes `PrecheckIdentityReservation` accepts are now built: a
+    /// `proofprotocol` 2 parent takes a plain reserve output, and a token
+    /// parent takes a `CReserveTransfer` burn.
     #[error("parent proofprotocol {0} is not one this crate builds a fee output for")]
     UnsupportedParentProofProtocol(u32),
 

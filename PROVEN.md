@@ -29,7 +29,8 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | Update, publishing content | `bea8a8462ac2ee34272f29ebe034fd7f5a43529ac023c17440db5e41b4f00767` | 1166566 |
 | 2-of-2 multisig identity update | `9ff188d8fabbb338d11ed1405345783265a02c3afc8b5705ccd9d35e0d802303` | 1166732 |
 | Referred registration, every level paid | `0463960881f979b99c9228f368f29d1a81ccbe153c6ab617a98686eb226b13c0` | 1167099 |
-| Sub-ID under a token parent → `rustsub02.ownora-nft@` | `4e746e10d67c9815e46b9bdb0ac3ec7fd41d432fa76b1f9895ce66ec7b560b45` | 1167146 |
+| Sub-ID under a **centralized** parent (`proofprotocol` 2, plain reserve-output fee) → `rustsub02.ownora-nft@` | `4e746e10d67c9815e46b9bdb0ac3ec7fd41d432fa76b1f9895ce66ec7b560b45` | 1167146 |
+| Sub-ID under a **fractional** parent (`proofprotocol` 1, `CReserveTransfer` burn fee) → `sub1169585.rustcur1168400@` | `ed933a8c4cccd28843e5aeabd94223453ee5d61f3eb54f1261f0ddc5cf8d56de` | 1169587 |
 | Revocation | `0acf6faf864c6b7d4e846073ae4bbca7858719955c98d86bb0877345ce546342` | 1167197 |
 | Recovery, under a different key | `088db56d780cb943f888f0bd98329764ee4e1f6467c18f2d506cc94f12e9179d` | 1167199 |
 | `flows::register` through the public node → `flow1167608.VRSCTEST@` | `431aa039f6b0ed163c0baeeebf729d86b99be572359bce07aa90db348cddcdd7` | 1167611 |
@@ -87,7 +88,5 @@ acceptance:
 
 ## Known not working
 
-- **Fractional-parent sub-IDs** — needs a `proofprotocol` 1 token parent's
-  tokens to pay the fee; nothing reachable holds any.
 - **Cross-chain export / PBaaS launch** — needs a second system to test
   against.

@@ -108,12 +108,23 @@ pub const EVAL_IDENTITY_ADVANCEDRESERVATION: u8 = 10;
 ///   answers `kmerg is unable to issue currencies`, so the gate is the
 ///   currency's options, not its proof protocol.
 ///
-/// What is still missing is a reference transaction for a sub-identity under a
-/// `proofprotocol` 1 *token* parent, which needs that parent's tokens to pay the
-/// fee — none are held on any node available here. Until one exists this stays a
-/// refusal, because the alternative is guessing where a real fee goes. What it
-/// is **not** is a claim that such a parent needs a different output; that claim
-/// has been withdrawn.
+/// Settled 2026-07-31 by reading `PrecheckIdentityReservation` in the daemon's
+/// `identity.cpp` rather than probing around it. There are exactly two shapes,
+/// and `proofprotocol` does select between them — it just does not classify a
+/// currency on its own, which is what the probing above actually showed:
+///
+/// * `proofProtocol == PROOF_CHAINID` (2) — a plain `EVAL_RESERVE_OUTPUT`,
+///   1-of-1, paying the issuer id. Proven by `rustsub02.ownora-nft@`.
+/// * otherwise, for a token parent — a `CReserveTransfer` **burn**, which must
+///   satisfy `IsBurn()`, have `GetImportCurrency()` equal to the issuer, carry
+///   no next leg, and burn a currency the issuer recognises. The existing burn
+///   builder already produces exactly that. Proven by
+///   `sub1169585.rustcur1168400@` under a fractional parent.
+///
+/// So the earlier claim — that a non-centralized parent pays through a
+/// `CReserveTransfer` — was right in substance and was withdrawn too far. Both
+/// shapes are built now, and each is pinned by a test and by a transaction the
+/// chain accepted.
 pub const CENTRALIZED_PROOF_PROTOCOL: u32 = 2;
 
 /// The identity version a fresh registration publishes: PBaaS, which carries
@@ -493,9 +504,18 @@ pub struct ParentCurrencyFee<'a> {
     /// Token-bearing inputs paying the fee. Every one is spent in full and the
     /// surplus comes back as token change, so a token left out is a token burned.
     pub token_funding: &'a [Utxo],
-    /// The parent's `proofprotocol`. Anything but 2 is refused — see
-    /// [`CENTRALIZED_PROOF_PROTOCOL`].
+    /// The parent's `proofprotocol`, which selects the fee output's shape.
+    ///
+    /// `2` (`CHAINID`, a centralized currency) pays through a plain reserve
+    /// output. Anything else, for a token parent, pays through a
+    /// `CReserveTransfer` burn — see the two branches in
+    /// `build_identity_registration`.
     pub proof_protocol: u32,
+    /// The native fee the burn's own reserve transfer carries.
+    ///
+    /// Unused by a centralized parent, whose fee output is a plain reserve
+    /// output with no transfer of its own.
+    pub transfer_fee: Amount,
 }
 
 /// What a registration actually costs, once a referral is taken into account.
@@ -816,21 +836,54 @@ pub fn build_identity_registration(
             recovery,
         )?,
     });
-    // The parent's fee, in the parent's currency, paid to the parent itself.
+    // The parent's fee, in the parent's currency — and its shape depends on
+    // what kind of currency the parent is. `identity.cpp`'s
+    // `PrecheckIdentityReservation` takes exactly two branches:
+    //
+    //   proofProtocol == PROOF_CHAINID (2)  a plain EVAL_RESERVE_OUTPUT, 1-of-1,
+    //                                       paying the issuer id
+    //   otherwise, if IsToken()             a CReserveTransfer BURN, with
+    //                                       GetImportCurrency() == the issuer
+    //
+    // and rejects anything else with "Invalid fee output"/"Invalid fee burn for
+    // identity registration with specified currency". Paying a centralized
+    // parent's shape to a token parent is one of those rejections.
     if let Some(sub) = &params.parent_currency {
-        if sub.proof_protocol != CENTRALIZED_PROOF_PROTOCOL {
-            return Err(TxError::UnsupportedParentProofProtocol(sub.proof_protocol));
-        }
-        outputs.push(TxOut {
-            value: 0,
-            script_pubkey: reserve_output_script_to(
+        let parent_currency = CurrencyId::of_identity(parent);
+        let script = if sub.proof_protocol == CENTRALIZED_PROOF_PROTOCOL {
+            // The parent identity read as the currency it launched — the same
+            // twenty bytes wearing the other hat. Written out because it is an
+            // assumption, not a coincidence to lean on silently.
+            reserve_output_script_to(
                 Destination::Identity(parent),
-                // The parent identity read as the currency it launched — the
-                // same twenty bytes wearing the other hat. Written out because
-                // it is an assumption, not a coincidence to lean on silently.
-                CurrencyId::of_identity(parent),
+                parent_currency,
                 sub.fee.to_sat(),
-            )?,
+            )?
+        } else {
+            // A burn of the parent's own currency. The existing burn builder
+            // already produces precisely what consensus checks for here:
+            // `BURN_CHANGE_PRICE` satisfies `IsBurn()`, and `IMPORT_TO_SOURCE`
+            // makes `GetImportCurrency()` return the source — the parent —
+            // rather than a destination.
+            let burn = crate::convert::build_conversion(
+                parent_currency,
+                sub.fee,
+                crate::convert::ConversionKind::Burn,
+                params.change_address,
+                CurrencyId::from_bytes(params.system_id),
+                sub.transfer_fee,
+            )?;
+            burn.to_script()?
+        };
+        outputs.push(TxOut {
+            // A reserve output carries its value in the payload; a reserve
+            // transfer carries its own fee natively.
+            value: if sub.proof_protocol == CENTRALIZED_PROOF_PROTOCOL {
+                0
+            } else {
+                sub.transfer_fee.to_sat()
+            },
+            script_pubkey: script,
         });
     }
     for referrer in &referrers {
@@ -1242,6 +1295,7 @@ mod tests {
                 native_import_fee: Amount::from_sat(2_000_000),
                 token_funding: &token,
                 proof_protocol: 2,
+                transfer_fee: Amount::from_sat(20_000),
             }),
             referral_levels: 3,
             referral_chain: &[],
@@ -1346,7 +1400,7 @@ mod tests {
     /// reserve output. Building the wrong shape would pay the fee somewhere
     /// consensus does not look for it, so it is refused rather than guessed.
     #[test]
-    fn refuses_a_parent_whose_proofprotocol_is_untested() {
+    fn a_token_parents_fee_is_a_burn_of_its_own_currency() {
         let key =
             PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap();
         let parent = parse(VRSCTEST).hash();
@@ -1368,6 +1422,19 @@ mod tests {
             script_pubkey: key.address().p2pkh_script_pubkey().unwrap(),
         }];
         let primaries = [key.address()];
+        // The parent's own tokens, which pay its fee. Spent whole, with the
+        // surplus returning as token change.
+        let token_funding = [Utxo {
+            txid: Txid::from_internal([0xcc; 32]),
+            vout: 0,
+            satoshis: Amount::ZERO,
+            script_pubkey: crate::cc::reserve_output_script(
+                key.address().hash(),
+                CurrencyId::of_identity(parent),
+                2_00000000,
+            )
+            .unwrap(),
+        }];
         let params = RegistrationParams {
             commitment: &commitment,
             reservation: &reservation,
@@ -1381,9 +1448,10 @@ mod tests {
             parent_currency: Some(ParentCurrencyFee {
                 fee: Amount::from_sat(1_00000000),
                 native_import_fee: Amount::from_sat(2_000_000),
-                token_funding: &[],
-                // 1 = fractional / PBaaS.
+                token_funding: &token_funding,
+                // 1 = a token parent that is not centralized.
                 proof_protocol: 1,
+                transfer_fee: Amount::from_sat(20_000),
             }),
             referral_levels: 0,
             referral_chain: &[],
@@ -1391,10 +1459,59 @@ mod tests {
             expiry: Expiry::Never,
             fee_per_kb: DEFAULT_FEE_PER_KB,
         };
-        assert!(matches!(
-            build_identity_registration(&key, &params),
-            Err(TxError::UnsupportedParentProofProtocol(1))
-        ));
+        // A token parent's fee is a BURN, not a plain reserve output. Decode
+        // the fee output and check it against the four things
+        // `PrecheckIdentityReservation` demands of it.
+        let signed = build_identity_registration(&key, &params).expect("a token parent is built");
+        let tx =
+            verus_wire::TxV4::deserialize(&hex::decode(&signed.transaction.hex).unwrap()).unwrap();
+
+        // Output 0 is the identity; output 1 is the parent's fee. It must be
+        // byte-identical to a burn of the parent's own currency — which is
+        // what satisfies all four things consensus demands of it: IsBurn()
+        // (BURN_CHANGE_PRICE), GetImportCurrency() == the issuer
+        // (IMPORT_TO_SOURCE makes that the source), no next leg, and a
+        // FirstCurrency the issuer recognises (its own).
+        let parent_currency = CurrencyId::of_identity(parent);
+        let expected = crate::convert::build_conversion(
+            parent_currency,
+            Amount::from_sat(1_00000000),
+            crate::convert::ConversionKind::Burn,
+            key.address(),
+            CurrencyId::from_bytes(parent),
+            Amount::from_sat(20_000),
+        )
+        .unwrap()
+        .to_script()
+        .unwrap();
+        assert_eq!(
+            tx.outputs[1].script_pubkey, expected,
+            "a token parent's fee must be a burn of its own currency, not a reserve output"
+        );
+        // The transfer carries its own fee natively.
+        assert_eq!(tx.outputs[1].value, 20_000);
+
+        // And a centralized parent still gets the plain reserve output — the
+        // two branches must not have collapsed into one.
+        let mut centralized = params.clone();
+        centralized.parent_currency = Some(ParentCurrencyFee {
+            fee: Amount::from_sat(1_00000000),
+            native_import_fee: Amount::from_sat(2_000_000),
+            token_funding: &token_funding,
+            proof_protocol: CENTRALIZED_PROOF_PROTOCOL,
+            transfer_fee: Amount::from_sat(20_000),
+        });
+        let signed = build_identity_registration(&key, &centralized).expect("centralized parent");
+        let tx =
+            verus_wire::TxV4::deserialize(&hex::decode(&signed.transaction.hex).unwrap()).unwrap();
+        assert_ne!(
+            tx.outputs[1].script_pubkey, expected,
+            "a centralized parent must not pay through a burn"
+        );
+        assert_eq!(
+            tx.outputs[1].value, 0,
+            "a reserve output carries no native value"
+        );
     }
 
     /// A registration whose commitment was locked to somebody else's key cannot
