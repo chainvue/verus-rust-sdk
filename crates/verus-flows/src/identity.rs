@@ -125,6 +125,11 @@ pub struct Pending<S> {
     /// re-derive it from.
     #[serde(default)]
     pub referral_levels: u32,
+    /// The full chain of referrers this registration must pay, in the order
+    /// consensus expects: the immediate referrer first, then theirs. Computed
+    /// at prepare, when getting it wrong still costs nothing.
+    #[serde(default)]
+    pub referral_chain: Vec<[u8; 20]>,
     /// The addresses that will control the identity.
     pub primary_addresses: Vec<String>,
     /// How many of them must sign.
@@ -162,6 +167,7 @@ impl<S> Pending<S> {
             commitment_vout: self.commitment_vout,
             registration_fee: self.registration_fee,
             referral_levels: self.referral_levels,
+            referral_chain: self.referral_chain,
             primary_addresses: self.primary_addresses,
             min_sigs: self.min_sigs,
             system_id: self.system_id,
@@ -287,6 +293,12 @@ pub fn prepare_registration_with_salt(
         }
         None => None,
     };
+    // Resolved here, not at step two: a chain that cannot be built is a
+    // refusal worth having before the commitment is broadcast.
+    let referral_chain = match referral {
+        Some(referrer) => referral_chain(reader, referrer, policy.id_referral_levels)?,
+        None => Vec::new(),
+    };
     let reservation = NameReservation::new(name, system_id, referral, salt)?;
 
     let from = key.address();
@@ -319,6 +331,7 @@ pub fn prepare_registration_with_salt(
         commitment_vout: 0,
         registration_fee: fee,
         referral_levels: policy.id_referral_levels,
+        referral_chain,
         primary_addresses,
         min_sigs: options.min_sigs.unwrap_or(1),
         system_id,
@@ -518,7 +531,7 @@ impl Pending<ReadyToRegister> {
         // `prepare_registration_with_salt`), never a multi-level chain, so
         // there is nothing beyond `self.reservation.referral` for
         // `build_identity_registration` to walk.
-        .with_referrals(self.referral_levels, &[]);
+        .with_referrals(self.referral_levels, &self.referral_chain);
 
         let signed = build_identity_registration(key, &params)?;
         broadcast(
@@ -642,6 +655,66 @@ pub(crate) fn check_trusted_node_fee(
         });
     }
     Ok(reported)
+}
+
+/// The referral chain a registration must pay, as consensus computes it.
+///
+/// **Paying only the immediate referrer is not enough.** `identity.cpp`'s
+/// `PrecheckIdentityReservation` builds its expected list as
+/// `[referrer, ...upstream]` — the upstream part read by walking the
+/// *referrer's own registration transaction* — and then refuses on
+/// `referrers.size() != checkReferrers.size()` with "incorrect referral
+/// payments". So a referral to someone who was themselves referred needs
+/// their referrers paid too, and getting it wrong is discovered only when
+/// the registration is broadcast, after the commitment fee is spent.
+///
+/// The walk mirrors the daemon's: in the referrer's registration, skip to the
+/// identity output, then take the pay-to-identity outputs that follow until
+/// the reservation output ends them, capping at the currency's level count.
+/// An identity registered without a referrer contributes nothing, which is
+/// why the single-referrer case worked and hid this for so long.
+fn referral_chain(
+    reader: &impl ChainReader,
+    referrer: [u8; 20],
+    levels: u32,
+) -> Result<Vec<[u8; 20]>, FlowError> {
+    let mut chain = vec![referrer];
+    if levels <= 1 {
+        return Ok(chain);
+    }
+
+    let referrer_address = Address::new(verus_keys::AddressKind::Identity, referrer).to_string();
+    let registration = reader.identity_registration(&referrer_address)?;
+    let raw = reader.raw_transaction(&registration)?;
+    let outputs = raw["vout"].as_array().ok_or_else(|| {
+        FlowError::NotReady(format!(
+            "{registration} has no outputs to read referrals from"
+        ))
+    })?;
+
+    let mut after_identity = false;
+    for output in outputs {
+        let Some(hex_text) = output["scriptPubKey"]["hex"].as_str() else {
+            continue;
+        };
+        let Ok(script) = hex::decode(hex_text) else {
+            continue;
+        };
+        match verus_tx::decode_output_script(&script) {
+            Ok(verus_tx::OutputKind::IdentityPrimary { .. }) => after_identity = true,
+            Ok(verus_tx::OutputKind::IdentityPayment { identity }) if after_identity => {
+                chain.push(identity);
+                if u64::try_from(chain.len()).unwrap_or(u64::MAX) >= u64::from(levels) {
+                    break;
+                }
+            }
+            // Anything else after the identity output ends the referral run —
+            // the reservation, or a change output. Same as the daemon's break.
+            _ if after_identity => break,
+            _ => {}
+        }
+    }
+    Ok(chain)
 }
 
 /// The identity id of a referrer, given by name or by `i` address.

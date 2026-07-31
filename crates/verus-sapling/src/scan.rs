@@ -228,6 +228,22 @@ pub(crate) fn commitment_tree(state: &TreeStateBefore) -> Result<CommitmentTree,
 /// nullifier-deriving key (nullifier). `tree_before` fixes the first output's
 /// absolute position; positions must be contiguous, so `outputs` MUST contain
 /// EVERY Sapling output in the range, not only candidates.
+///
+/// # A detected note is a claim, not a proof
+///
+/// Decryption is as strict as the protocol allows — the note commitment is
+/// recomputed and a mismatch refused — but it is recomputed against the *cmu
+/// the caller supplied*, and nothing here proves that output is on the chain.
+/// So whoever supplies the outputs can:
+///
+/// * synthesise a payment to your address, inflating a displayed balance; and
+/// * insert or drop outputs, shifting positions so nullifiers come out wrong
+///   and spent notes look unspent.
+///
+/// Neither can move funds — a note is not consumed until the chain accepts a
+/// nullifier, so every such mistake ends in a rejected transaction rather than
+/// a loss. But a balance from this function is only as good as the source of
+/// the outputs until a witness anchors to a root you have checked.
 pub fn detect_notes(
     dfvk: &DiversifiableFullViewingKey,
     tree_before: &TreeStateBefore,

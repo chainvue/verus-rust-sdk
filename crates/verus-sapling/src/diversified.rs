@@ -103,7 +103,7 @@ pub fn index_of(
 /// # use verus_sapling::{derive::{derive_account, COIN_TYPE_MAINNET}, scan::dfvk_from_extsk};
 /// # use verus_sapling::diversified::addresses;
 /// # let account = derive_account(&[7u8; 64], COIN_TYPE_MAINNET, 0).unwrap();
-/// # let dfvk = dfvk_from_extsk(&account.extsk).unwrap();
+/// # let dfvk = dfvk_from_extsk(&*account.extsk).unwrap();
 /// let batch: Vec<_> = addresses(&dfvk, 0).take(5).collect();
 /// assert_eq!(batch.len(), 5);
 /// // All different, and all belonging to the same key.
@@ -159,7 +159,7 @@ mod tests {
 
     fn key() -> DiversifiableFullViewingKey {
         let account = derive_account(&[7u8; 64], COIN_TYPE_MAINNET, 0).expect("derive");
-        dfvk_from_extsk(&account.extsk).expect("dfvk")
+        dfvk_from_extsk(&*account.extsk).expect("dfvk")
     }
 
     /// The default address is the first *valid* index, which is not necessarily
@@ -240,7 +240,7 @@ mod tests {
         let ours = key();
         let theirs = {
             let account = derive_account(&[9u8; 64], COIN_TYPE_MAINNET, 0).unwrap();
-            dfvk_from_extsk(&account.extsk).unwrap()
+            dfvk_from_extsk(&*account.extsk).unwrap()
         };
         let (_, foreign) = find_address(&theirs, 0).unwrap().unwrap();
         assert_eq!(index_of(&ours, &foreign).unwrap(), None);

@@ -21,6 +21,21 @@
 //! `prevHash` chaining, and the server's own tree-size counter — rather than
 //! trusting any one of them.
 //!
+//! # What those checks are, and are not, worth
+//!
+//! They defeat accidental corruption and lazy lying. They do **not** make a
+//! light server trustworthy: all three read values the server itself supplies,
+//! so a fully self-consistent fabricated chain passes every one, and the
+//! tree-size check is skipped outright when the server declines to send chain
+//! metadata. Compact-block hashes are never verified against consensus here —
+//! that is the lightwalletd trust model, not an oversight.
+//!
+//! The real backstop is downstream: a witness anchors to a root, and a root
+//! the chain does not have produces a transaction the daemon rejects. Check
+//! [`WitnessedNote::anchor`] against a block header you trust before paying
+//! for a proof. A balance reported here is a *claim by the server* until
+//! something anchors it.
+//!
 //! # A note is not spendable just because you own it
 //!
 //! Detection finds notes paid *to* you. Whether one is still yours depends on

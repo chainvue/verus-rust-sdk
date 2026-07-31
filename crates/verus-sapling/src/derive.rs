@@ -30,6 +30,7 @@
 //! (see `src/zaddr.ts`).
 
 use sapling_crypto::zip32::ExtendedSpendingKey;
+use zeroize::Zeroizing;
 use zip32::ChildIndex;
 
 use crate::error::SaplingError;
@@ -46,7 +47,13 @@ pub const COIN_TYPE_TESTNET: u32 = 1;
 pub struct DerivedAccount {
     /// ZIP-32 extended spending key, 169 bytes — the form `extsk_hex` takes
     /// everywhere else in this crate.
-    pub extsk: [u8; 169],
+    ///
+    /// Wiped on drop. That is as far as this crate can take it: the upstream
+    /// `ExtendedSpendingKey` this is derived from implements neither `Zeroize`
+    /// nor a wiping `Drop`, so copies inside `sapling-crypto` outlive us. What
+    /// is owned here is cleaned up; the README says so rather than claiming
+    /// the shielded path zeroizes end to end.
+    pub extsk: Zeroizing<[u8; 169]>,
     /// Diversifiable full viewing key, 128 bytes — enough to SCAN but not spend.
     pub dfvk: [u8; 128],
     /// Raw 43-byte payment address (11-byte diversifier || 32-byte pk_d). The TS
@@ -101,7 +108,7 @@ pub fn derive_account(
     let (index, address) = dfvk.default_address();
 
     Ok(DerivedAccount {
-        extsk: extsk.to_bytes(),
+        extsk: Zeroizing::new(extsk.to_bytes()),
         dfvk: dfvk.to_bytes(),
         address: address.to_bytes(),
         diversifier_index: *index.as_bytes(),
@@ -119,7 +126,7 @@ mod tests {
     fn extsk_round_trips_into_the_scanning_key() {
         let seed = [7u8; 64];
         let acct = derive_account(&seed, COIN_TYPE_MAINNET, 0).expect("derive");
-        let dfvk = crate::scan::dfvk_from_extsk(&acct.extsk).expect("dfvk from extsk");
+        let dfvk = crate::scan::dfvk_from_extsk(&*acct.extsk).expect("dfvk from extsk");
         assert_eq!(dfvk.to_bytes(), acct.dfvk);
         assert_eq!(dfvk.default_address().1.to_bytes(), acct.address);
     }

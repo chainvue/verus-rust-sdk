@@ -1586,9 +1586,11 @@ dependencies = [
  "redjubjub",
  "sapling-crypto",
  "serde_json",
+ "sha2",
  "thiserror 2.0.19",
  "verus-wire",
  "zcash_note_encryption",
+ "zeroize",
  "zip32",
 ]
 

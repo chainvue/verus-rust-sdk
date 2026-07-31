@@ -321,6 +321,78 @@ fn a_different_salt_produces_a_different_commitment() {
     assert_ne!(first.commitment_hex, second.commitment_hex);
 }
 
+/// A real, decodable identity for a scripted referrer.
+///
+/// It must be genuinely decodable: the chain walk finds the identity output
+/// by decoding it, so a placeholder payload makes the walk silently see no
+/// identity output at all — and then find no upstream referrers either, which
+/// is the right answer for the wrong reason.
+fn referrer_identity(hash: [u8; 20]) -> Vec<u8> {
+    let identity = verus_tx::identity::Identity {
+        version: 3,
+        flags: 0,
+        primary_addresses: vec![verus_tx::Destination::PubKeyHash(hash)],
+        min_sigs: 1,
+        parent: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"
+            .parse::<verus_keys::Address>()
+            .unwrap()
+            .hash(),
+        name: "referrer".into(),
+        content_multimap: Vec::new(),
+        content_map: Vec::new(),
+        revocation_authority: hash,
+        recovery_authority: hash,
+        private_addresses: Vec::new(),
+        system_id: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"
+            .parse::<verus_keys::Address>()
+            .unwrap()
+            .hash(),
+        unlock_after: 0,
+    };
+    verus_tx::identity_primary_script(hash, identity.to_bytes().unwrap(), hash, hash)
+        .expect("identity script")
+}
+
+/// A referrer that exists on chain and was itself registered WITHOUT a
+/// referral — the simple case, whose expected chain is just itself.
+///
+/// Scripting the referrer's registration transaction matters: consensus
+/// derives the chain a new registration must pay by walking it, so a test
+/// that skips it is not testing the referred path the chain actually judges.
+fn with_unreferred_referrer(chain: ScriptedReader, referrer: &str) -> ScriptedReader {
+    let hash = referrer.parse::<verus_keys::Address>().unwrap().hash();
+    let registration = Txid::from_internal([0xcc; 32]);
+    // The registration's shape: the identity output, then straight to the
+    // reservation. No pay-to-identity outputs in between means no upstream
+    // referrers to inherit.
+    let identity_output = referrer_identity(hash);
+    // Scripted under the `i` address, which is how the chain walk asks for it
+    // — `referral_id` accepts either form, but the lookup normalises to the id.
+    let identity_address =
+        verus_keys::Address::new(verus_keys::AddressKind::Identity, hash).to_string();
+    chain
+        .with_identity(
+            &identity_address,
+            IdentityRecord {
+                fully_qualified_name: format!("{referrer}@"),
+                identity_address: identity_address.clone(),
+                status: "active".into(),
+                outpoint: (registration, 0),
+                block_height: 500,
+                identity: serde_json::json!({}),
+            },
+        )
+        .with_raw_transaction(
+            &registration.to_display_hex(),
+            serde_json::json!({
+                "vout": [
+                    { "valueSat": 0, "scriptPubKey": { "hex": hex::encode(&identity_output) } },
+                    { "valueSat": 0, "scriptPubKey": { "hex": "6a00" } }
+                ]
+            }),
+        )
+}
+
 /// H2: a referred registration used to fail every single time. `Pending`
 /// carried the referrer in the reservation but never carried
 /// `idreferrallevels` through to step 2, so `build_identity_registration`
@@ -330,10 +402,8 @@ fn a_different_salt_produces_a_different_commitment() {
 /// broadcast transaction, not just that the call returned `Ok`.
 #[test]
 fn a_referred_registration_completes_and_pays_the_referrer() {
-    let chain = funded_chain(1_000);
-    // Any address decodes to the 20 bytes `referral_id` needs; this test does
-    // not need the referrer to be a real, resolvable identity.
     let referrer = "RJUgxvDnDLsRGCXNKDK56Rxngzh6m25J6F";
+    let chain = with_unreferred_referrer(funded_chain(1_000), referrer);
 
     let options = RegistrationOptions {
         referral: Some(referrer.to_string()),
@@ -533,4 +603,98 @@ fn asking_for_a_referral_where_none_are_paid_is_refused_by_name() {
         other => panic!("expected CurrencyPaysNoReferrals, got {other:?}"),
     }
     assert!(chain.broadcasts().is_empty());
+}
+
+/// **The case that was silently broken.** Consensus derives the referral
+/// payouts a registration owes by walking the referrer's OWN registration
+/// transaction (`identity.cpp`, `PrecheckIdentityReservation`: it builds
+/// `checkReferrers` as `[referrer, ...upstream]` and refuses on
+/// `referrers.size() != checkReferrers.size()`).
+///
+/// So referring to someone who was themselves referred means paying their
+/// referrer too. The facade paid only the immediate referrer, which built a
+/// transaction the chain rejects — discovered at broadcast, after the
+/// commitment fee is spent. It never showed up on chain because the one
+/// referred registration ever proven used an unreferred referrer, whose
+/// expected chain is length one either way.
+#[test]
+fn a_referrer_who_was_themselves_referred_has_their_own_referrer_paid_too() {
+    let referrer = "RJUgxvDnDLsRGCXNKDK56Rxngzh6m25J6F";
+    let upstream = "RCebaYEbzesJFmMzzgHNLTdLMeeWsaVxjy";
+    let referrer_hash = referrer.parse::<verus_keys::Address>().unwrap().hash();
+    let upstream_hash = upstream.parse::<verus_keys::Address>().unwrap().hash();
+    let registration = Txid::from_internal([0xdd; 32]);
+    let identity_address =
+        verus_keys::Address::new(verus_keys::AddressKind::Identity, referrer_hash).to_string();
+
+    // The referrer's registration: identity output, then a pay-to-identity
+    // output crediting THEIR referrer, then the reservation.
+    let identity_output = referrer_identity(referrer_hash);
+    let upstream_payout = verus_tx::identity_payment_script(upstream_hash).expect("payout script");
+
+    let chain = funded_chain(1_000)
+        .with_identity(
+            &identity_address,
+            IdentityRecord {
+                fully_qualified_name: format!("{referrer}@"),
+                identity_address: identity_address.clone(),
+                status: "active".into(),
+                outpoint: (registration, 0),
+                block_height: 500,
+                identity: serde_json::json!({}),
+            },
+        )
+        .with_raw_transaction(
+            &registration.to_display_hex(),
+            serde_json::json!({
+                "vout": [
+                    { "valueSat": 0, "scriptPubKey": { "hex": hex::encode(&identity_output) } },
+                    { "valueSat": 2000000000, "scriptPubKey": { "hex": hex::encode(&upstream_payout) } },
+                    { "valueSat": 0, "scriptPubKey": { "hex": "6a00" } }
+                ]
+            }),
+        );
+
+    let options = RegistrationOptions {
+        referral: Some(referrer.to_string()),
+        ..Default::default()
+    };
+    let pending =
+        prepare_registration_with_salt(&chain, &key(), "inherited", &options, SALT).unwrap();
+
+    // Both referrers, in the order consensus expects: immediate first.
+    assert_eq!(
+        pending.referral_chain,
+        vec![referrer_hash, upstream_hash],
+        "the upstream referrer was not inherited from the referrer's registration"
+    );
+
+    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let ready = match pending.poll(&chain).unwrap() {
+        CommitmentStatus::Ready(ready) => ready,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    ready.complete(&chain, &chain, &key()).unwrap();
+
+    // Two payouts in the broadcast bytes, one per referrer.
+    let broadcast = chain
+        .broadcasts()
+        .pop()
+        .expect("the registration broadcast");
+    let tx = TxV4::deserialize(&hex::decode(&broadcast).unwrap()).unwrap();
+    let paid: Vec<[u8; 20]> = tx
+        .outputs
+        .iter()
+        .filter_map(
+            |out| match verus_tx::decode_output_script(&out.script_pubkey) {
+                Ok(verus_tx::OutputKind::IdentityPayment { identity }) => Some(identity),
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(
+        paid,
+        vec![referrer_hash, upstream_hash],
+        "the transaction must pay both referrers, in order"
+    );
 }

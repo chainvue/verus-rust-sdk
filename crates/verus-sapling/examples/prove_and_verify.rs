@@ -160,7 +160,7 @@ fn main() {
 
     // Which of those outputs is ours? Only trial decryption can say — exactly
     // what a wallet does when it sees the transaction on chain.
-    let dfvk = dfvk_from_extsk(&account.extsk).expect("dfvk");
+    let dfvk = dfvk_from_extsk(&*account.extsk).expect("dfvk");
     let outputs: Vec<FullOutput> = created.iter().map(FullOutput::from).collect();
     let mine = outputs
         .iter()
@@ -199,7 +199,7 @@ fn main() {
         &params,
         &SpendSpec {
             notes: &[NoteToSpend {
-                extsk_bytes: &account.extsk,
+                extsk_bytes: &*account.extsk,
                 output: &outputs[mine],
                 tree_before_block: &empty_tree,
                 block_cmus: &block_cmus,
@@ -212,6 +212,7 @@ fn main() {
             expiry_height: 1_200_000,
             branch_id: VERUS_BRANCH_ID,
             zip212: VERUS_ZIP212,
+            expected_anchor: None,
         },
     )
     .expect("build the shielded spend");

@@ -361,6 +361,16 @@ impl ChainReader for ScriptedReader {
         ))
     }
 
+    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
+        self.count();
+        // The scripted chain has no history, so an identity's registration is
+        // the outpoint it was scripted with. A test that needs a referrer with
+        // its own upstream chain scripts the registration transaction through
+        // `with_raw_transaction`.
+        self.identity(name_or_id)
+            .map(|record| record.outpoint.0.to_display_hex())
+    }
+
     fn identity_at(&self, name_or_id: &str, _height: u32) -> Result<IdentityRecord, RpcError> {
         // The scripted chain has no history, so an identity is the same at
         // every height. Tests that care about rotation script it explicitly.
