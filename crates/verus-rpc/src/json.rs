@@ -116,17 +116,7 @@ pub(crate) fn coins(raw: &RawValue, field: &'static str) -> Result<Amount, RpcEr
 /// off the daemon's double formatter — see [`expand_exponent`] for why that is
 /// the line that matters and [`coins`] for the fields on the other side of it.
 pub(crate) fn currency_coins(raw: &RawValue, field: &'static str) -> Result<Amount, RpcError> {
-    let text = unquote(raw.get());
-    match expand_exponent(text) {
-        Some(plain) => {
-            let expanded = RawValue::from_string(plain).map_err(|_| RpcError::LossyNumber {
-                field,
-                value: text.to_string(),
-            })?;
-            coins_bounded(&expanded, field, MAX_CURRENCY_SATS)
-        }
-        None => coins_bounded(raw, field, MAX_CURRENCY_SATS),
-    }
+    lenient_coins(raw, field, MAX_CURRENCY_SATS)
 }
 
 fn coins_bounded(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Amount, RpcError> {
@@ -147,6 +137,41 @@ fn coins_bounded(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Am
         value: text.to_string(),
     })?;
     bounded(amount, field, ceiling)
+}
+
+/// A **native** amount the daemon prints through its double formatter.
+///
+/// The two properties are normally opposites here: [`coins`] is native and
+/// strict, [`currency_coins`] is per-currency and lenient. `estimatefee` needs
+/// the remaining corner — it is denominated in the chain's own currency, so the
+/// native ceiling is the right bar, and it arrives as `1e-6`, so refusing
+/// exponent form would make it unreadable. Observed on both public endpoints.
+pub(crate) fn native_coins_lenient(
+    raw: &RawValue,
+    field: &'static str,
+) -> Result<Amount, RpcError> {
+    lenient_coins(raw, field, MAX_NATIVE_SATS)
+}
+
+/// Coins in either spelling, bounded by `ceiling`.
+///
+/// The readers above are a two-by-two of *which ceiling* and *whether exponent
+/// form is allowed*, and three of the four corners are occupied. Writing the
+/// lenient half once keeps the two policies from drifting apart — the strict
+/// half is [`coins_bounded`], which this defers to once the spelling is
+/// settled, so the ceiling is applied to the parsed amount either way.
+fn lenient_coins(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Amount, RpcError> {
+    let text = unquote(raw.get());
+    match expand_exponent(text) {
+        Some(plain) => {
+            let expanded = RawValue::from_string(plain).map_err(|_| RpcError::LossyNumber {
+                field,
+                value: text.to_string(),
+            })?;
+            coins_bounded(&expanded, field, ceiling)
+        }
+        None => coins_bounded(raw, field, ceiling),
+    }
 }
 
 /// An amount of the chain's own currency, reported in **satoshis**.

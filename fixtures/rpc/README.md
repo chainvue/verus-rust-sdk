@@ -45,6 +45,10 @@ meaning anything:
 | `getaddressbalance.json` | the same balance in satoshis *and* in coins, in one reply |
 | `getoffers_vrsctest.json` | the three bucket shapes, an identity on **either** side, and `tx` alongside `txid` |
 | `getoffers_mainnet_vrsc.json` | an offer side naming several currencies, with a `1e-8` leg — shapes VRSCTEST has none of |
+| `estimatefee.json` | a fee rate as `1e-6` — the exponent literal the money readers grew an expander for |
+| `listcurrencies_vrsctest.json` | the root chain (no `parent`), a fractional basket, a token |
+| `getcurrencyconverters_vrsctest.json` | an entry whose definition hides under a key that is its own currency id |
+| `getidentitycontent_rustsdk.json` | an identity's `contentmap`, published by this SDK at block 1166566 |
 | `getaddressdeltas.json` | signed movements — a spend row, a token leg with `satoshis` of zero, and the settled swap's economics |
 
 ## `-32601` is not proof a method is missing

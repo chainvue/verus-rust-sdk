@@ -589,3 +589,265 @@ fn an_identity_side_missing_its_fields_is_refused() {
         .offers("x", true, false)
         .is_err());
 }
+
+/// `estimatefee` answers in **exponent form**, and that is the whole reason
+/// the money readers grew an expander.
+///
+/// `1e-6` coins per kilobyte is 100 satoshis. A reader that refuses exponents
+/// cannot read this method at all; one that reaches for `f64` gives up the
+/// exactness the rest of the crate is built on.
+#[test]
+fn reads_a_fee_rate_written_as_an_exponent() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/rpc/estimatefee.json"
+    ))
+    .unwrap();
+    assert!(
+        raw.contains("1e-6"),
+        "the fixture no longer carries the exponent literal, so this proves nothing"
+    );
+
+    let fee = client("estimatefee").estimate_fee(1).unwrap();
+    assert_eq!(fee.map(|f| f.to_sat()), Some(100));
+}
+
+/// A node that will not estimate answers a **negative** number, which is not a
+/// negative fee. It has to be recognised before the money reader sees it —
+/// that reader refuses negatives, correctly, and would turn "no opinion" into
+/// a parse failure indistinguishable from a broken node.
+#[test]
+fn a_node_that_will_not_estimate_is_not_a_parse_failure() {
+    struct Refuses;
+    impl Transport for Refuses {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(r#"{"result":-1}"#.to_string())
+        }
+    }
+    assert_eq!(RpcClient::new(Refuses).estimate_fee(1).unwrap(), None);
+}
+
+/// The root chain is the one currency defined under nothing.
+///
+/// `parent` is absent from exactly one of the 290 currencies on VRSCTEST —
+/// VRSCTEST itself — so its absence carries meaning rather than being a gap in
+/// the reply, and it is the reason the field is an `Option`.
+#[test]
+fn the_root_chain_is_the_only_currency_without_a_parent() {
+    let currencies = client("listcurrencies_vrsctest").list_currencies().unwrap();
+
+    let rootless: Vec<&str> = currencies
+        .iter()
+        .filter(|c| c.parent.is_none())
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(rootless, vec!["VRSCTEST"]);
+
+    // And everything else names one.
+    for currency in currencies.iter().filter(|c| c.name != "VRSCTEST") {
+        assert!(currency.parent.is_some(), "{} has no parent", currency.name);
+    }
+}
+
+/// A converter's definition hides behind **a key that is its own currency id**,
+/// the same "keys are data" shape `getoffers` uses for buckets. It is found by
+/// elimination from the four fields that do have names.
+#[test]
+fn a_converters_definition_is_found_under_its_own_id() {
+    let converters = client("getcurrencyconverters_vrsctest")
+        .currency_converters(&["VRSCTEST"])
+        .unwrap();
+    assert!(!converters.is_empty());
+
+    for converter in &converters {
+        // The id really is a key of the entry, not a name we invented.
+        assert!(converter.converter_id.starts_with('i'));
+        assert_eq!(converter.converter_id.len(), 34);
+        // And the definition found under it is that currency's own.
+        assert_eq!(
+            converter.definition["currencyid"].as_str(),
+            Some(converter.converter_id.as_str())
+        );
+        // Every converter listed for VRSCTEST must actually trade it, or the
+        // routing answer is worthless. `trades`, not `reserves`: a converter
+        // trades its own currency too.
+        assert!(
+            converter.trades("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"),
+            "{} does not trade VRSCTEST: {:?}",
+            converter.name,
+            converter.reserves
+        );
+    }
+}
+
+/// Reading what an application stored on an identity, rather than who controls
+/// it.
+#[test]
+fn reads_the_content_published_on_an_identity() {
+    let content = client("getidentitycontent_rustsdk")
+        .identity_content("rustsdk.VRSCTEST@")
+        .unwrap();
+
+    assert_eq!(content.identity.fully_qualified_name, "rustsdk.VRSCTEST@");
+    assert_eq!(
+        content.identity.identity_address,
+        "iPYbC4ExJ7dRBZnpxq2LGXGgkWDQNQR48g"
+    );
+
+    // One VDXF key to one 32-byte hash — this identity's own update published
+    // it, in the transaction `PROVEN.md` records at block 1166566.
+    assert_eq!(content.content_map.len(), 1);
+    let (key, value) = content.content_map.iter().next().unwrap();
+    assert_eq!(key.len(), 40, "a 20-byte VDXF key in hex");
+    assert_eq!(value.len(), 64, "a 32-byte value in hex");
+}
+
+/// A fractional currency converts between its reserves **and itself**, so its
+/// own id is routable and is not in `reserves`.
+///
+/// Verified live: `getcurrencyconverters ["vlotto"]` answers with vlotto,
+/// whose reserves are `[VRSCTEST]` alone. A caller filtering on `reserves`
+/// would throw away the very converter it asked for — which an earlier version
+/// of this crate's own documentation told it to do.
+#[test]
+fn a_converter_trades_its_own_currency_as_well_as_its_reserves() {
+    let converter = verus_rpc::CurrencyConverter {
+        converter_id: "i5PehtStE8dxdM53dhicjD6FcuGzvFoH2C".to_string(),
+        name: "vlotto".to_string(),
+        height: 1_170_000,
+        reserves: vec!["iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq".to_string()],
+        definition: serde_json::Value::Null,
+        last_notarization: serde_json::Value::Null,
+    };
+
+    assert!(
+        converter.trades("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"),
+        "a reserve"
+    );
+    assert!(
+        converter.trades("i5PehtStE8dxdM53dhicjD6FcuGzvFoH2C"),
+        "its own currency, which `reserves` does not list"
+    );
+    assert!(!converter.trades("iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"));
+
+    // And the routing predicate both ways round.
+    assert!(converter.routes(
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "i5PehtStE8dxdM53dhicjD6FcuGzvFoH2C"
+    ));
+    assert!(!converter.routes(
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"
+    ));
+}
+
+/// The trigger the self-check exists for.
+///
+/// A converter entry's definition is found by elimination against four known
+/// field names. Add a fifth — and `bestcurrencystate` is a key the daemon
+/// already uses elsewhere — and `serde_json`'s `BTreeMap` ordering hands it to
+/// the finder, because it sorts before any `i` address. Without the
+/// `currencyid` check that yields a converter named after a field, with no
+/// reserves, and a router that answers "no route" for the whole chain in
+/// silence.
+#[test]
+fn a_fifth_named_field_is_refused_rather_than_mistaken_for_the_definition() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    let drifted = r#"{"result":[{
+        "fullyqualifiedname":"basket","height":1,
+        "bestcurrencystate":{"supply":1.0},
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq":{
+            "currencyid":"iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+            "currencies":["iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"]}}]}"#;
+
+    let error = RpcClient::new(Body(drifted))
+        .currency_converters(&["x"])
+        .expect_err("the definition can no longer be identified by elimination");
+    assert!(
+        format!("{error}").contains("bestcurrencystate"),
+        "the error must name what it found: {error}"
+    );
+}
+
+/// A currency definition missing a universal field is refused rather than
+/// given a zero.
+///
+/// `proofprotocol` is 1, 2 or 3 on every currency and decides the fee-output
+/// shape a sub-identity registration must carry. A fabricated 0 is not a
+/// neutral default — it is a value no currency has, handed to a consumer that
+/// will branch on it.
+#[test]
+fn a_currency_missing_a_universal_field_is_refused_not_defaulted() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    let no_proof_protocol = r#"{"result":[{"currencydefinition":{
+        "currencyid":"i1","name":"x","fullyqualifiedname":"x","systemid":"i2",
+        "startblock":1,"endblock":0,"options":32}}]}"#;
+    let error = RpcClient::new(Body(no_proof_protocol))
+        .list_currencies()
+        .expect_err("proofprotocol is universal");
+    assert!(format!("{error}").contains("proofprotocol"), "{error}");
+}
+
+/// An identity older than version 3 has no `contentmultimap` **key at all**,
+/// which is not the same as having an empty one. `Null` keeps that difference
+/// visible; an empty object would claim the identity can hold content and
+/// happens not to.
+#[test]
+fn an_identity_too_old_for_a_multimap_reports_null_not_empty() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    let v1 = r#"{"result":{"fullyqualifiedname":"old.VRSC@","status":"active",
+        "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+        "vout":0,"blockheight":1,
+        "identity":{"identityaddress":"iOld","version":1,"contentmap":{}}}}"#;
+    let content = RpcClient::new(Body(v1)).identity_content("old").unwrap();
+    assert!(content.content_multimap.is_null());
+    assert!(content.content_map.is_empty());
+}
+
+/// A contentmap value that is not a 32-byte hash is refused. Silently
+/// substituting an empty string would be indistinguishable, to the application
+/// that stored the data, from having published nothing.
+#[test]
+fn a_contentmap_value_that_is_not_a_hash_is_refused() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    for broken in [
+        r#""contentmap":{"a667b2e677b4b0d4dd664a7709a9e504185127dc":42}"#,
+        r#""contentmap":{"a667b2e677b4b0d4dd664a7709a9e504185127dc":"beef"}"#,
+    ] {
+        let body = format!(
+            r#"{{"result":{{"fullyqualifiedname":"x.VRSC@","status":"active",
+            "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+            "vout":0,"blockheight":1,
+            "identity":{{"identityaddress":"iX",{broken}}}}}}}"#
+        );
+        let leaked: &'static str = Box::leak(body.into_boxed_str());
+        assert!(
+            RpcClient::new(Body(leaked)).identity_content("x").is_err(),
+            "{broken}"
+        );
+    }
+}

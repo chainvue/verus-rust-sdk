@@ -17,8 +17,9 @@ use std::cell::RefCell;
 
 use serde_json::json;
 use verus_rpc::{
-    AddressBalance, AddressDelta, AddressUtxo, Broadcaster, ChainInfo, ChainReader, CurrencyPolicy,
-    IdentityRecord, OfferListing, RpcError,
+    AddressBalance, AddressDelta, AddressUtxo, Broadcaster, ChainInfo, ChainReader,
+    CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord,
+    OfferListing, RpcError,
 };
 use verus_tx::{Amount, Txid, Utxo};
 
@@ -335,6 +336,33 @@ impl ChainReader for ScriptedReader {
     ) -> Result<Vec<OfferListing>, RpcError> {
         self.count();
         Ok(self.offers.borrow().clone())
+    }
+
+    fn list_currencies(&self) -> Result<Vec<CurrencySummary>, RpcError> {
+        self.count();
+        Ok(Vec::new())
+    }
+
+    fn currency_converters(
+        &self,
+        _currencies: &[&str],
+    ) -> Result<Vec<CurrencyConverter>, RpcError> {
+        self.count();
+        Ok(Vec::new())
+    }
+
+    fn estimate_fee(&self, _blocks: u32) -> Result<Option<Amount>, RpcError> {
+        self.count();
+        // The relay-fee floor both public endpoints answer today.
+        Ok(Some(Amount::from_sat(100)))
+    }
+
+    fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError> {
+        Ok(IdentityContent {
+            identity: self.identity(name_or_id)?,
+            content_map: Default::default(),
+            content_multimap: serde_json::Value::Null,
+        })
     }
 
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError> {

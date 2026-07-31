@@ -890,3 +890,96 @@ fn the_marketplace_still_lists_offers_in_the_shape_we_parse() {
             .count()
     );
 }
+
+/// The four reads added for chain discovery still parse from the live node.
+///
+/// Each has a way of drifting quietly, which is why a fixture is not enough:
+/// `listcurrencies` grows and gains definition fields without notice,
+/// `getcurrencyconverters` hides its definition behind a key that is data, and
+/// `estimatefee` is refused at any arity but one.
+#[test]
+fn the_discovery_reads_still_parse_from_the_live_endpoint() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+
+    let fee = client().estimate_fee(1).expect("estimatefee");
+    assert!(
+        fee.is_some(),
+        "both public endpoints answer the relay floor"
+    );
+    let fee = fee.unwrap();
+    assert!(
+        fee.to_sat() > 0 && fee.to_sat() < verus_tx::SATS_PER_COIN,
+        "a fee rate per kilobyte, not a fee: {fee}"
+    );
+
+    let currencies = client().list_currencies().expect("listcurrencies");
+    assert!(
+        currencies.len() > 100,
+        "VRSCTEST had 290 currencies when this was written, found {}",
+        currencies.len()
+    );
+    // Exactly one currency is defined under nothing: the chain itself.
+    let rootless: Vec<&str> = currencies
+        .iter()
+        .filter(|c| c.parent.is_none())
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(rootless, vec!["VRSCTEST"]);
+
+    let converters = client()
+        .currency_converters(&["VRSCTEST"])
+        .expect("getcurrencyconverters");
+    assert!(!converters.is_empty(), "VRSCTEST trades in several baskets");
+    for converter in &converters {
+        // `trades`, not `reserves` — a converter trades its own currency too,
+        // and a filter on `reserves` alone discards the self-converter case.
+        assert!(
+            converter.trades(VRSCTEST),
+            "{} was listed as a VRSCTEST converter but does not trade it",
+            converter.name
+        );
+    }
+
+    // The case that corrected this module's own documentation: asking about a
+    // fractional currency returns that currency itself, and its reserves do
+    // not name it.
+    let itself = client()
+        .currency_converters(&["vlotto"])
+        .expect("getcurrencyconverters");
+    if let Some(vlotto) = itself.first() {
+        assert!(vlotto.trades(&vlotto.converter_id));
+        assert!(
+            !vlotto.reserves.contains(&vlotto.converter_id),
+            "a converter is not its own reserve"
+        );
+    }
+
+    // An unrecognised currency is an error, not an empty list — so a typo
+    // cannot read as a thin market.
+    assert!(client()
+        .currency_converters(&["definitelynotacurrency"])
+        .is_err());
+
+    // Two recognised currencies that share no market answer with an empty
+    // list rather than an error, and that is the shape a router must handle.
+    let none = client()
+        .currency_converters(&["VRSCTEST", "shylock"])
+        .expect("getcurrencyconverters");
+    assert!(none.is_empty());
+
+    let content = client()
+        .identity_content("rustsdk.VRSCTEST@")
+        .expect("getidentitycontent");
+    assert_eq!(content.identity.fully_qualified_name, "rustsdk.VRSCTEST@");
+
+    eprintln!(
+        "fee {fee}/kB, {} currencies, {} VRSCTEST converters, {} content entries",
+        currencies.len(),
+        converters.len(),
+        content.content_map.len()
+    );
+}
