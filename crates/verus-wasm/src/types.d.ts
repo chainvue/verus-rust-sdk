@@ -167,8 +167,8 @@ export interface TokenAmount {
 /** What an output turned out to be. Switch on `kind`. */
 export interface DecodedOutput {
     kind: "pubKeyHash" | "pubKey" | "reserveOutput" | "identityPayment"
-        | "identityPrimary" | "identityCommitment"
-        | "unsupportedCryptoCondition" | "unknown";
+        | "identityPrimary" | "identityCommitment" | "reserveDeposit"
+        | "reserveTransfer" | "unsupportedCryptoCondition" | "unknown";
     /**
      * The address paid or held for. Absent when the output could not be read.
      * For `pubKey` — the shape a proof-of-work coinbase pays — this is the
@@ -217,4 +217,21 @@ export interface DecodedOutput {
      * carries currency alongside the hash.
      */
     commitment?: string;
+    /** For `reserveDeposit`: the currency whose reserves the output holds. */
+    controllingCurrency?: string;
+    /** For `reserveTransfer`: the raw flag word. */
+    flags?: number;
+    /** For `reserveTransfer`: the currency the fee is paid in. */
+    feeCurrency?: string;
+    /** For `reserveTransfer`: the fee, in the smallest unit, as a string. */
+    fees?: string;
+    /** For `reserveTransfer`: the currency in the destination slot. */
+    destinationCurrency?: string;
+    /**
+     * For `reserveTransfer`: who the value is ultimately for.
+     *
+     * NOT `address` — that is the protocol's transfer address, the same for
+     * every transfer on the chain. The real recipient travels in the payload.
+     */
+    recipient?: string;
 }

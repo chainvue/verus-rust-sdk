@@ -74,6 +74,38 @@ pub struct DecodedOutput {
     /// it before comparing with `registernamecommitment` output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commitment: Option<String>,
+    /// For `reserveDeposit`: the currency whose reserves the output holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controlling_currency: Option<String>,
+    /// For `reserveTransfer`: the raw flag word.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flags: Option<u64>,
+    /// For `reserveTransfer`: the currency the fee is paid in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_currency: Option<String>,
+    /// For `reserveTransfer`: the fee, as a decimal string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fees: Option<String>,
+    /// For `reserveTransfer`: the currency written in the destination slot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_currency: Option<String>,
+    /// For `reserveTransfer`: who the value is ultimately for.
+    ///
+    /// Not `address`, which is the protocol's transfer address rather than a
+    /// recipient — the real one travels inside the payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+}
+
+/// Token amounts, rendered the way every other field here renders them.
+fn amounts(tokens: Vec<(verus_tx::CurrencyId, u64)>) -> Vec<TokenAmount> {
+    tokens
+        .into_iter()
+        .map(|(currency, amount)| TokenAmount {
+            currency: dto::identity_address(currency.to_bytes()),
+            amount: amount.to_string(),
+        })
+        .collect()
 }
 
 /// How much of which token.
@@ -99,6 +131,12 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
         eval_code: None,
         may_carry_currency: None,
         commitment: None,
+        controlling_currency: None,
+        flags: None,
+        fee_currency: None,
+        fees: None,
+        destination_currency: None,
+        recipient: None,
     };
     Ok(match decode_output_script(&script)? {
         OutputKind::PubKeyHash { hash } => DecodedOutput {
@@ -179,6 +217,35 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
                     })
                     .collect(),
             ),
+            ..blank
+        },
+        OutputKind::ReserveDeposit {
+            destination,
+            controlling_currency,
+            tokens,
+        } => DecodedOutput {
+            kind: "reserveDeposit".into(),
+            address: Some(destination_address(&destination)),
+            controlling_currency: Some(dto::identity_address(controlling_currency.to_bytes())),
+            // As written, chain's own currency included — `tokenBalances`
+            // removes that part, this reports the payload.
+            tokens: Some(amounts(tokens)),
+            ..blank
+        },
+        OutputKind::ReserveTransfer {
+            destination,
+            transfer,
+        } => DecodedOutput {
+            kind: "reserveTransfer".into(),
+            address: Some(destination_address(&destination)),
+            tokens: Some(amounts(transfer.tokens.clone())),
+            flags: Some(transfer.flags),
+            fee_currency: Some(dto::identity_address(transfer.fee_currency.to_bytes())),
+            fees: Some(transfer.fees.to_string()),
+            destination_currency: Some(dto::identity_address(
+                transfer.destination_currency.to_bytes(),
+            )),
+            recipient: Some(destination_address(&transfer.destination.recipient)),
             ..blank
         },
         OutputKind::UnsupportedCryptoCondition {
@@ -322,6 +389,12 @@ mod tests {
 /// tell a second output from the same one listed twice, which matters when a
 /// caller concatenates paged RPC results.
 ///
+/// `nativeCurrency` is the chain's own currency id — `iJhCez…` on VRSCTEST.
+/// Pass `null` if you do not know it. It is needed only for reserve deposits
+/// and transfers, which name the chain's own currency in their payload *as
+/// well as* carrying it as satoshis; without it those two throw rather than
+/// report the same money twice. Nothing an ordinary address holds is affected.
+///
 /// ```js
 /// const utxos = await rpc("getaddressutxos", [{ addresses: [key.address()] }]);
 /// for (const { currency, amount } of tokenBalances(utxos.map(toUtxo))) {
@@ -329,9 +402,15 @@ mod tests {
 /// }
 /// ```
 #[wasm_bindgen(js_name = tokenBalances)]
-pub fn token_balances(utxos: UtxoListValue) -> Result<TokenBalancesValue, WasmError> {
+pub fn token_balances(
+    utxos: UtxoListValue,
+    native_currency: crate::types::JsOptionalText,
+) -> Result<TokenBalancesValue, WasmError> {
     let list: Vec<JsUtxo> = dto::from_js_list(utxos.into(), &JsUtxo::SHAPE)?;
-    let held = verus_tx::token_balances(&dto::utxos(&list)?)?;
+    let native = dto::optional_text("nativeCurrency", &native_currency)?
+        .map(|text| dto::currency("nativeCurrency", &text))
+        .transpose()?;
+    let held = verus_tx::token_balances(&dto::utxos(&list)?, native)?;
     let reported: Vec<TokenAmount> = held
         .into_iter()
         .map(|(currency, amount)| TokenAmount {

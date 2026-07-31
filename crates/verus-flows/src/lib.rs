@@ -80,7 +80,7 @@ pub mod shielded;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use balances::currency_names;
+pub use balances::{currency_names, native_currency};
 pub use broadcast::broadcast;
 pub use convert::{burn, convert, estimate, mint, plan_conversion, ConversionPlan};
 pub use error::FlowError;

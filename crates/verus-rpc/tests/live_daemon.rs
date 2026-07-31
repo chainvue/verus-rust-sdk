@@ -461,6 +461,137 @@ fn the_daemon_agrees_about_multi_currency_outputs_and_commitments() {
     );
 }
 
+/// **Reserve transfers and deposits, against the daemon's own reader.**
+///
+/// These two are the ones where a decoding mistake does not throw. Their
+/// payloads are a chain of fields with a variable-length destination in the
+/// middle, so a misread does not fail where it happens — it fails several
+/// fields later on a "currency id" that is really the tail of an address, and
+/// produces a plausible answer about a currency nobody has ever held.
+///
+/// So rather than pin a fixture, this scans recent blocks for whatever real
+/// examples exist and checks every field of each against the daemon's own
+/// `reservetransfer` / `reservedeposit` object. Scanning rather than naming a
+/// txid also means it keeps working: these outputs are common on VRSCTEST and
+/// a pinned one would eventually be spent out of easy reach.
+#[test]
+fn the_daemon_agrees_about_reserve_transfers_and_deposits() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    let client = client();
+    let tip = client.block_count().expect("getblockcount");
+
+    let mut transfers = 0;
+    let mut deposits = 0;
+    // Twelve blocks is plenty on VRSCTEST — the first probe found one of each
+    // in the first two — and it bounds the request count.
+    for height in (tip.saturating_sub(12)..=tip).rev() {
+        let block = probe("getblock", &format!("[{height}]"));
+        let Some(txids) = block["result"]["tx"].as_array() else {
+            continue;
+        };
+        for txid in txids {
+            let txid = txid.as_str().expect("txid");
+            let transaction = client.raw_transaction(txid).expect("getrawtransaction");
+            for output in transaction["vout"].as_array().unwrap_or(&Vec::new()) {
+                let script_json = &output["scriptPubKey"];
+                let reported = if script_json["reservetransfer"].is_object() {
+                    transfers += 1;
+                    &script_json["reservetransfer"]
+                } else if script_json["reservedeposit"].is_object() {
+                    deposits += 1;
+                    &script_json["reservedeposit"]
+                } else {
+                    continue;
+                };
+
+                let script = hex::decode(script_json["hex"].as_str().expect("hex")).expect("hex");
+                let decoded = verus_tx::decode_output_script(&script)
+                    .unwrap_or_else(|e| panic!("{txid}:{} did not decode: {e}", output["n"]));
+                let where_ = format!("{txid}:{}", output["n"]);
+
+                // Whatever it is, the currency map has to match.
+                let tokens = match &decoded {
+                    verus_tx::OutputKind::ReserveTransfer { transfer, .. } => {
+                        assert_eq!(
+                            transfer.flags,
+                            reported["flags"].as_u64().expect("flags"),
+                            "{where_}: flags"
+                        );
+                        assert_eq!(
+                            transfer.fee_currency,
+                            currency_of(reported["feecurrencyid"].as_str().expect("fee currency")),
+                            "{where_}: fee currency"
+                        );
+                        transfer.tokens.clone()
+                    }
+                    verus_tx::OutputKind::ReserveDeposit {
+                        controlling_currency,
+                        tokens,
+                        ..
+                    } => {
+                        assert_eq!(
+                            *controlling_currency,
+                            currency_of(
+                                reported["controllingcurrencyid"]
+                                    .as_str()
+                                    .expect("controlling currency")
+                            ),
+                            "{where_}: controlling currency"
+                        );
+                        tokens.clone()
+                    }
+                    other => panic!("{where_} decoded as {other:?}"),
+                };
+
+                let values = reported["currencyvalues"]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{where_}: no currencyvalues"));
+                assert_eq!(tokens.len(), values.len(), "{where_}: currency count");
+                for (currency, amount) in &tokens {
+                    let id = verus_keys::Address::new(
+                        verus_keys::AddressKind::Identity,
+                        currency.to_bytes(),
+                    )
+                    .to_string();
+                    let theirs = values
+                        .get(&id)
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or_else(|| panic!("{where_}: nothing reported for {id}"));
+                    #[allow(clippy::cast_precision_loss)] // -- compared with a tolerance
+                    let ours = *amount as f64 / 100_000_000.0;
+                    assert!(
+                        (ours - theirs).abs() < 1e-8,
+                        "{where_}: {id} read as {ours}, reported as {theirs}"
+                    );
+                }
+                eprintln!("{where_}: daemon agrees");
+            }
+        }
+        if transfers > 0 && deposits > 0 {
+            break;
+        }
+    }
+
+    // A scan that found nothing would pass while proving nothing.
+    assert!(
+        transfers > 0 && deposits > 0,
+        "found {transfers} transfers and {deposits} deposits in the last 12 blocks; \
+         this test proves nothing unless it sees at least one of each"
+    );
+}
+
+fn currency_of(address: &str) -> verus_tx::CurrencyId {
+    verus_tx::CurrencyId::from_bytes(
+        address
+            .parse::<verus_keys::Address>()
+            .expect("i-address")
+            .hash(),
+    )
+}
+
 /// Ask the endpoint directly, for methods the typed client has no variant for.
 ///
 /// Returns the whole envelope rather than a result, because for these probes the

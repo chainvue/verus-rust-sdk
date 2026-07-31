@@ -75,7 +75,9 @@ pub const ADVANCED_COMMITMENT_KEY: [u8; 20] = [
 /// returns nothing for it: the code there is commented out with the note that
 /// the value "cannot be calculated in isolation as an input". An import output
 /// does carry currency — it just cannot be read one output at a time — so this
-/// says so, and a balance keeps refusing it.
+/// says so, and a balance keeps refusing it. It is the only one of the five
+/// this crate does not decode, and the only one where reading harder would not
+/// help.
 pub const fn may_carry_currency(eval_code: u8) -> bool {
     matches!(
         eval_code,
@@ -162,8 +164,35 @@ pub enum OutputKind {
         /// would be a guess rather than a decode.
         tokens: Vec<(CurrencyId, u64)>,
     },
+    /// Currency held on behalf of a currency's reserves.
+    ///
+    /// Not a user's holding: these are paid to a system condition, not to an
+    /// address someone controls. Decoded because an output whose value cannot
+    /// be accounted for is one a caller has to be able to look at.
+    ReserveDeposit {
+        /// Who the output nominally pays.
+        destination: Destination,
+        /// The currency whose reserves these are.
+        controlling_currency: CurrencyId,
+        /// The map as written, with the chain's own currency **still in it**.
+        /// See [`crate::token_balances`] for why that has to be removed before
+        /// the figure means anything.
+        tokens: Vec<(CurrencyId, u64)>,
+    },
+    /// Value in flight: a conversion, export or burn awaiting import.
+    ///
+    /// Paid to [`crate::convert::RESERVE_TRANSFER_ADDRESS`], a protocol
+    /// constant rather than a recipient — the real destination is inside the
+    /// payload.
+    ReserveTransfer {
+        /// Who the output nominally pays.
+        destination: Destination,
+        /// The payload. Boxed because it is much larger than every other
+        /// variant, and an enum is as big as its widest arm.
+        transfer: Box<crate::convert::ReserveTransferPayload>,
+    },
     /// A CryptoCondition output whose eval code this crate does not decode yet
-    /// — a reserve transfer, a currency definition, a stakeguard.
+    /// — a currency definition, a crosschain import.
     ///
     /// Returned rather than ignored so a caller can refuse to spend value it
     /// cannot account for.
@@ -282,6 +311,25 @@ fn malformed(detail: &str) -> TxError {
     TxError::MalformedCryptoCondition(detail.to_string())
 }
 
+/// The destination an output pays, or an error naming the shape that had none.
+fn first_destination(destinations: Vec<Destination>, shape: &str) -> Result<Destination, TxError> {
+    destinations
+        .into_iter()
+        .next()
+        .ok_or_else(|| malformed(&format!("{shape} has no destination")))
+}
+
+/// Twenty bytes of currency id.
+fn read_currency_at(payload: &[u8], offset: &mut usize) -> Result<CurrencyId, TxError> {
+    let raw = payload
+        .get(*offset..*offset + 20)
+        .ok_or_else(|| malformed("a payload ended before a currency id"))?;
+    *offset += 20;
+    Ok(CurrencyId::from_bytes(
+        raw.try_into().expect("slice is 20 bytes"),
+    ))
+}
+
 /// Decode Bitcoin's `VARINT` (base-128, MSB continuation).
 ///
 /// # Why `checked_mul`, not `checked_shl`
@@ -295,7 +343,7 @@ fn malformed(detail: &str) -> TxError {
 /// `Balances` entry in `token.rs`, a bogus demand in `offer.rs`, and a bogus
 /// `held` in `convert.rs`. `checked_mul(128)` (equivalent to a real `<< 7`)
 /// actually detects the overflow.
-fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
+pub(crate) fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
     let mut value: u64 = 0;
     loop {
         let byte = *bytes
@@ -329,7 +377,7 @@ const TOKEN_OUTPUT_MULTIVALUE: u64 = 0x8000_0000;
 /// reason: accepting `fd 01 00` for 1 would let two different byte strings
 /// decode to the same output, and this decoder's job is to say what a
 /// *specific* script means.
-fn read_compact_size(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
+pub(crate) fn read_compact_size(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
     let first = *bytes
         .get(*offset)
         .ok_or_else(|| malformed("CompactSize ended early"))?;
@@ -418,7 +466,23 @@ fn read_currency_value_map(
 /// fractional currency's reserves is normal rather than exotic.
 fn parse_token_output(payload: &[u8]) -> Result<Vec<(CurrencyId, u64)>, TxError> {
     let mut offset = 0;
-    let version = read_var_int(payload, &mut offset)?;
+    let values = parse_token_output_at(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(malformed("trailing bytes after the TokenOutput"));
+    }
+    Ok(values)
+}
+
+/// The same, without insisting it is the whole payload.
+///
+/// `CReserveTransfer` and `CReserveDeposit` both *begin* with a `CTokenOutput`
+/// and carry their own fields after it — they inherit from it in the daemon —
+/// so the reader has to be able to stop in the middle.
+pub(crate) fn parse_token_output_at(
+    payload: &[u8],
+    offset: &mut usize,
+) -> Result<Vec<(CurrencyId, u64)>, TxError> {
+    let version = read_var_int(payload, offset)?;
     let multivalue = version & TOKEN_OUTPUT_MULTIVALUE != 0;
     let base = version & !TOKEN_OUTPUT_MULTIVALUE;
     if base != 1 {
@@ -427,23 +491,17 @@ fn parse_token_output(payload: &[u8]) -> Result<Vec<(CurrencyId, u64)>, TxError>
         )));
     }
 
-    let values = if multivalue {
-        read_currency_value_map(payload, &mut offset)?
-    } else {
-        let currency: [u8; 20] = payload
-            .get(offset..offset + 20)
-            .ok_or_else(|| malformed("TokenOutput ended before its currency id"))?
-            .try_into()
-            .expect("slice is 20 bytes");
-        offset += 20;
-        let amount = read_var_int(payload, &mut offset)?;
-        vec![(CurrencyId::from_bytes(currency), amount)]
-    };
-
-    if offset != payload.len() {
-        return Err(malformed("trailing bytes after the TokenOutput"));
+    if multivalue {
+        return read_currency_value_map(payload, offset);
     }
-    Ok(values)
+    let currency: [u8; 20] = payload
+        .get(*offset..*offset + 20)
+        .ok_or_else(|| malformed("TokenOutput ended before its currency id"))?
+        .try_into()
+        .expect("slice is 20 bytes");
+    *offset += 20;
+    let amount = read_var_int(payload, offset)?;
+    Ok(vec![(CurrencyId::from_bytes(currency), amount)])
 }
 
 /// Decode an output script.
@@ -548,6 +606,37 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
         }
         return Ok(OutputKind::IdentityPrimary {
             identity: Box::new(Identity::from_bytes(payload)?),
+        });
+    }
+
+    if eval_code == EVAL_RESERVE_DEPOSIT {
+        let payload = params.take_push()?;
+        if !params.done() {
+            return Err(malformed("trailing vdata after a reserve deposit"));
+        }
+        let mut offset = 0;
+        let tokens = parse_token_output_at(payload, &mut offset)?;
+        let controlling_currency = read_currency_at(payload, &mut offset)?;
+        if offset != payload.len() {
+            return Err(malformed("trailing bytes after a reserve deposit"));
+        }
+        return Ok(OutputKind::ReserveDeposit {
+            destination: first_destination(destinations, "reserve deposit")?,
+            controlling_currency,
+            tokens,
+        });
+    }
+
+    if eval_code == EVAL_RESERVE_TRANSFER {
+        let payload = params.take_push()?;
+        if !params.done() {
+            return Err(malformed("trailing vdata after a reserve transfer"));
+        }
+        return Ok(OutputKind::ReserveTransfer {
+            destination: first_destination(destinations, "reserve transfer")?,
+            transfer: Box::new(crate::convert::ReserveTransferPayload::from_payload(
+                payload,
+            )?),
         });
     }
 

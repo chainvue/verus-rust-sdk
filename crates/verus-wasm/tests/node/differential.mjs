@@ -442,7 +442,7 @@ console.log("\noffline derivation");
     txid: u.txid, vout: u.vout,
     satoshis: String(u.satoshis), scriptPubKey: u.script_pubkey,
   }));
-  const held = tokenBalances(utxos);
+  const held = tokenBalances(utxos, null);
   assert.ok(held.length > 0, "the token fixture must carry a token");
   for (const entry of held) {
     assert.match(entry.currency, /^i/, "a currency is named by its i-address");
@@ -450,9 +450,9 @@ console.log("\noffline derivation");
     // The native satoshis a reserve output also carries are NOT token value.
     assert.notEqual(entry.amount, String(tokenVector.utxos[0].satoshis));
   }
-  assert.deepEqual(tokenBalances([]), [], "no outputs, no balances");
+  assert.deepEqual(tokenBalances([], null), [], "no outputs, no balances");
   assert.deepEqual(
-    tokenBalances([{ txid: "aa".repeat(32), vout: 0, satoshis: "1", scriptPubKey: key.scriptPubKey() }]),
+    tokenBalances([{ txid: "aa".repeat(32), vout: 0, satoshis: "1", scriptPubKey: key.scriptPubKey() }], null),
     [],
     "a plain output carries no currency",
   );
@@ -462,11 +462,11 @@ console.log("\noffline derivation");
   // balance must not be reported at all rather than reported short.
   const opaque = "4c0f" + "00".repeat(15);
   assert.throws(
-    () => tokenBalances([{ txid: "bb".repeat(32), vout: 2, satoshis: "1", scriptPubKey: opaque }]),
+    () => tokenBalances([{ txid: "bb".repeat(32), vout: 2, satoshis: "1", scriptPubKey: opaque }], null),
     (e) => e instanceof Error,
     "an unreadable output must not be counted as zero",
   );
-  assert.throws(() => tokenBalances({ txid: "aa" }), (e) => e.name === "InvalidArgument",
+  assert.throws(() => tokenBalances({ txid: "aa" }, null), (e) => e.name === "InvalidArgument",
     "a single object is not a list of outputs");
   ok("an output that cannot be read refuses the whole balance");
 
@@ -488,22 +488,23 @@ console.log("\noffline derivation");
   assert.equal(staked.evalCode, 1);
   assert.equal(staked.mayCarryCurrency, false, "a stakeguard output holds no currency");
   assert.deepEqual(
-    tokenBalances([{ txid: "cc".repeat(32), vout: 0, satoshis: "600000000", scriptPubKey: stakeguard }]),
+    tokenBalances([{ txid: "cc".repeat(32), vout: 0, satoshis: "600000000", scriptPubKey: stakeguard }], null),
     [],
     "a staker must get a balance, not an exception",
   );
   ok("a proof-of-stake coinbase counts as tokenless instead of refusing the balance");
 
-  // The same script with the eval code changed to 11 (EVAL_RESERVE_DEPOSIT),
-  // one of the five the chain does read currency out of. The refusal has to
-  // survive for those, or narrowing it turned into removing it.
-  const deposit = stakeguard.replace("cc4c870403010101", "cc4c8704030b0101");
-  assert.notEqual(deposit, stakeguard, "the eval code must actually have changed");
-  const bearing = decodeOutput(deposit);
-  assert.equal(bearing.evalCode, 11);
+  // The same script with the eval code changed to 13 (EVAL_CROSSCHAIN_IMPORT),
+  // the one remaining code the chain reads currency out of and this SDK does
+  // not decode. The refusal has to survive for it, or narrowing the refusal
+  // turned into removing it.
+  const importing = stakeguard.replace("cc4c870403010101", "cc4c8704030d0101");
+  assert.notEqual(importing, stakeguard, "the eval code must actually have changed");
+  const bearing = decodeOutput(importing);
+  assert.equal(bearing.evalCode, 13);
   assert.equal(bearing.mayCarryCurrency, true);
   assert.throws(
-    () => tokenBalances([{ txid: "dd".repeat(32), vout: 0, satoshis: "1", scriptPubKey: deposit }]),
+    () => tokenBalances([{ txid: "dd".repeat(32), vout: 0, satoshis: "1", scriptPubKey: importing }], null),
     (e) => e instanceof Error,
     "an eval code that can hold currency still refuses the whole balance",
   );
@@ -522,7 +523,7 @@ console.log("\noffline derivation");
     "an identity destination must not be rendered as an R address nobody controls");
   assert.deepEqual(owned.tokens, [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }]);
   assert.deepEqual(
-    tokenBalances([{ txid: "ee".repeat(32), vout: 1, satoshis: "0", scriptPubKey: identityHeld }]),
+    tokenBalances([{ txid: "ee".repeat(32), vout: 1, satoshis: "0", scriptPubKey: identityHeld }], null),
     [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }],
   );
   assert.equal(formatCoins(owned.tokens[0].amount), "0.4", "the daemon reads the same 0.4");
@@ -552,9 +553,10 @@ console.log("\noffline derivation");
     iNZzqYdmfCPCcVSTBjbPT8Q7rqeFohxATu: "1288",
     iQP7TeWNDNsF7aaaCkQzNyS4jDjdKncNWf: "291700",
   };
-  const many = tokenBalances([
-    { txid: "ff".repeat(32), vout: 10, satoshis: "0", scriptPubKey: multivalue },
-  ]);
+  const many = tokenBalances(
+    [{ txid: "ff".repeat(32), vout: 10, satoshis: "0", scriptPubKey: multivalue }],
+    null,
+  );
   assert.deepEqual(
     Object.fromEntries(many.map((t) => [t.currency, formatCoins(t.amount)])),
     daemonValues,
@@ -578,10 +580,61 @@ console.log("\noffline derivation");
   );
   assert.deepEqual(reserved.tokens, []);
   assert.deepEqual(
-    tokenBalances([{ txid: "ab".repeat(32), vout: 0, satoshis: "0", scriptPubKey: commitment }]),
+    tokenBalances([{ txid: "ab".repeat(32), vout: 0, satoshis: "0", scriptPubKey: commitment }], null),
     [],
   );
   ok("a name commitment is read rather than refused");
+
+  // Reserve transfers and deposits. Both name the chain's own currency in their
+  // payload AND carry it as satoshis, so counting the payload without knowing
+  // which currency is native reports the same money twice. Real scripts: block
+  // 1170450 output 1, and block 1170449 output 0.
+  const VRSCTEST_CURRENCY = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+  const transfer =
+    "1a040300010114cb8a0f7f651b484a81e2312c3438deb601e27368cc4ca4040308010114cb8a0f7f651b" +
+    "484a81e2312c3438deb601e273684c8801a6ef9ea235635e328124ff3429db9f9e91b64e2d81b4e13187" +
+    "03a6ef9ea235635e328124ff3429db9f9e91b64e2d809b2a42144fad5a983b2b714651afe2e40a9e0a7d" +
+    "498bfdd7011602143d74453766227cfd9c0449e83184ae4912b0d5cb6d4a9a7ef695f4f2a35a49c9f232" +
+    "beb5cc9b964ac0bfd996f3716d9d397db9b1070756b4d8ac9a5a75";
+  const deposit =
+    "2704030001012103b99d7cb946c5b1f8a54cde49b8d7e0a2a15a22639feb798009f82b519526c050cc4c" +
+    "5504030b01012103b99d7cb946c5b1f8a54cde49b8d7e0a2a15a22639feb798009f82b519526c0502d01" +
+    "a6ef9ea235635e328124ff3429db9f9e91b64e2d81b5fd5f6d4a9a7ef695f4f2a35a49c9f232beb5cc9b" +
+    "964a75";
+
+  const moving = decodeOutput(transfer);
+  assert.equal(moving.kind, "reserveTransfer");
+  assert.equal(moving.flags, 1027, "VALID | CONVERT | RESERVE_TO_RESERVE");
+  assert.equal(moving.fees, "20010");
+  assert.equal(moving.feeCurrency, VRSCTEST_CURRENCY);
+  // `address` is the protocol's transfer address, the same for every transfer
+  // on the chain; the real recipient is inside the payload.
+  assert.equal(moving.address, "RTqQe58LSj2yr5CrwYFwcsAQ1edQwmrkUU");
+  assert.equal(moving.recipient, "RGYV8WX9ykrCUZz9VgPAdaRV1aqGDnhz5j");
+  assert.deepEqual(moving.tokens, [{ currency: VRSCTEST_CURRENCY, amount: "5075249" }]);
+
+  const deposited = decodeOutput(deposit);
+  assert.equal(deposited.kind, "reserveDeposit");
+  assert.equal(deposited.controllingCurrency, "iDSQTXbRNjSfXvQf9q9rHZy51x3CNSypBM");
+  assert.deepEqual(deposited.tokens, [{ currency: VRSCTEST_CURRENCY, amount: "5095263" }]);
+  ok("reserve transfers and deposits decode field for field");
+
+  for (const [label, script, satoshis] of [["transfer", transfer, "5095259"], ["deposit", deposit, "5095263"]]) {
+    // Told which currency is the chain's own, both come to nothing: every
+    // satoshi they name is already in the output's value.
+    assert.deepEqual(
+      tokenBalances([{ txid: "12".repeat(32), vout: 0, satoshis, scriptPubKey: script }], VRSCTEST_CURRENCY),
+      [],
+      `${label}: its payload is native value, not a token`,
+    );
+    // Not told, it refuses rather than double-counting.
+    assert.throws(
+      () => tokenBalances([{ txid: "12".repeat(32), vout: 0, satoshis, scriptPubKey: script }], null),
+      (e) => e instanceof Error,
+      `${label}: must refuse without the chain's own currency`,
+    );
+  }
+  ok("both count as nothing with the native currency, and refuse without it");
   key.free();
 }
 

@@ -54,6 +54,7 @@ use crate::amount::Amount;
 use crate::assemble::{assemble, Assembly};
 use crate::cc::{cc_script, token_output, Destination, OptCcParams, EVAL_NONE};
 use crate::currency::CurrencyId;
+use crate::decode::{read_compact_size, read_var_int};
 use crate::error::TxError;
 use crate::expiry::Expiry;
 use crate::fee::DEFAULT_FEE_PER_KB;
@@ -112,6 +113,29 @@ pub struct TransferDestination {
     pub recipient: Destination,
     /// Additional destinations, serialized after the primary one.
     pub auxiliary: Vec<Destination>,
+    /// The bridge leg, when the value is leaving for another system.
+    ///
+    /// `None` for everything this crate builds — a local conversion has no
+    /// gateway. Present on decoding because a real transfer may have one, and
+    /// its `fees` count towards what the output carries.
+    pub gateway: Option<GatewayLeg>,
+}
+
+/// The extra fields a destination carries when it routes through a bridge.
+///
+/// `CTransferDestination`'s `gatewayID`, `gatewayCode` and `fees`, serialized
+/// only when `FLAG_DEST_GATEWAY` is set on the type byte.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayLeg {
+    /// The gateway's fee currency / system id.
+    pub gateway: CurrencyId,
+    /// Which function the gateway is to run.
+    pub code: CurrencyId,
+    /// Fees this destination is holding for the onward leg.
+    ///
+    /// Added to `nFees` by `CReserveTransfer::TotalCurrencyOut`, so an output
+    /// with a gateway leg carries more than its `fees` field alone says.
+    pub fees: u64,
 }
 
 impl TransferDestination {
@@ -121,6 +145,7 @@ impl TransferDestination {
         Self {
             recipient: recipient.clone(),
             auxiliary: vec![recipient],
+            gateway: None,
         }
     }
 
@@ -141,6 +166,7 @@ impl TransferDestination {
         Self {
             recipient,
             auxiliary: vec![refund],
+            gateway: None,
         }
     }
 
@@ -149,32 +175,53 @@ impl TransferDestination {
         Self {
             recipient,
             auxiliary: Vec::new(),
+            gateway: None,
         }
     }
 
     /// The type byte: the destination kind, with bit 6 set when auxiliaries
-    /// follow.
+    /// follow and bit 7 when a gateway leg does.
     fn type_byte(&self) -> u8 {
-        let base = destination_type(&self.recipient);
-        if self.auxiliary.is_empty() {
-            base
-        } else {
-            base | FLAG_DEST_AUX
+        let mut byte = destination_type(&self.recipient);
+        if !self.auxiliary.is_empty() {
+            byte |= FLAG_DEST_AUX;
         }
+        if self.gateway.is_some() {
+            byte |= FLAG_DEST_GATEWAY;
+        }
+        byte
     }
 
     fn serialize(&self) -> Result<Vec<u8>, TxError> {
-        let mut out = crate::cc::var_int(u64::from(self.type_byte()));
+        // A raw byte, not a VARINT. `CTransferDestination::type` is a
+        // `uint8_t` and `READWRITE` writes one byte for it. Every type this
+        // crate used to build is below 128, where a VARINT happens to be the
+        // same single byte — so this is not a change to any existing vector.
+        // It stops being the same the moment `FLAG_DEST_GATEWAY` (128) is set,
+        // which is exactly when a VARINT would silently write two bytes and
+        // desync the rest of the payload.
+        let mut out = vec![self.type_byte()];
         let body = destination_bytes(&self.recipient);
         write_compact_size(&mut out, body.len() as u64);
         out.extend_from_slice(&body);
+
+        // Order matters and is not the order the fields are declared in: the
+        // gateway leg comes before the auxiliaries.
+        if let Some(gateway) = &self.gateway {
+            out.extend_from_slice(&gateway.gateway.to_bytes());
+            out.extend_from_slice(&gateway.code.to_bytes());
+            let fees = i64::try_from(gateway.fees).map_err(|_| {
+                TxError::InvalidConversion("a gateway fee does not fit in a CAmount".into())
+            })?;
+            out.extend_from_slice(&fees.to_le_bytes());
+        }
 
         if !self.auxiliary.is_empty() {
             write_compact_size(&mut out, self.auxiliary.len() as u64);
             for aux in &self.auxiliary {
                 // Each auxiliary is itself a serialized destination, length
                 // prefixed: type, then its own length-prefixed body.
-                let mut inner = crate::cc::var_int(u64::from(destination_type(aux)));
+                let mut inner = vec![destination_type(aux)];
                 let aux_body = destination_bytes(aux);
                 write_compact_size(&mut inner, aux_body.len() as u64);
                 inner.extend_from_slice(&aux_body);
@@ -184,10 +231,270 @@ impl TransferDestination {
         }
         Ok(out)
     }
+
+    /// Read a destination back, advancing `offset`.
+    ///
+    /// The mirror of [`Self::serialize`], and written next to it so the two
+    /// cannot drift: a payload whose destination is misread does not fail
+    /// there, it fails several fields later on a currency id that is really
+    /// the tail of an address.
+    pub(crate) fn deserialize(bytes: &[u8], offset: &mut usize) -> Result<Self, TxError> {
+        let type_byte = *bytes
+            .get(*offset)
+            .ok_or_else(|| bad("a transfer destination ended before its type"))?;
+        *offset += 1;
+
+        let kind = type_byte & !FLAG_MASK;
+        let body = read_var_slice(bytes, offset)?;
+        let recipient = destination_from(kind, body)?;
+
+        let gateway = if type_byte & FLAG_DEST_GATEWAY == 0 {
+            None
+        } else {
+            let gateway = read_currency(bytes, offset)?;
+            let code = read_currency(bytes, offset)?;
+            let raw = bytes
+                .get(*offset..*offset + 8)
+                .ok_or_else(|| bad("a gateway leg ended before its fees"))?;
+            *offset += 8;
+            let fees = i64::from_le_bytes(raw.try_into().expect("slice is 8 bytes"));
+            // `CAmount` is signed; a negative fee is not something this crate
+            // can report honestly, and it is not something a valid transfer
+            // contains.
+            let fees = u64::try_from(fees)
+                .map_err(|_| bad(&format!("a gateway leg holds a negative fee ({fees})")))?;
+            Some(GatewayLeg {
+                gateway,
+                code,
+                fees,
+            })
+        };
+
+        let mut auxiliary = Vec::new();
+        if type_byte & FLAG_DEST_AUX != 0 {
+            let count = read_compact_size(bytes, offset)?;
+            // Each auxiliary is at least three bytes, so this bounds the loop
+            // by what is actually left rather than by a declared number.
+            let remaining = bytes.len().saturating_sub(*offset);
+            let count = usize::try_from(count)
+                .ok()
+                .filter(|count| count.saturating_mul(3) <= remaining)
+                .ok_or_else(|| bad("a destination claims more auxiliaries than it can hold"))?;
+            for _ in 0..count {
+                let inner = read_var_slice(bytes, offset)?;
+                let mut at = 0;
+                let aux_type = *inner
+                    .first()
+                    .ok_or_else(|| bad("an auxiliary destination is empty"))?;
+                at += 1;
+                let aux_body = read_var_slice(inner, &mut at)?;
+                if at != inner.len() {
+                    return Err(bad("trailing bytes inside an auxiliary destination"));
+                }
+                auxiliary.push(destination_from(aux_type & !FLAG_MASK, aux_body)?);
+            }
+        }
+
+        Ok(Self {
+            recipient,
+            auxiliary,
+            gateway,
+        })
+    }
+}
+
+fn bad(detail: &str) -> TxError {
+    TxError::MalformedCryptoCondition(detail.to_string())
+}
+
+/// A `CompactSize`-prefixed byte string.
+fn read_var_slice<'a>(bytes: &'a [u8], offset: &mut usize) -> Result<&'a [u8], TxError> {
+    let length = read_compact_size(bytes, offset)?;
+    let length =
+        usize::try_from(length).map_err(|_| bad("a length prefix does not fit in memory"))?;
+    let slice = bytes
+        .get(*offset..*offset + length)
+        .ok_or_else(|| bad("a length prefix runs past the end of the payload"))?;
+    *offset += length;
+    Ok(slice)
+}
+
+fn read_currency(bytes: &[u8], offset: &mut usize) -> Result<CurrencyId, TxError> {
+    let raw = bytes
+        .get(*offset..*offset + 20)
+        .ok_or_else(|| bad("a payload ended before a currency id"))?;
+    *offset += 20;
+    Ok(CurrencyId::from_bytes(
+        raw.try_into().expect("slice is 20 bytes"),
+    ))
+}
+
+/// Turn a destination type and body back into a [`Destination`].
+///
+/// Only the four kinds [`destination_type`] can write are accepted. The daemon
+/// defines more — full identities, currency registrations, nested transfers,
+/// Ethereum addresses — and each has its own body format, so reading one as an
+/// address would name the wrong party rather than fail.
+fn destination_from(kind: u8, body: &[u8]) -> Result<Destination, TxError> {
+    let fixed = || -> Result<[u8; 20], TxError> {
+        body.try_into()
+            .map_err(|_| bad("a destination body is not 20 bytes"))
+    };
+    match kind {
+        1 => {
+            if body.len() != 33 && body.len() != 65 {
+                return Err(bad("a public key destination is not 33 or 65 bytes"));
+            }
+            Ok(Destination::PubKey(body.to_vec()))
+        }
+        2 => Ok(Destination::PubKeyHash(fixed()?)),
+        3 => Ok(Destination::ScriptHash(fixed()?)),
+        4 => Ok(Destination::Identity(fixed()?)),
+        other => Err(bad(&format!(
+            "transfer destination type {other} is not one this crate decodes"
+        ))),
+    }
+}
+
+/// A `CReserveTransfer` payload as it was actually written.
+///
+/// The read side of [`ReserveTransfer`], deliberately a different type. The
+/// builder takes a [`ConversionKind`] that *chooses* a flag combination this
+/// crate is willing to produce; this reports whatever combination is on chain,
+/// including ones it would not itself write and ones that do not yet exist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReserveTransferPayload {
+    /// The `CTokenOutput` this transfer is built on — what is being moved.
+    ///
+    /// Not what the output *carries*: for a mint nothing is being spent, and
+    /// the fee is carried on top. Use [`Self::reserve_value`] for that.
+    pub tokens: Vec<(CurrencyId, u64)>,
+    /// The raw flag word. See the `RT_*` constants.
+    pub flags: u64,
+    /// The currency the fee is paid in.
+    pub fee_currency: CurrencyId,
+    /// The fee, in `fee_currency`'s smallest unit.
+    pub fees: u64,
+    /// Where the value is delivered, and any bridge leg.
+    pub destination: TransferDestination,
+    /// The currency written in the `destCurrencyID` slot.
+    ///
+    /// For a reserve-to-reserve conversion this is the *via* currency — the
+    /// fractional basket the value passes through — and the final target is
+    /// [`Self::second_reserve`]. The daemon's JSON reports them under
+    /// `via` and `destinationcurrencyid` respectively, which is the opposite
+    /// way round from the serialized order.
+    pub destination_currency: CurrencyId,
+    /// Present only when `RT_RESERVE_TO_RESERVE` is set.
+    pub second_reserve: Option<CurrencyId>,
+    /// Present only when `RT_CROSS_SYSTEM` is set.
+    pub destination_system: Option<CurrencyId>,
+}
+
+/// `CROSS_SYSTEM` — a `destSystemID` follows the rest of the payload.
+pub const RT_CROSS_SYSTEM: u64 = 64;
+
+impl ReserveTransferPayload {
+    /// Read a `CReserveTransfer` payload.
+    pub fn from_payload(payload: &[u8]) -> Result<Self, TxError> {
+        let mut offset = 0;
+        let tokens = crate::decode::parse_token_output_at(payload, &mut offset)?;
+        let flags = read_var_int(payload, &mut offset)?;
+        let fee_currency = read_currency(payload, &mut offset)?;
+        let fees = read_var_int(payload, &mut offset)?;
+        let destination = TransferDestination::deserialize(payload, &mut offset)?;
+        let destination_currency = read_currency(payload, &mut offset)?;
+        let second_reserve = (flags & RT_RESERVE_TO_RESERVE != 0)
+            .then(|| read_currency(payload, &mut offset))
+            .transpose()?;
+        let destination_system = (flags & RT_CROSS_SYSTEM != 0)
+            .then(|| read_currency(payload, &mut offset))
+            .transpose()?;
+        if offset != payload.len() {
+            return Err(bad("trailing bytes after a reserve transfer"));
+        }
+        Ok(Self {
+            tokens,
+            flags,
+            fee_currency,
+            fees,
+            destination,
+            destination_currency,
+            second_reserve,
+            destination_system,
+        })
+    }
+
+    /// Whether this transfer mints rather than moves.
+    pub fn is_mint(&self) -> bool {
+        self.flags & RT_MINT_CURRENCY != 0
+    }
+
+    /// What this output holds, the way consensus counts it.
+    ///
+    /// `CScript::ReserveOutValue` for `EVAL_RESERVE_TRANSFER` is
+    /// `CReserveTransfer::TotalCurrencyOut()` with the chain's own currency
+    /// erased — so this needs `native`, and that is not a detail that can be
+    /// defaulted. The native part of a transfer is carried in the output's
+    /// satoshi value as well as named in the payload; counting it here too
+    /// would report it twice. On both of the real VRSCTEST vectors this
+    /// crate tests against, the erase is what takes the answer to empty.
+    ///
+    /// The fee is part of what the output carries, not a deduction from it —
+    /// including any fee the gateway leg is holding for the onward hop. A
+    /// mint is the one case where the primary amount does *not* count: it is
+    /// created on import rather than spent here.
+    pub fn reserve_value(&self, native: CurrencyId) -> Result<Vec<(CurrencyId, u64)>, TxError> {
+        let mut held: std::collections::BTreeMap<CurrencyId, u64> =
+            std::collections::BTreeMap::new();
+
+        let gateway_fees = match &self.destination.gateway {
+            // `HasGatewayLeg` is the flag *and* a non-null gateway id, so a
+            // leg naming no gateway contributes nothing even if it holds a
+            // fee.
+            Some(leg) if leg.gateway != CurrencyId::from_bytes([0; 20]) => leg.fees,
+            _ => 0,
+        };
+        let fee_amount = self
+            .fees
+            .checked_add(gateway_fees)
+            .ok_or(TxError::ValueOverflow)?;
+        if fee_amount != 0 {
+            // A null fee currency means the chain's own, which is what the
+            // daemon substitutes while printing a warning about it.
+            let currency = if self.fee_currency == CurrencyId::from_bytes([0; 20]) {
+                native
+            } else {
+                self.fee_currency
+            };
+            *held.entry(currency).or_default() = fee_amount;
+        }
+
+        if !self.is_mint() {
+            for (currency, amount) in &self.tokens {
+                let entry = held.entry(*currency).or_default();
+                *entry = entry.checked_add(*amount).ok_or(TxError::ValueOverflow)?;
+            }
+        }
+
+        held.remove(&native);
+        Ok(held.into_iter().collect())
+    }
 }
 
 /// Set on a destination type when auxiliary destinations follow.
 const FLAG_DEST_AUX: u8 = 64;
+
+/// Set when a gateway leg follows the destination body.
+const FLAG_DEST_GATEWAY: u8 = 128;
+
+/// Every flag bit, so the kind can be recovered from the type byte.
+///
+/// `FLAG_RESERVED1` and `FLAG_RESERVED2` are in here too: they are defined in
+/// `CTransferDestination` and masked off there, so a destination that sets one
+/// must still read as its base kind rather than as an unknown type.
+const FLAG_MASK: u8 = 16 | 32 | FLAG_DEST_AUX | FLAG_DEST_GATEWAY;
 
 fn destination_type(destination: &Destination) -> u8 {
     match destination {

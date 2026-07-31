@@ -253,6 +253,25 @@ pub fn build_token_send(
                         eval_code: crate::register::EVAL_IDENTITY_COMMITMENT,
                     })
                 }
+                // Neither belongs to whoever is signing. A reserve deposit is
+                // held by a currency's own condition, and a transfer is paid to
+                // the protocol's transfer address and consumed by the next
+                // import. Decoding them made them visible here; it did not make
+                // them spendable.
+                OutputKind::ReserveDeposit { .. } => {
+                    return Err(TxError::UnsupportedFundingEval {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                        eval_code: crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                    })
+                }
+                OutputKind::ReserveTransfer { .. } => {
+                    return Err(TxError::UnsupportedFundingEval {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                        eval_code: crate::convert::EVAL_RESERVE_TRANSFER,
+                    })
+                }
                 OutputKind::UnsupportedCryptoCondition { eval_code, .. } => {
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),
