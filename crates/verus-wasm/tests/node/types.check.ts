@@ -32,6 +32,7 @@ import {
   type VerifyRequest,
   type VerifyResult,
   type DecodedOutput,
+  type DecodedReserveOutput,
   type Utxo,
   type TokenAmount,
 } from "../../pkg/verus_wasm.js";
@@ -92,32 +93,73 @@ const why: "stale" | "future" | "threshold" | undefined = claim.reason;
 void [signatureBlockHeight(verify.signature), why];
 
 const output: DecodedOutput = decodeOutput(utxo.scriptPubKey);
+
+// Narrowing must produce fields that are PRESENT, not `T | undefined`. These
+// annotations are the test: if the union collapsed back into one interface with
+// optional fields, every line below fails to compile.
 if (output.kind === "unsupportedCryptoCondition") {
-  const evalCode: number | undefined = output.evalCode;
+  const evalCode: number = output.evalCode;
   // The flag a wallet needs to tell "undecodable and harmless" — a staker's
   // coinbase — from "undecodable and possibly holding your money".
-  const mayCarryCurrency: boolean | undefined = output.mayCarryCurrency;
+  const mayCarryCurrency: boolean = output.mayCarryCurrency;
   void [evalCode, mayCarryCurrency];
 }
 if (output.kind === "identityCommitment") {
-  const commitment: string | undefined = output.commitment;
+  const commitment: string = output.commitment;
   // Present and empty for an ordinary commitment; the advanced form carries
   // currency alongside the hash.
-  const carried: TokenAmount[] | undefined = output.tokens;
+  const carried: TokenAmount[] = output.tokens;
   void [commitment, carried];
 }
 if (output.kind === "reserveTransfer") {
-  const flags: number | undefined = output.flags;
-  const fees: string | undefined = output.fees;
+  const flags: number = output.flags;
+  const fees: string = output.fees;
   // The real recipient, which is not `address` — that is the protocol's
   // transfer address, identical for every transfer on the chain.
-  const recipient: string | undefined = output.recipient;
+  const recipient: string = output.recipient;
   void [flags, fees, recipient, output.feeCurrency, output.destinationCurrency];
 }
 if (output.kind === "reserveDeposit") {
-  const controlling: string | undefined = output.controllingCurrency;
+  const controlling: string = output.controllingCurrency;
   void controlling;
 }
+
+// A `switch` over every member must leave `never` — the check that the union
+// is closed, and the thing that makes adding a variant a compile error in
+// consuming code rather than a silent fallthrough.
+function describe(o: DecodedOutput): string {
+  switch (o.kind) {
+    case "pubKeyHash":
+    case "pubKey":
+    case "identityPayment":
+      return o.address;
+    case "reserveOutput":
+      return `${o.address} holds ${o.tokens.length}`;
+    case "identityPrimary":
+      return `${o.name} ${o.minimumSignatures}/${o.primaryAddresses.length}`;
+    case "identityCommitment":
+      return o.commitment;
+    case "reserveDeposit":
+      return o.controllingCurrency;
+    case "reserveTransfer":
+      return `${o.recipient} via ${o.destinationCurrency}`;
+    case "unsupportedCryptoCondition":
+      return `eval ${o.evalCode}`;
+    case "unknown":
+      return "unknown";
+    default: {
+      const exhaustive: never = o;
+      return exhaustive;
+    }
+  }
+}
+void describe(output);
+
+// The individual members are exported too, so a wallet can write a handler per
+// shape rather than one switch.
+declare const one: DecodedReserveOutput;
+const held: TokenAmount[] = one.tokens;
+void held;
 
 // `null` for "I do not know the chain's own currency id" — only reserve
 // deposits and transfers need it, and they are refused without it.
@@ -155,4 +197,26 @@ const confused: SendRequest = {
   recipients: [{ address: "R…", satoshis: "1", currency: "i…" }],
 };
 
-void [floatMoney, typo, unbounded, confused];
+// A field belongs to the shape that has it. Before the union these compiled
+// and returned `undefined` at runtime — a wallet could read the fee off a plain
+// payment and get nothing, with no signal that it had asked the wrong question.
+// @ts-expect-error fees exists only on a reserveTransfer
+const wrongShape: string = decodeOutput(utxo.scriptPubKey).fees;
+
+// Narrowing to one member does not unlock another member's fields.
+const narrowed = decodeOutput(utxo.scriptPubKey);
+if (narrowed.kind === "reserveDeposit") {
+  // @ts-expect-error a reserveDeposit has no recipient — that is a transfer
+  const notHere: string = narrowed.recipient;
+  void notHere;
+}
+
+// An unreadable output must not look payable: it carries no address at all,
+// and the types have to say so or a caller will pay to `undefined`.
+if (narrowed.kind === "unsupportedCryptoCondition") {
+  // @ts-expect-error an unreadable output has no address
+  const payable: string = narrowed.address;
+  void payable;
+}
+
+void [floatMoney, typo, unbounded, confused, wrongShape];
