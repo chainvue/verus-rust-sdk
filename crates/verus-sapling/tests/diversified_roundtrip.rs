@@ -71,7 +71,7 @@ fn a_note_received_at_a_diversified_address_can_be_spent() {
     let Some(params) = params() else { return };
 
     let account = derive_account(&[7u8; 64], COIN_TYPE_MAINNET, 0).expect("derive");
-    let dfvk = dfvk_from_extsk(&account.extsk).expect("dfvk");
+    let dfvk = dfvk_from_extsk(&*account.extsk).expect("dfvk");
 
     // The 8th usable address, chosen so it is emphatically not the default.
     let (index, recipient) = addresses(&dfvk, 0).nth(7).expect("an address");
@@ -147,11 +147,52 @@ fn a_note_received_at_a_diversified_address_can_be_spent() {
         parents: Vec::new(),
     };
     let fee = 10_000u64;
+    // A witness against a frontier the chain does not have must be refused
+    // BEFORE proving. This is the failure the README calls "confirmed the hard
+    // way": nothing local objects — the note decrypts, the witness builds, the
+    // proof generates after ~20 seconds — and only the daemon does, with
+    // `bad-txns-shielded-requirements-not-met`. Handing the builder the
+    // chain's own root turns that into a comparison. Runs first because it
+    // must be quick: reaching the prover at all would be the bug.
+    let wrong_anchor = build_shielded_spend(
+        &params,
+        &SpendSpec {
+            notes: &[NoteToSpend {
+                extsk_bytes: &*account.extsk,
+                output,
+                tree_before_block: &empty_tree,
+                block_cmus: &outputs.iter().map(|o| o.cmu).collect::<Vec<_>>(),
+                my_cmu_index: position,
+                advanced_witness: None,
+            }],
+            shielded_outputs: &[],
+            transparent_outputs: &[TxOut {
+                value: value - fee,
+                script_pubkey: vec![0x76, 0xa9, 0x14],
+            }],
+            fee,
+            expiry_height: 0,
+            branch_id: VERUS_BRANCH_ID,
+            zip212: VERUS_ZIP212,
+            expected_anchor: Some([0x11; 32]),
+        },
+    );
+    match wrong_anchor {
+        Err(e) => {
+            let message = e.to_string();
+            assert!(
+                message.contains("the chain's root is"),
+                "the refusal must name both roots: {message}"
+            );
+        }
+        Ok(_) => panic!("a witness against the wrong anchor was proved and accepted"),
+    }
+
     let spend = build_shielded_spend(
         &params,
         &SpendSpec {
             notes: &[NoteToSpend {
-                extsk_bytes: &account.extsk,
+                extsk_bytes: &*account.extsk,
                 output,
                 tree_before_block: &empty_tree,
                 // Every commitment in the block, in order — the dummy included,
@@ -169,6 +210,7 @@ fn a_note_received_at_a_diversified_address_can_be_spent() {
             expiry_height: 0,
             branch_id: VERUS_BRANCH_ID,
             zip212: VERUS_ZIP212,
+            expected_anchor: None,
         },
     )
     .expect("a note at a diversified address must be spendable");
@@ -195,7 +237,7 @@ fn notes_at_two_different_diversifiers_spend_together() {
     let Some(params) = params() else { return };
 
     let account = derive_account(&[7u8; 64], COIN_TYPE_MAINNET, 0).expect("derive");
-    let dfvk = dfvk_from_extsk(&account.extsk).expect("dfvk");
+    let dfvk = dfvk_from_extsk(&*account.extsk).expect("dfvk");
 
     let picks: Vec<_> = addresses(&dfvk, 0).take(6).collect();
     let (first_index, first) = picks[2];
@@ -254,7 +296,7 @@ fn notes_at_two_different_diversifiers_spend_together() {
         .iter()
         .enumerate()
         .map(|(i, output)| NoteToSpend {
-            extsk_bytes: &account.extsk,
+            extsk_bytes: &*account.extsk,
             output,
             tree_before_block: &empty_tree,
             block_cmus: &cmus,
@@ -276,6 +318,7 @@ fn notes_at_two_different_diversifiers_spend_together() {
             expiry_height: 0,
             branch_id: VERUS_BRANCH_ID,
             zip212: VERUS_ZIP212,
+            expected_anchor: None,
         },
     )
     .expect("two diversifiers must spend together");

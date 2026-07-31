@@ -154,6 +154,19 @@ pub struct SpendSpec<'a> {
     pub branch_id: u32,
     /// Note-plaintext encoding. Always [`crate::VERUS_ZIP212`] on Verus.
     pub zip212: Zip212Enforcement,
+    /// The anchor the chain actually has, if the caller has one to check
+    /// against — a `finalsaplingroot` from a block header they trust.
+    ///
+    /// **Supply it.** A witness built against the wrong frontier fails
+    /// *nowhere* locally: the note decrypts, the witness builds, the proof
+    /// generates, the transaction serializes — and the daemon then rejects it
+    /// with `bad-txns-shielded-requirements-not-met`, after thirty seconds of
+    /// proving. Checked here it costs a comparison, and it is checked *before*
+    /// the first proof rather than after.
+    ///
+    /// `None` keeps the old behaviour for callers who genuinely have nothing
+    /// to compare against. It is not the safe default, only the possible one.
+    pub expected_anchor: Option<[u8; 32]>,
 }
 
 /// Build and prove a t→z transaction.
@@ -268,6 +281,20 @@ pub fn build_shielded_spend(
                 )));
             }
             Some(_) => {}
+        }
+        // Against the chain, not just against each other. Consistency among
+        // the notes proves they share a tree; it does not prove it is the
+        // tree consensus has.
+        if let Some(expected) = spec.expected_anchor {
+            if note_anchor.to_bytes() != expected {
+                return Err(SaplingError::Witness(format!(
+                    "note {index} witnesses to anchor {}, but the chain's root is {} — \
+                     the witness is built against a frontier the chain does not have, \
+                     which proves and serializes fine and is rejected on broadcast",
+                    hex::encode(note_anchor.to_bytes()),
+                    hex::encode(expected)
+                )));
+            }
         }
 
         total_in = total_in

@@ -197,21 +197,17 @@ fn main() -> Result<(), Error> {
     // else, and finding out from the daemon costs a 30-second proof first.
     let anchor = witness_anchor(&tree, &block_cmus, note_specs[0].1)?;
     eprintln!("anchor  : {}", hex::encode(anchor));
-    if let Some(expected) = spec["expected_anchor"].as_str() {
-        // Block headers display finalsaplingroot reversed, like a txid.
-        let mut want = hex::decode(expected)?;
-        want.reverse();
-        if want != anchor {
-            return Err(format!(
-                "witness roots to {} but the chain's anchor is {expected} — \
-                 the frontier is from the wrong height; the daemon would reject this \
-                 with `bad-txns-shielded-requirements-not-met` after proving",
-                hex::encode(anchor)
-            )
-            .into());
+    // Hand the chain's own root to the builder, which refuses before the first
+    // proof rather than trusting this example to have checked. Block headers
+    // display `finalsaplingroot` reversed, like a txid.
+    let expected_anchor = match spec["expected_anchor"].as_str() {
+        Some(expected) => {
+            let mut want = hex::decode(expected)?;
+            want.reverse();
+            Some(<[u8; 32]>::try_from(want.as_slice()).map_err(|_| "anchor is not 32 bytes")?)
         }
-        eprintln!("anchor matches the chain");
-    }
+        None => None,
+    };
 
     let dir = spec["params_dir"].as_str().ok_or("spec.params_dir")?;
     eprintln!("loading Sapling parameters from {dir} …");
@@ -247,6 +243,7 @@ fn main() -> Result<(), Error> {
             expiry_height,
             branch_id: VERUS_BRANCH_ID,
             zip212: VERUS_ZIP212,
+            expected_anchor,
         },
     )?;
 

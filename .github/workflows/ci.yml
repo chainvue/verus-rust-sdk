@@ -47,6 +47,14 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      # `--all-features` hides a whole class of breakage: a test or example
+      # that imports a feature-gated module compiles there and nowhere else.
+      # That is exactly how a prover-gated test sat broken under plain
+      # `cargo test` without CI ever noticing. Compiling the default-feature
+      # targets is cheap and closes it.
+      - name: Test targets compile with default features
+        run: cargo test --workspace --no-run
+
       # Proves the feature gates actually hold: a stray `use verus_sapling::…`
       # in shared code would silently drag the Groth16 prover into a build that
       # is meant to ship without it.

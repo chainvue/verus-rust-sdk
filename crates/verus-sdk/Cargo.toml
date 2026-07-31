@@ -96,3 +96,29 @@ required-features = ["network"]
 [[example]]
 name = "take_offer_online"
 required-features = ["network"]
+
+# The transparent examples need the builders they demonstrate. Without these
+# `cargo check -p verus-sdk --no-default-features --examples` fails.
+[[example]]
+name = "keygen"
+required-features = ["transparent"]
+
+[[example]]
+name = "send"
+required-features = ["transparent"]
+
+[[example]]
+name = "send_token"
+required-features = ["transparent"]
+
+[[example]]
+name = "register_id"
+required-features = ["transparent"]
+
+[[example]]
+name = "update_id"
+required-features = ["transparent"]
+
+[[example]]
+name = "revoke_id"
+required-features = ["transparent"]

@@ -31,6 +31,9 @@ verus-wire = { path = "../verus-wire" }
 rand = { workspace = true }
 rand_core = { workspace = true }
 hex = { workspace = true }
+# Integrity-checking the Sapling parameter files before they are trusted.
+sha2 = { workspace = true }
+zeroize = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
@@ -46,4 +49,11 @@ group = "0.13"
 
 [[example]]
 name = "prove_and_verify"
+required-features = ["prover"]
+
+# Imports `build` and `params`, both behind `prover`. Without this stanza
+# `cargo test --workspace` (no --all-features) fails to compile — a hole CI
+# never saw, because CI always passes --all-features.
+[[test]]
+name = "diversified_roundtrip"
 required-features = ["prover"]

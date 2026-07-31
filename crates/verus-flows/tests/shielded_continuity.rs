@@ -92,7 +92,7 @@ fn body(messages: &[Vec<u8>]) -> Vec<u8> {
 /// every output, because positions are counted from all of them.
 fn stranger() -> DiversifiableFullViewingKey {
     let account = verus_sapling::derive::derive_account(&[7u8; 64], 1, 0).expect("derivation");
-    dfvk_from_extsk(&account.extsk).expect("a viewing key")
+    dfvk_from_extsk(&*account.extsk).expect("a viewing key")
 }
 
 fn client(tree_state: Vec<u8>, block_range: Vec<u8>) -> LightClient<Server> {

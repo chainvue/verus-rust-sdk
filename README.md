@@ -221,8 +221,13 @@ strings. There is no float in the value path.
 transparent path. That is a security property *and* what makes byte-for-byte
 differential testing possible at all.
 
-**Keys are handled deliberately.** Private key material zeroizes on drop, and
-outside the `network`/`light` features nothing in the dependency tree can open
+**Keys are handled deliberately.** Transparent private key material zeroizes on
+drop, with an opaque `Debug` and no `PartialEq`. Shielded key handling is
+bounded by the upstream `sapling-crypto` types, which do not zeroize — their
+`Debug` is redacted and nothing here serializes them, but spending keys do
+linger in memory, and saying otherwise would overclaim.
+
+Outside the `network`/`light` features nothing in the dependency tree can open
 a socket — a test pins that. The networked crates ask questions and hand over
 finished bytes; they can never ask a node to sign.
 
@@ -264,7 +269,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 |---|---|
 | Native and VerusID-addressed sends | ✅ **on chain**, incl. through the public node via `flows` |
 | Token send | ✅ byte-identical to the TypeScript SDK; not yet broadcast |
-| VerusID lifecycle — commit, register, referred, sub-ID, update, 2-of-2 multisig, revoke, recover | ✅ **on chain**, all eight |
+| VerusID lifecycle — commit, register, referred, token-parent sub-ID, update, 2-of-2 multisig, revoke, recover | ✅ **on chain**, all eight |
 | VerusID message signing / login | ✅ verified live against the daemon, both directions |
 | Shielded — t→z, z→t, z→z, multi-note, via lightwalletd end to end | ✅ **on chain** |
 | Marketplace offers — make, inspect against the chain, take | ✅ **on chain** (native legs; token demands byte-verified) |

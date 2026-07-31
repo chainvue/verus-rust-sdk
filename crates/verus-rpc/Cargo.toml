@@ -27,3 +27,8 @@ verus-tx = { path = "../verus-tx", features = ["serde"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+
+# Uses `HttpTransport`, which lives behind the default `http` feature.
+[[test]]
+name = "live_daemon"
+required-features = ["http"]

@@ -103,6 +103,16 @@ pub trait ChainReader {
     /// `api.verustest.net` is arity-sensitive, and a third argument is refused
     /// as `-32601` — see [the crate docs](crate).
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError>;
+    /// The transaction that first created this identity — its registration.
+    ///
+    /// **Not the same as [`ChainReader::identity`]'s outpoint**, which tracks
+    /// the identity's *current* output and moves with every update. Only the
+    /// first one carries the registration's referral payouts, which is why
+    /// this exists: consensus determines the referral chain a new registration
+    /// must pay by walking its referrer's registration transaction, so a
+    /// referred registration cannot be built correctly without it.
+    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError>;
+
     /// The VDXF key a content name resolves to.
     ///
     /// Returns the 20-byte key, in the order a content map stores it.
@@ -377,6 +387,20 @@ impl<T: Transport> ChainReader for RpcClient<T> {
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
         let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id]))?;
         raw.into_typed()
+    }
+
+    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
+        let answer: serde_json::Value =
+            self.call(Method::GetIdentityHistory, json!([name_or_id]))?;
+        // `history` is ordered oldest first; entry zero is the registration.
+        let txid = answer["history"][0]["output"]["txid"]
+            .as_str()
+            .ok_or_else(|| {
+                RpcError::Unexpected(format!(
+                    "getidentityhistory for {name_or_id} has no first output"
+                ))
+            })?;
+        check_hash(txid, "getidentityhistory")
     }
 
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError> {

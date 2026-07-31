@@ -26,3 +26,8 @@ ureq = { version = "2", default-features = false, features = ["tls"], optional =
 
 [dev-dependencies]
 verus-wire = { path = "../verus-wire" }
+
+# Uses `GrpcWebTransport`, which lives behind the default `grpc-web` feature.
+[[test]]
+name = "live_light"
+required-features = ["grpc-web"]
