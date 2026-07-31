@@ -23,6 +23,7 @@ pub(crate) enum Method {
     // Funds
     GetAddressUtxos,
     GetAddressBalance,
+    GetAddressDeltas,
     // Policy
     GetCurrency,
     GetCurrencyState,
@@ -50,6 +51,7 @@ impl Method {
             Method::GetBlock => "getblock",
             Method::GetAddressUtxos => "getaddressutxos",
             Method::GetAddressBalance => "getaddressbalance",
+            Method::GetAddressDeltas => "getaddressdeltas",
             Method::GetCurrency => "getcurrency",
             Method::GetCurrencyState => "getcurrencystate",
             Method::EstimateConversion => "estimateconversion",
@@ -80,6 +82,7 @@ impl Method {
         Method::GetBlock,
         Method::GetAddressUtxos,
         Method::GetAddressBalance,
+        Method::GetAddressDeltas,
         Method::GetCurrency,
         Method::GetCurrencyState,
         Method::EstimateConversion,

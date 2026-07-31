@@ -315,3 +315,73 @@ fn requests_name_their_method_and_nothing_else() {
         assert!(body.contains(r#""jsonrpc":"1.0""#));
     }
 }
+
+/// The captured reply is the settled token demand seen from the taker's side —
+/// `6a9256a4ecf4f7cfc9fb46c6c87a875f1cdd12efbcce0612e7d7bfa871c414ab`, block
+/// 1170750, the row `PROVEN.md` records.
+///
+/// It is the fixture worth having because it exercises every awkward part of
+/// the shape at once: a spend row and a receive row for the same output, a
+/// token leg carrying `satoshis` of **zero**, and a native leg reported twice
+/// in one row — once as satoshis, once under the chain's own id in coins.
+#[test]
+fn reads_address_deltas_with_their_signs_intact() {
+    let deltas = client("getaddressdeltas")
+        .address_deltas(
+            &["RGRTws8PJQC5oBqftKMCAaBD1Vj5MHKKSz"],
+            Some((1_170_740, 1_170_760)),
+        )
+        .unwrap();
+    assert_eq!(deltas.len(), 7);
+
+    // The output being spent by the swap: negative, and negative in both units.
+    let spent = deltas
+        .iter()
+        .find(|d| d.spending && d.satoshis.to_sat() != 0)
+        .expect("a native spend row");
+    assert_eq!(spent.satoshis.to_sat(), -200_000_000);
+    assert!(spent.satoshis.is_negative());
+    assert_eq!(
+        spent.currency_values["iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq"].to_sat(),
+        -200_000_000
+    );
+
+    // A token leg moves no native value at all. Reading only `satoshis` here
+    // reports five tokens arriving as nothing happening.
+    let token_in = deltas
+        .iter()
+        .find(|d| !d.spending && d.height == 1_170_746 && d.satoshis.to_sat() == 0)
+        .expect("a token receive row");
+    assert_eq!(
+        token_in.currency_values["i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7"].to_sat(),
+        500_000_000
+    );
+}
+
+/// What the fold in `verus_flows::history` has to arrive at, asserted here on
+/// the raw rows so the two cannot drift apart silently.
+///
+/// The taker paid 1 `sdkcuralpha` and received 0.5 VRSCTEST, less a 0.0002
+/// fee. So across the swap transaction the token nets to **-1** and the native
+/// side to **+0.4998** — which is the economics the network accepted, not an
+/// arithmetic identity that would hold for any numbers.
+#[test]
+fn the_deltas_of_the_settled_swap_net_to_what_was_traded() {
+    let deltas = client("getaddressdeltas")
+        .address_deltas(
+            &["RGRTws8PJQC5oBqftKMCAaBD1Vj5MHKKSz"],
+            Some((1_170_740, 1_170_760)),
+        )
+        .unwrap();
+
+    let swap: Vec<_> = deltas.iter().filter(|d| d.height == 1_170_750).collect();
+    let native: i64 = swap.iter().map(|d| d.satoshis.to_sat()).sum();
+    assert_eq!(native, 49_980_000, "0.4998 VRSCTEST in");
+
+    let token: i64 = swap
+        .iter()
+        .filter_map(|d| d.currency_values.get("i7UCaJkKRFXBCK4S1AMrkfKTnPwdLc7dV7"))
+        .map(|v| v.to_sat())
+        .sum();
+    assert_eq!(token, -100_000_000, "1 sdkcuralpha out");
+}

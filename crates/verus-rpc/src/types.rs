@@ -9,6 +9,124 @@ use verus_tx::{Amount, Txid, Utxo};
 use crate::error::RpcError;
 use crate::json;
 
+/// A satoshi amount that can be negative.
+///
+/// [`Amount`] is unsigned by design and stays that way: a transaction output
+/// cannot hold a negative value, and making the type able to express one would
+/// weaken every builder that takes it.
+///
+/// A *delta* is the one thing on this side of the wire that genuinely is signed.
+/// `getaddressdeltas` reports the same output twice over its lifetime — once
+/// positive when it is created, once negative when it is spent — and the sign is
+/// the entire content of the second entry. Reading it as a magnitude turns money
+/// leaving an address into money arriving at it, which is a wallet showing a
+/// payment backwards.
+///
+/// So it is a separate type rather than an `i64` field, and there is deliberately
+/// no `From<SignedAmount> for Amount`: crossing back to unsigned is a decision
+/// about what to do with the sign, and [`SignedAmount::magnitude`] makes the
+/// caller take it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SignedAmount(i64);
+
+impl SignedAmount {
+    /// No movement.
+    pub const ZERO: Self = Self(0);
+
+    /// From a signed satoshi count.
+    pub const fn from_sat(satoshis: i64) -> Self {
+        Self(satoshis)
+    }
+
+    /// The signed satoshi count.
+    pub const fn to_sat(self) -> i64 {
+        self.0
+    }
+
+    /// Money left the address.
+    pub const fn is_negative(self) -> bool {
+        self.0 < 0
+    }
+
+    /// Money arrived at the address.
+    pub const fn is_positive(self) -> bool {
+        self.0 > 0
+    }
+
+    /// The size of the movement, without its direction.
+    ///
+    /// `i64::MIN` has no positive counterpart, so `unsigned_abs` gives its
+    /// magnitude as `2^63` rather than wrapping or panicking. No reader in this
+    /// crate can produce that value: the ceiling on a currency amount is
+    /// `i64::MAX` satoshis, one below it, and the native ceiling is far lower
+    /// still. `unsigned_abs` is what makes that a bound rather than a hope.
+    pub const fn magnitude(self) -> Amount {
+        Amount::from_sat(self.0.unsigned_abs())
+    }
+
+    /// Add another movement, refusing to wrap.
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.0.checked_add(other.0).map(Self)
+    }
+
+    /// The amount as a decimal coin string, sign included.
+    pub fn to_coins_string(self) -> String {
+        let magnitude = self.magnitude().to_coins_string();
+        if self.is_negative() {
+            format!("-{magnitude}")
+        } else {
+            magnitude
+        }
+    }
+}
+
+impl std::fmt::Display for SignedAmount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_coins_string())
+    }
+}
+
+/// One movement of value at one address, as `getaddressdeltas` reports it.
+///
+/// **Two deltas per output over its life**, not one: a positive entry in the
+/// block that created it and a negative entry in the block that spent it. A
+/// transaction that pays an address and takes change back therefore contributes
+/// several rows, which is why `verus_flows::history` exists to fold them into
+/// per-transaction entries rather than showing them raw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressDelta {
+    /// The address this movement belongs to.
+    pub address: String,
+    /// The transaction that caused it.
+    pub txid: Txid,
+    /// Block it was mined in.
+    pub height: u32,
+    /// The block's timestamp, as the daemon reports it.
+    ///
+    /// A miner-chosen field, only loosely monotonic. Fine for display, not a
+    /// source of ordering — sort by `(height, block_index, index)` for that.
+    pub block_time: i64,
+    /// Position of the transaction within its block.
+    pub block_index: u32,
+    /// Position of the input or output within the transaction.
+    pub index: u32,
+    /// Native value moved, negative when spending.
+    ///
+    /// **Zero for a token-only output.** A reserve output carries no native
+    /// value, so a wallet that reads only this field shows a token transfer as
+    /// nothing happening — see [`AddressDelta::currency_values`].
+    pub satoshis: SignedAmount,
+    /// Per-currency value moved, keyed by currency i-address, negative when
+    /// spending.
+    ///
+    /// Includes the chain's own currency, duplicating
+    /// [`AddressDelta::satoshis`]. Summing this map *and* that field
+    /// double-counts the native leg.
+    pub currency_values: BTreeMap<String, SignedAmount>,
+    /// Whether this row is an input being spent rather than an output created.
+    pub spending: bool,
+}
+
 /// Confirmations a coinbase output needs before it can be spent.
 ///
 /// A wallet that ignores this selects an immature coinbase and the daemon
@@ -217,6 +335,51 @@ impl RawAddressBalance<'_> {
             balance: json::satoshis(self.balance, "balance")?,
             received: json::satoshis(self.received, "received")?,
             currency_balance,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawAddressDelta<'a> {
+    pub address: String,
+    pub txid: String,
+    pub height: u32,
+    #[serde(default)]
+    pub blocktime: i64,
+    #[serde(default)]
+    pub blockindex: u32,
+    #[serde(default)]
+    pub index: u32,
+    #[serde(borrow)]
+    pub satoshis: &'a RawValue,
+    #[serde(borrow, default)]
+    pub currencyvalues: BTreeMap<String, &'a RawValue>,
+    #[serde(default)]
+    pub spending: bool,
+}
+
+impl RawAddressDelta<'_> {
+    pub(crate) fn into_typed(self) -> Result<AddressDelta, RpcError> {
+        let mut currency_values = BTreeMap::new();
+        for (currency, raw) in self.currencyvalues {
+            // Coins here, satoshis below, in the same row — the same split
+            // `getaddressbalance` has, and signed on both sides.
+            currency_values.insert(
+                currency,
+                json::signed_currency_coins(raw, "currencyvalues")?,
+            );
+        }
+        Ok(AddressDelta {
+            address: self.address,
+            txid: Txid::from_display_hex(&self.txid)
+                .map_err(|e| RpcError::OutOfRange(format!("txid: {e}")))?,
+            height: self.height,
+            block_time: self.blocktime,
+            block_index: self.blockindex,
+            index: self.index,
+            satoshis: json::signed_satoshis(self.satoshis, "satoshis")?,
+            currency_values,
+            spending: self.spending,
         })
     }
 }
