@@ -297,6 +297,7 @@ fn sub_identity_registration() {
             native_import_fee: Amount::from_sat(2_000_000),
             token_funding: &token_funding,
             proof_protocol: 2,
+            transfer_fee: Amount::from_sat(20_000),
         }),
     )
     .unwrap();
@@ -353,6 +354,7 @@ fn referred_sub_identity_registration() {
             native_import_fee: Amount::from_sat(2_000_000),
             token_funding: &token_funding,
             proof_protocol: 2,
+            transfer_fee: Amount::from_sat(20_000),
         })
         // Declared, and deliberately not paid out for a sub-identity.
         .with_referrals(3, &[]),
