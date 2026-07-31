@@ -24,6 +24,8 @@ import {
   signatureBlockHeight,
   decodeOutput,
   tokenBalances,
+  validateMnemonic,
+  mnemonicToSeed,
   vdxfKey,
   identityId,
   type SendRequest,
@@ -33,6 +35,7 @@ import {
   type VerifyResult,
   type DecodedOutput,
   type DecodedReserveOutput,
+  type MnemonicCheck,
   type Utxo,
   type TokenAmount,
 } from "../../pkg/verus_wasm.js";
@@ -170,6 +173,18 @@ const owed: string = balances[0].amount;
 const which: string = balances[0].currency;
 void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null), owed, which];
 
+const phrase: MnemonicCheck = validateMnemonic("abandon … about");
+const isValid: boolean = phrase.valid;
+const howMany: number = phrase.words;
+// `reason` must be a closed set, so a caller can switch on it exhaustively —
+// and `wordCount` must be distinguishable, since it is the one that is NOT a
+// problem for a transparent Verus key.
+const phraseReason: "wordCount" | "unknownWord" | "checksum" | undefined = phrase.reason;
+const at: number | undefined = phrase.position;
+// Bytes, not hex: a Uint8Array can be zeroed when the caller is done.
+const seed: Uint8Array = mnemonicToSeed("abandon … about", null);
+void [isValid, howMany, phraseReason, at, seed];
+
 // --- What the types must REFUSE. Each line fails the build if it compiles. ---
 
 // Money is a string. A number is the mistake the whole convention exists for.
@@ -219,4 +234,10 @@ if (narrowed.kind === "unsupportedCryptoCondition") {
   void payable;
 }
 
-void [floatMoney, typo, unbounded, confused, wrongShape];
+// A reason outside the closed set is a typo in the caller's code, and the
+// commonest one is assuming an "ok"/"valid" member exists alongside the
+// failures. It does not — `valid` carries that.
+// @ts-expect-error "valid" is not one of the reasons
+const notAReason: boolean = validateMnemonic("…").reason === "valid";
+
+void [floatMoney, typo, unbounded, confused, wrongShape, notAReason];

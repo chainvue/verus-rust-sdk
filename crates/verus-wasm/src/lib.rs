@@ -85,6 +85,7 @@ pub mod dto;
 pub mod error;
 pub mod keys;
 pub mod login;
+pub mod mnemonic;
 pub mod money;
 pub mod send;
 pub mod types;

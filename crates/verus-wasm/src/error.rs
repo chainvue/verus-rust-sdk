@@ -101,6 +101,12 @@ impl From<verus_keys::KeyError> for WasmError {
     }
 }
 
+impl From<verus_keys::MnemonicError> for WasmError {
+    fn from(error: verus_keys::MnemonicError) -> Self {
+        Self::from_source(&error)
+    }
+}
+
 impl From<verus_wire::WireError> for WasmError {
     fn from(error: verus_wire::WireError) -> Self {
         Self::from_source(&error)
