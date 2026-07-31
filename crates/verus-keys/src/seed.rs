@@ -27,7 +27,17 @@
 //! generated, or generate a fresh key from the platform CSPRNG instead.
 //!
 //! The same phrase drives a *completely different* shielded key (BIP-39 →
-//! ZIP-32); the two share nothing.
+//! ZIP-32); the two share nothing. That half starts at
+//! [`crate::bip39::mnemonic_to_seed`].
+//!
+//! # There is no checksum on this path
+//!
+//! Any text is a valid phrase here, so a mistyped word derives a perfectly
+//! good key for a wallet that has never held anything — and nothing below can
+//! tell you that happened. [`crate::bip39::validate_mnemonic`] can, for the
+//! phrases that are BIP-39 mnemonics; call it first when you are restoring
+//! rather than importing. It is deliberately not called from here, because
+//! free text is a legitimate Verus phrase and refusing it would strand funds.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
