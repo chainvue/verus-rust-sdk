@@ -39,6 +39,12 @@ ripemd = "0.1"
 bs58 = { version = "0.5", features = ["check"] }
 zeroize = { version = "1", features = ["derive"] }
 indexmap = "2"
+# BIP-39's PBKDF2-HMAC-SHA512, for turning a recovery phrase into the seed the
+# shielded path derives from. RustCrypto; with default features off it pulls in
+# `hmac` and nothing else, and `digest`/`sha2` are already here. Taken as a
+# dependency rather than hand-rolled — the construction is short, but it is
+# still a KDF, and this one is already reviewed.
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 
 # Shielded path (feature-gated; this is where bellman/Groth16 enters).
 sapling-crypto = { version = "0.7", default-features = false }

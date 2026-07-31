@@ -39,11 +39,13 @@
 
 pub mod address;
 mod base58;
+pub mod bip39;
 mod error;
 mod key;
 mod seed;
 
 pub use address::{hash160, Address, AddressKind};
+pub use bip39::{mnemonic_to_seed, validate_mnemonic, MnemonicError};
 pub use error::KeyError;
 pub use key::{PrivateKey, PublicKey, WIF_VERSION};
 pub use seed::private_key_from_seed_phrase;
