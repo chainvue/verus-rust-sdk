@@ -99,6 +99,13 @@ if (output.kind === "unsupportedCryptoCondition") {
   const mayCarryCurrency: boolean | undefined = output.mayCarryCurrency;
   void [evalCode, mayCarryCurrency];
 }
+if (output.kind === "identityCommitment") {
+  const commitment: string | undefined = output.commitment;
+  // Present and empty for an ordinary commitment; the advanced form carries
+  // currency alongside the hash.
+  const carried: TokenAmount[] | undefined = output.tokens;
+  void [commitment, carried];
+}
 const balances: TokenAmount[] = tokenBalances([utxo]);
 const owed: string = balances[0].amount;
 const which: string = balances[0].currency;

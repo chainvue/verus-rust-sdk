@@ -78,7 +78,7 @@ pub use convert::{
     ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
 };
 pub use currency::CurrencyId;
-pub use decode::{decode_output_script, may_carry_currency, OutputKind};
+pub use decode::{decode_output_script, may_carry_currency, OutputKind, ADVANCED_COMMITMENT_KEY};
 pub use error::TxError;
 pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
 pub use fee::{estimate_fee, select_utxos, Selection};

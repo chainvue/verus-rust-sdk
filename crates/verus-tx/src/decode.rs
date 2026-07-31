@@ -33,6 +33,23 @@ const OP_PUSHDATA2: u8 = 0x4d;
 /// `OP_PUSHDATA4`.
 const OP_PUSHDATA4: u8 = 0x4e;
 
+/// The sentinel that marks a name commitment as carrying a token output.
+///
+/// `CCommitmentHash` serializes its 32-byte hash and then, *conditionally*, a
+/// `CTokenOutput` — the condition being that the hash's first twenty bytes
+/// equal this key. So the same field is either a commitment hash or a tagged
+/// header, and nothing but these bytes distinguishes the two.
+///
+/// It is the VDXF data key for `vrsc::system.identity.advancedcommitmenthash`,
+/// which renders as `i74sHfYTqdfd5ZSmQSLHug4GuX2XHKwA7Y`. Hardcoded because it
+/// is a constant of the protocol, and re-derived in a test through this
+/// crate's own [`crate::data_key`] so that a wrong transcription cannot sit
+/// here unnoticed.
+pub const ADVANCED_COMMITMENT_KEY: [u8; 20] = [
+    0x27, 0x67, 0x18, 0x1a, 0x4f, 0x6a, 0xbe, 0x20, 0x90, 0xa7, 0xdc, 0xa2, 0xc6, 0x89, 0x47, 0x7d,
+    0x16, 0x39, 0x00, 0xf6,
+];
+
 /// Whether a CryptoCondition with this eval code is *able* to carry currency.
 ///
 /// Not "does it" — "could it". A `false` here is a proof of absence: an output
@@ -125,6 +142,25 @@ pub enum OutputKind {
     IdentityPrimary {
         /// The identity as the chain stores it.
         identity: Box<Identity>,
+    },
+    /// A name commitment — step one of registering a VerusID.
+    ///
+    /// Holds the hash that reserves a name, and, in the "advanced" form, a
+    /// token output alongside it. See [`ADVANCED_COMMITMENT_KEY`] for how the
+    /// two are told apart.
+    IdentityCommitment {
+        /// Who can redeem it. Step two must be signed by this destination.
+        destination: Destination,
+        /// The 32-byte commitment, as it appears in the script.
+        ///
+        /// The daemon prints this byte-reversed, the way it prints every
+        /// hash; these are the bytes themselves.
+        commitment: [u8; 32],
+        /// Currency the commitment carries, which is empty for every ordinary
+        /// one. Present because a commitment is one of the five output kinds
+        /// consensus reads currency out of, so "a commitment holds nothing"
+        /// would be a guess rather than a decode.
+        tokens: Vec<(CurrencyId, u64)>,
     },
     /// A CryptoCondition output whose eval code this crate does not decode yet
     /// — a reserve transfer, a currency definition, a stakeguard.
@@ -279,29 +315,135 @@ fn read_var_int(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
     }
 }
 
-/// Parse a single-currency `TokenOutput` payload.
-fn parse_token_output(payload: &[u8]) -> Result<(CurrencyId, u64), TxError> {
+/// `CTokenOutput::VERSION_MULTIVALUE`, the high bit of the version VARINT.
+///
+/// Set when the payload holds a whole `CCurrencyValueMap` instead of one
+/// currency and one amount. It is a serialization flag, not a version: the
+/// daemon masks it off after reading, so `0x80000001` and `1` are both
+/// version 1.
+const TOKEN_OUTPUT_MULTIVALUE: u64 = 0x8000_0000;
+
+/// Read a Bitcoin CompactSize, refusing the non-canonical encodings.
+///
+/// The same discipline `verus_wire`'s transaction reader applies, for the same
+/// reason: accepting `fd 01 00` for 1 would let two different byte strings
+/// decode to the same output, and this decoder's job is to say what a
+/// *specific* script means.
+fn read_compact_size(bytes: &[u8], offset: &mut usize) -> Result<u64, TxError> {
+    let first = *bytes
+        .get(*offset)
+        .ok_or_else(|| malformed("CompactSize ended early"))?;
+    *offset += 1;
+    let mut fixed = |width: usize, minimum: u64| -> Result<u64, TxError> {
+        let slice = bytes
+            .get(*offset..*offset + width)
+            .ok_or_else(|| malformed("CompactSize ended early"))?;
+        *offset += width;
+        let mut buffer = [0u8; 8];
+        buffer[..width].copy_from_slice(slice);
+        let value = u64::from_le_bytes(buffer);
+        if value < minimum {
+            return Err(malformed("non-canonical CompactSize"));
+        }
+        Ok(value)
+    };
+    match first {
+        0xfd => fixed(2, 0xfd),
+        0xfe => fixed(4, u64::from(u16::MAX) + 1),
+        0xff => fixed(8, u64::from(u32::MAX) + 1),
+        n => Ok(u64::from(n)),
+    }
+}
+
+/// Read a `CCurrencyValueMap`: a CompactSize count, then that many
+/// `(currency id, amount)` pairs.
+///
+/// The amount is a **fixed eight-byte little-endian `int64`**, not a VARINT —
+/// Bitcoin's `std::map` serializer writes integral values plainly, and only
+/// the surrounding `CTokenOutput` version uses `VARINT`. Getting that wrong
+/// does not fail loudly; it reads a currency id out of the middle of an
+/// amount and reports a balance in a currency that does not exist.
+fn read_currency_value_map(
+    payload: &[u8],
+    offset: &mut usize,
+) -> Result<Vec<(CurrencyId, u64)>, TxError> {
+    /// Twenty bytes of currency id plus eight of amount.
+    const ENTRY: usize = 28;
+
+    let count = read_compact_size(payload, offset)?;
+    // Bound the count by what is actually left before allocating, so a script
+    // claiming four billion entries costs nothing to refuse.
+    let remaining = payload.len().saturating_sub(*offset);
+    let entries = usize::try_from(count)
+        .ok()
+        .filter(|count| count.saturating_mul(ENTRY) <= remaining)
+        .ok_or_else(|| {
+            malformed(&format!(
+                "a currency map claims {count} entries, which is more than the \
+                 {remaining} bytes left can hold"
+            ))
+        })?;
+
+    let mut values = Vec::with_capacity(entries);
+    for _ in 0..entries {
+        let currency: [u8; 20] = payload[*offset..*offset + 20]
+            .try_into()
+            .expect("slice is 20 bytes");
+        let amount = i64::from_le_bytes(
+            payload[*offset + 20..*offset + ENTRY]
+                .try_into()
+                .expect("slice is 8 bytes"),
+        );
+        *offset += ENTRY;
+        // `CAmount` is signed and this crate's `Amount` is not. A negative
+        // entry is either a hostile script or a currency map this decoder has
+        // no honest way to report, and turning it into a very large positive
+        // number is the worst of the available answers.
+        let amount = u64::try_from(amount).map_err(|_| {
+            malformed(&format!(
+                "a currency map holds a negative amount ({amount}) for {}",
+                hex::encode(currency)
+            ))
+        })?;
+        values.push((CurrencyId::from_bytes(currency), amount));
+    }
+    Ok(values)
+}
+
+/// Parse a `CTokenOutput` payload — what a reserve output actually holds.
+///
+/// Two encodings, chosen by [`TOKEN_OUTPUT_MULTIVALUE`]. The single-value one
+/// is what this crate writes and what almost every output uses; the multivalue
+/// one appears wherever several currencies share an output, which on a
+/// fractional currency's reserves is normal rather than exotic.
+fn parse_token_output(payload: &[u8]) -> Result<Vec<(CurrencyId, u64)>, TxError> {
     let mut offset = 0;
     let version = read_var_int(payload, &mut offset)?;
-    // Bit 1 selects the multivalue encoding, which prefixes a count. Nothing
-    // here emits it and nothing here decodes it — refuse rather than misread the
-    // bytes that follow as a currency id.
-    if version != 1 {
+    let multivalue = version & TOKEN_OUTPUT_MULTIVALUE != 0;
+    let base = version & !TOKEN_OUTPUT_MULTIVALUE;
+    if base != 1 {
         return Err(malformed(&format!(
-            "unsupported TokenOutput version {version}; only single-value (1) is decoded"
+            "unsupported TokenOutput version {base}; only version 1 is decoded"
         )));
     }
-    let currency: [u8; 20] = payload
-        .get(offset..offset + 20)
-        .ok_or_else(|| malformed("TokenOutput ended before its currency id"))?
-        .try_into()
-        .expect("slice is 20 bytes");
-    offset += 20;
-    let amount = read_var_int(payload, &mut offset)?;
+
+    let values = if multivalue {
+        read_currency_value_map(payload, &mut offset)?
+    } else {
+        let currency: [u8; 20] = payload
+            .get(offset..offset + 20)
+            .ok_or_else(|| malformed("TokenOutput ended before its currency id"))?
+            .try_into()
+            .expect("slice is 20 bytes");
+        offset += 20;
+        let amount = read_var_int(payload, &mut offset)?;
+        vec![(CurrencyId::from_bytes(currency), amount)]
+    };
+
     if offset != payload.len() {
-        return Err(malformed("trailing bytes after the TokenOutput amount"));
+        return Err(malformed("trailing bytes after the TokenOutput"));
     }
-    Ok((CurrencyId::from_bytes(currency), amount))
+    Ok(values)
 }
 
 /// Decode an output script.
@@ -409,6 +551,41 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
         });
     }
 
+    if eval_code == EVAL_IDENTITY_COMMITMENT {
+        let payload = params.take_push()?;
+        if !params.done() {
+            return Err(malformed("trailing vdata after a name commitment"));
+        }
+        let commitment: [u8; 32] = payload
+            .get(..32)
+            .ok_or_else(|| malformed("a name commitment is shorter than its hash"))?
+            .try_into()
+            .expect("slice is 32 bytes");
+        // The hash's own first twenty bytes decide whether a token output
+        // follows it. Anything else trailing the hash is a payload this
+        // decoder has no rule for, and reading it as a `CTokenOutput` anyway
+        // would invent a balance out of whatever the bytes happened to be.
+        let tokens = match &payload[32..] {
+            [] => Vec::new(),
+            rest if commitment[..20] == ADVANCED_COMMITMENT_KEY => parse_token_output(rest)?,
+            _ => {
+                return Err(malformed(
+                    "a name commitment carries data after its hash without the advanced \
+                     commitment key that would say how to read it",
+                ))
+            }
+        };
+        let destination = destinations
+            .into_iter()
+            .next()
+            .ok_or_else(|| malformed("name commitment has no destination"))?;
+        return Ok(OutputKind::IdentityCommitment {
+            destination,
+            commitment,
+            tokens,
+        });
+    }
+
     if eval_code != EVAL_RESERVE_OUTPUT {
         return Ok(OutputKind::UnsupportedCryptoCondition {
             eval_code,
@@ -418,7 +595,7 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
 
     let mut tokens = Vec::new();
     while !params.done() {
-        tokens.push(parse_token_output(params.take_push()?)?);
+        tokens.extend(parse_token_output(params.take_push()?)?);
     }
     // Any destination kind, not just a key hash. Which one it is decides who
     // can *spend* the output — the funding paths in `token.rs`, `convert.rs`,

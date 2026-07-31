@@ -167,7 +167,8 @@ export interface TokenAmount {
 /** What an output turned out to be. Switch on `kind`. */
 export interface DecodedOutput {
     kind: "pubKeyHash" | "pubKey" | "reserveOutput" | "identityPayment"
-        | "identityPrimary" | "unsupportedCryptoCondition" | "unknown";
+        | "identityPrimary" | "identityCommitment"
+        | "unsupportedCryptoCondition" | "unknown";
     /**
      * The address paid or held for. Absent when the output could not be read.
      * For `pubKey` — the shape a proof-of-work coinbase pays — this is the
@@ -206,4 +207,14 @@ export interface DecodedOutput {
      * `tokenBalances` refuses the whole set rather than under-report it.
      */
     mayCarryCurrency?: boolean;
+    /**
+     * For `identityCommitment`: the 32-byte commitment as hex, in the order
+     * the script holds it.
+     *
+     * The daemon prints this reversed, the way it prints every hash — reverse
+     * it before comparing with `registernamecommitment` output. `tokens` is
+     * present and empty for every ordinary commitment; only the advanced form
+     * carries currency alongside the hash.
+     */
+    commitment?: string;
 }

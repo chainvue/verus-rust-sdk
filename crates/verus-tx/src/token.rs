@@ -242,6 +242,17 @@ pub fn build_token_send(
                         eval_code: crate::identity::EVAL_IDENTITY_PRIMARY,
                     })
                 }
+                // A name commitment exists to be spent by the registration
+                // that completes it, which takes it as a named input rather
+                // than picking it up as funding. Selecting one here would
+                // reserve a name and then destroy the reservation.
+                OutputKind::IdentityCommitment { .. } => {
+                    return Err(TxError::UnsupportedFundingEval {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                        eval_code: crate::register::EVAL_IDENTITY_COMMITMENT,
+                    })
+                }
                 OutputKind::UnsupportedCryptoCondition { eval_code, .. } => {
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),
