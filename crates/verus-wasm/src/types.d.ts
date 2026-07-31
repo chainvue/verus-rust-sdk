@@ -165,6 +165,34 @@ export interface TokenAmount {
 }
 
 /**
+ * What a recovery phrase turned out to be.
+ *
+ * Read the three answers differently — treating them alike is the bug this
+ * exists to prevent. `wordCount` means the phrase is **not a mnemonic**, which
+ * is perfectly ordinary for a Verus phrase: `Key.fromSeedPhrase` accepts any
+ * text and derives a real transparent key from it. There is simply no shielded
+ * key. `unknownWord` and `checksum` mean the phrase looks like a mnemonic and
+ * is broken — almost always one mistyped or swapped word, and worth stopping a
+ * user for before they conclude their wallet is empty.
+ */
+export interface MnemonicCheck {
+    /** Whether it is a valid BIP-39 English mnemonic. */
+    valid: boolean;
+    /** How many words were found, so a UI can say "11 of 12". */
+    words: number;
+    /** Why not, when it is not. Absent when `valid`. */
+    reason?: "wordCount" | "unknownWord" | "checksum";
+    /**
+     * For `unknownWord`: which word, counting from 1.
+     *
+     * The word ITSELF is deliberately not reported. This value reaches logs,
+     * crash reporters and screenshots, and a recovery phrase is the whole
+     * wallet.
+     */
+    position?: number;
+}
+
+/**
  * What an output turned out to be. Switch on `kind`.
  *
  * A discriminated union, so a field belongs to the shape that has it and to no

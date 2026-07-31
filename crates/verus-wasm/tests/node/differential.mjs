@@ -23,7 +23,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
 const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, tokenBalances,
-        verifyMessage, signatureBlockHeight, vdxfKey, rootNamespace, identityId } = wasm;
+        verifyMessage, signatureBlockHeight, vdxfKey, rootNamespace, identityId,
+        validateMnemonic, mnemonicToSeed } = wasm;
 
 const vectors = JSON.parse(
   readFileSync(resolve(here, "../../../../fixtures/transparent/vectors.json"), "utf8"),
@@ -658,6 +659,57 @@ console.log("\nkey handling");
   generated.free();
   assert.throws(() => Key.fromEntropy(new Uint8Array(31)), /32 bytes/);
   ok("a key is made from entropy the caller supplies");
+}
+
+console.log("\nrecovery phrases");
+{
+  const PHRASE =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+  const good = validateMnemonic(PHRASE);
+  assert.equal(good.valid, true);
+  assert.equal(good.words, 12);
+  assert.equal(good.reason, undefined, "a valid phrase carries no reason");
+  ok("a real mnemonic validates");
+
+  // The distinction the binding exists for. Free text is NOT an error: a Verus
+  // wallet derives a real, spendable transparent key from it, and a UI that
+  // shows a warning here would be wrong.
+  const free = validateMnemonic("my own words");
+  assert.equal(free.valid, false);
+  assert.equal(free.reason, "wordCount");
+  assert.equal(Key.fromSeedPhrase("my own words").address().startsWith("R"), true);
+
+  // A typo IS worth stopping for, and looks nothing like the above.
+  const typo = validateMnemonic(PHRASE.replace("about", "abandon"));
+  assert.equal(typo.reason, "checksum");
+  ok("free text and a mistyped word are told apart");
+
+  const unknown = validateMnemonic(PHRASE.replace("about", "verus"));
+  assert.equal(unknown.reason, "unknownWord");
+  assert.equal(unknown.position, 12);
+  // The phrase must not travel in the result: it reaches logs and screenshots.
+  assert.equal(JSON.stringify(unknown).includes("verus"), false);
+  ok("a bad word is reported by position, never by value");
+
+  // The official BIP-39 vector seed with an empty passphrase — what a Verus
+  // wallet uses. Bytes rather than hex, so a caller can zero them.
+  const seed = mnemonicToSeed(PHRASE, null);
+  assert.ok(seed instanceof Uint8Array);
+  assert.equal(seed.length, 64);
+  assert.equal(
+    Buffer.from(seed).toString("hex"),
+    "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1" +
+      "9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+  );
+  // Whitespace must not reach PBKDF2 — a pasted newline would otherwise derive
+  // a different, empty wallet.
+  assert.deepEqual(mnemonicToSeed(`  ${PHRASE}\n`, ""), seed);
+  ok("a mnemonic derives the BIP-39 seed, whitespace notwithstanding");
+
+  // Deriving from words that do not check out is refused rather than done.
+  assert.throws(() => mnemonicToSeed(PHRASE.replace("about", "abandon"), null), /checksum/i);
+  ok("a seed is not derived from a phrase that fails its checksum");
 }
 
 console.log(`\n${checks} checks passed under node ${process.version}\n`);

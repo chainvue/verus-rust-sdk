@@ -49,6 +49,9 @@ extern "C" {
     /// TypeScript `DecodedOutput`.
     #[wasm_bindgen(typescript_type = "DecodedOutput")]
     pub type DecodedOutputValue;
+    /// TypeScript `MnemonicCheck`.
+    #[wasm_bindgen(typescript_type = "MnemonicCheck")]
+    pub type MnemonicCheckValue;
 
     /// TypeScript `Utxo[]`.
     #[wasm_bindgen(typescript_type = "Utxo[]")]
@@ -191,6 +194,16 @@ mod tests {
             },
         );
         assert_declared("TokenAmount", &TokenAmount::default());
+        // Every optional field populated, so `skip_serializing_if` cannot hide
+        // one from the check.
+        assert_declared(
+            "MnemonicCheck",
+            &crate::mnemonic::MnemonicCheck {
+                reason: Some(String::new()),
+                position: Some(0),
+                ..crate::mnemonic::MnemonicCheck::default()
+            },
+        );
     }
 
     /// `DecodedOutput` is a union, so the drift check has to be one too.
