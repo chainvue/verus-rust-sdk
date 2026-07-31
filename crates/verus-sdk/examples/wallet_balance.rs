@@ -41,12 +41,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // decoder `build_token_send` uses to select them.
     //
     // Reported rather than propagated, and deliberately AFTER the native
-    // figures. Counting fails closed — an output this SDK cannot read might
-    // carry a currency it cannot see, so no total is better than a small one —
-    // and a proof-of-stake coinbase pays its first output to a stakeguard
-    // CryptoCondition this SDK does not decode. So any address that has staked
-    // recently cannot be given a token total, and aborting over that would
-    // withhold the native balance it already knows, which helps nobody.
+    // figures. Counting fails closed — an output this SDK cannot read *and*
+    // whose eval code could be hiding a currency is refused, because no total
+    // is better than one that is quietly too small. That is a narrow set now:
+    // both coinbase shapes and every identity output are countable. But a
+    // wallet still must not withhold the native balance it already knows over
+    // a token figure it does not, so the failure is a line, not an exit.
     match funding.token_balances() {
         Err(error) => println!("  tokens   unknown: {error}"),
         Ok(held) if held.is_empty() => {

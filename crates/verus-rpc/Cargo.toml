@@ -27,6 +27,9 @@ verus-tx = { path = "../verus-tx", features = ["serde"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# Tests only: the live daemon cross-check writes destinations as the `R…`/`i…`
+# addresses a reader recognises rather than as twenty raw bytes.
+verus-keys = { path = "../verus-keys" }
 
 # Uses `HttpTransport`, which lives behind the default `http` feature.
 [[test]]

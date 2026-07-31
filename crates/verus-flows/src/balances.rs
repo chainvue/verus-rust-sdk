@@ -60,12 +60,16 @@ impl Funding {
     /// token can legitimately appear, and a wallet showing only
     /// [`Funding::token_balances`] would be understating what its user owns.
     ///
-    /// Note this can also *fail* rather than come back empty: a proof-of-stake
-    /// coinbase pays its first output to a stakeguard CryptoCondition, which
-    /// this SDK cannot decode, so a recent staker's immature set is uncountable
-    /// rather than tokenless. Treat an error here as "unknown", not as zero —
-    /// which is why it is a separate call from the spendable figure rather
-    /// than folded into it.
+    /// Note this can *fail* rather than come back empty, and an error here
+    /// means "unknown", never zero. That is why it is a separate call from the
+    /// spendable figure rather than folded into it: one bucket being
+    /// uncountable must not take the other down with it.
+    ///
+    /// Coinbase outputs are the ones most likely to be unusual, and both usual
+    /// shapes are fine — a proof-of-work coinbase pays P2PK and a
+    /// proof-of-stake coinbase pays a stakeguard CryptoCondition, and neither
+    /// can carry currency. See [`verus_tx::may_carry_currency`] for what is
+    /// left that cannot be counted.
     pub fn immature_token_balances(&self) -> Result<TokenBalances, FlowError> {
         balances_of(&self.immature)
     }
@@ -179,6 +183,63 @@ mod tests {
             funding.immature_token_balances().unwrap().get(&TOKEN),
             Some(&Amount::from_sat(1_000_000)),
             "and it must still be reported somewhere, or it vanishes"
+        );
+    }
+
+    /// **A staker must get a balance.** A proof-of-stake coinbase pays its
+    /// first output to a stakeguard CryptoCondition, and this used to make the
+    /// whole set uncountable — so an address that had staked once got an error
+    /// where it wanted a number, in the immature bucket where a fresh stake
+    /// always lands.
+    ///
+    /// The script is a real one: block 1170103 on VRSCTEST, coinbase vout 0.
+    #[test]
+    fn a_stakers_immature_coinbase_does_not_make_their_tokens_uncountable() {
+        let stakeguard = hex::decode(
+            "3d04030001021504d72c764548836ae9e1784b54afed2c1f1061bd532103166b7813a4855a88e9ef7\
+             340a692ef3c2decedfdc2c7563ec79537e89667d935cc4c8704030101011504d72c764548836ae9e17\
+             84b54afed2c1f1061bd5343010000a659dcb60845f0ea2f48a9a5513cd90ab986fd670d8644f52fcc1\
+             53478260efdd114a32487649aababf8c747cb6733b6c69da63362cd6f226fead87401000000270403\
+             0101012103166b7813a4855a88e9ef7340a692ef3c2decedfdc2c7563ec79537e89667d93575"
+                .replace(['\n', ' '], "")
+                .as_str(),
+        )
+        .expect("a real stakeguard script");
+        let node = ScriptedReader::new(1_000)
+            .with_script_utxo(ADDRESS, 990, 600_000_000, stakeguard)
+            .with_reserve_utxo(ADDRESS, 990)
+            .with_coinbase_at(990);
+        let funding = spendable(&node, ADDRESS).unwrap();
+
+        assert_eq!(
+            funding
+                .immature_token_balances()
+                .expect("a staker's holdings must be countable")
+                .get(&TOKEN),
+            Some(&Amount::from_sat(1_000_000)),
+            "the stakeguard output must not take the token count down with it"
+        );
+    }
+
+    /// **A VerusID's holdings.** `getaddressutxos` answers for an i-address,
+    /// and what comes back is reserve outputs paying that identity. Reading
+    /// them is the whole reason a wallet can show what an identity owns.
+    #[test]
+    fn tokens_held_by_an_identity_are_reported() {
+        let identity = verus_keys::Address::new(verus_keys::AddressKind::Identity, [0x5a; 20]);
+        let script = verus_tx::cc::reserve_output_script_to(
+            verus_tx::Destination::Identity([0x5a; 20]),
+            TOKEN,
+            4_200_000,
+        )
+        .expect("reserve script");
+        let node =
+            ScriptedReader::new(1_000).with_script_utxo(&identity.to_string(), 900, 0, script);
+        let funding = spendable(&node, &identity.to_string()).unwrap();
+
+        assert_eq!(
+            funding.token_balances().expect("countable").get(&TOKEN),
+            Some(&Amount::from_sat(4_200_000))
         );
     }
 

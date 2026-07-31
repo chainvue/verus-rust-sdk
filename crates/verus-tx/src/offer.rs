@@ -433,7 +433,13 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     for utxo in params.utxos {
         let (tokens, is_cryptocondition) =
             match crate::decode::decode_output_script(&utxo.script_pubkey)? {
-                crate::decode::OutputKind::ReserveOutput { tokens, .. } => (tokens, true),
+                crate::decode::OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                } => {
+                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
+                    (tokens, true)
+                }
                 _ => (Vec::new(), false),
             };
         // Tokens riding on a coin pulled in for its native value have to come

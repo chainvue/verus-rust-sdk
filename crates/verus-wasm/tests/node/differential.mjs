@@ -469,6 +469,64 @@ console.log("\noffline derivation");
   assert.throws(() => tokenBalances({ txid: "aa" }), (e) => e.name === "InvalidArgument",
     "a single object is not a list of outputs");
   ok("an output that cannot be read refuses the whole balance");
+
+  // …but "cannot be read" must stay narrow. A proof-of-stake coinbase pays a
+  // stakeguard CryptoCondition, and refusing that refused a balance to every
+  // staking address. The chain's own `CScript::ReserveOutValue` never reads
+  // currency out of eval code 1, so it counts as zero — cross-checked against
+  // `decodescript` on api.verustest.net, which reports no reserve for it.
+  //
+  // Real script: block 1170103 on VRSCTEST, coinbase vout 0.
+  const stakeguard =
+    "3d04030001021504d72c764548836ae9e1784b54afed2c1f1061bd532103166b7813a4855a88e9ef7340a692ef" +
+    "3c2decedfdc2c7563ec79537e89667d935cc4c8704030101011504d72c764548836ae9e1784b54afed2c1f1061" +
+    "bd5343010000a659dcb60845f0ea2f48a9a5513cd90ab986fd670d8644f52fcc153478260efdd114a32487649a" +
+    "ababf8c747cb6733b6c69da63362cd6f226fead874010000002704030101012103166b7813a4855a88e9ef7340" +
+    "a692ef3c2decedfdc2c7563ec79537e89667d93575";
+  const staked = decodeOutput(stakeguard);
+  assert.equal(staked.kind, "unsupportedCryptoCondition");
+  assert.equal(staked.evalCode, 1);
+  assert.equal(staked.mayCarryCurrency, false, "a stakeguard output holds no currency");
+  assert.deepEqual(
+    tokenBalances([{ txid: "cc".repeat(32), vout: 0, satoshis: "600000000", scriptPubKey: stakeguard }]),
+    [],
+    "a staker must get a balance, not an exception",
+  );
+  ok("a proof-of-stake coinbase counts as tokenless instead of refusing the balance");
+
+  // The same script with the eval code changed to 11 (EVAL_RESERVE_DEPOSIT),
+  // one of the five the chain does read currency out of. The refusal has to
+  // survive for those, or narrowing it turned into removing it.
+  const deposit = stakeguard.replace("cc4c870403010101", "cc4c8704030b0101");
+  assert.notEqual(deposit, stakeguard, "the eval code must actually have changed");
+  const bearing = decodeOutput(deposit);
+  assert.equal(bearing.evalCode, 11);
+  assert.equal(bearing.mayCarryCurrency, true);
+  assert.throws(
+    () => tokenBalances([{ txid: "dd".repeat(32), vout: 0, satoshis: "1", scriptPubKey: deposit }]),
+    (e) => e instanceof Error,
+    "an eval code that can hold currency still refuses the whole balance",
+  );
+  ok("an eval code that can hold currency is still refused");
+
+  // Tokens held by a VerusID. `decodescript` on api.verustest.net reports this
+  // exact script as paying i6api8faWPZjATwXGSuXZvsv5AtXN689KH and holding 0.4
+  // shylock; the decoder used to refuse it and lose an identity's holdings.
+  const identityHeld =
+    "1b0403000101150422194b8b56f7ce20f0d6bbde491e3ed37f15d5bbcc3504030901011504" +
+    "22194b8b56f7ce20f0d6bbde491e3ed37f15d5bb1901e908e3e5c373389fa7ae5d4b22a87f" +
+    "fc204a74ff9288b30075";
+  const owned = decodeOutput(identityHeld);
+  assert.equal(owned.kind, "reserveOutput");
+  assert.equal(owned.address, "i6api8faWPZjATwXGSuXZvsv5AtXN689KH",
+    "an identity destination must not be rendered as an R address nobody controls");
+  assert.deepEqual(owned.tokens, [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }]);
+  assert.deepEqual(
+    tokenBalances([{ txid: "ee".repeat(32), vout: 1, satoshis: "0", scriptPubKey: identityHeld }]),
+    [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }],
+  );
+  assert.equal(formatCoins(owned.tokens[0].amount), "0.4", "the daemon reads the same 0.4");
+  ok("tokens held by a VerusID are read and counted");
   key.free();
 }
 

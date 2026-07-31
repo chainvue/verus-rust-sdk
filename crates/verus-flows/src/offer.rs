@@ -195,10 +195,21 @@ pub fn inspect(reader: &impl ChainReader, offer_hex: &str) -> Result<OfferTerms,
                         .into(),
                 ));
             }
+            // The demand must be reproduced as an output the taker pays, and
+            // `Demand::Token` names its recipient by key hash. A demand paid to
+            // an identity or a script is a shape this flow cannot rebuild yet —
+            // refused rather than paid to the wrong `R` address, which is what
+            // reading the hash out of any destination kind would do.
+            let verus_tx::Destination::PubKeyHash(recipient) = destination else {
+                return Err(FlowError::Offer(format!(
+                    "the offer demands a token paid to {destination:?}, and taking one only \
+                     funds a demand paid to a transparent address"
+                )));
+            };
             Demand::Token {
                 currency,
                 amount: Amount::from_sat(amount),
-                recipient: destination,
+                recipient,
             }
         }
         other => {

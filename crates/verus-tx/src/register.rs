@@ -904,7 +904,11 @@ pub fn build_identity_registration(
         let mut held: u64 = 0;
         for utxo in sub.token_funding {
             match decode_output_script(&utxo.script_pubkey)? {
-                OutputKind::ReserveOutput { tokens, .. } => {
+                OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                } => {
+                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
                     for (currency, amount) in tokens {
                         if currency != CurrencyId::of_identity(parent) {
                             return Err(TxError::UnsupportedFundingEval {

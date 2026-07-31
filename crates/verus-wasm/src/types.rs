@@ -179,6 +179,7 @@ mod tests {
                 primary_addresses: Some(Vec::new()),
                 minimum_signatures: Some(0),
                 eval_code: Some(0),
+                may_carry_currency: Some(false),
             },
         );
     }

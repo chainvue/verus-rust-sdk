@@ -61,8 +61,20 @@ impl ScriptedReader {
         }
     }
 
-    /// An unspent output at `address`, mined at `height`.
-    pub fn with_utxo(self, address: &str, height: u32, satoshis: u64) -> Self {
+    /// An unspent output at `address`, mined at `height`, with the script
+    /// given verbatim.
+    ///
+    /// The escape hatch the two helpers below are written in terms of: some
+    /// shapes only exist on chain — a proof-of-stake coinbase's stakeguard
+    /// output, a reserve output held by a VerusID — and a scripted node is
+    /// worth much less if it can only produce the shapes this crate emits.
+    pub fn with_script_utxo(
+        self,
+        address: &str,
+        height: u32,
+        satoshis: u64,
+        script_pubkey: Vec<u8>,
+    ) -> Self {
         let index = u32::try_from(self.utxos.borrow().len()).expect("few utxos");
         let mut txid = [0u8; 32];
         // Deliberately wrapping: these bytes are an identifier, not a value.
@@ -75,8 +87,7 @@ impl ScriptedReader {
                 txid: Txid::from_internal(txid),
                 vout: index,
                 satoshis: Amount::from_sat(satoshis),
-                // P2PKH, so the builders accept it as funding.
-                script_pubkey: p2pkh_script(address),
+                script_pubkey,
             },
             address: address.to_string(),
             height,
@@ -85,31 +96,23 @@ impl ScriptedReader {
         self
     }
 
+    /// An unspent output at `address`, mined at `height`.
+    pub fn with_utxo(self, address: &str, height: u32, satoshis: u64) -> Self {
+        // P2PKH, so the builders accept it as funding.
+        let script = p2pkh_script(address);
+        self.with_script_utxo(address, height, satoshis, script)
+    }
+
     /// A CryptoCondition reserve output — a token, not spendable as native
     /// funding.
     pub fn with_reserve_utxo(self, address: &str, height: u32) -> Self {
-        let index = u32::try_from(self.utxos.borrow().len()).expect("few utxos");
-        let mut txid = [0u8; 32];
-        txid[0] = (index + 1).to_le_bytes()[0];
-        txid[1] = height.to_le_bytes()[0];
         let script = verus_tx::cc::reserve_output_script(
             [0x11; 20],
             verus_tx::CurrencyId::from_bytes([0x22; 20]),
             1_000_000,
         )
         .expect("reserve script");
-        self.utxos.borrow_mut().push(AddressUtxo {
-            utxo: Utxo {
-                txid: Txid::from_internal(txid),
-                vout: index,
-                satoshis: Amount::ZERO,
-                script_pubkey: script,
-            },
-            address: address.to_string(),
-            height,
-            is_spendable: true,
-        });
-        self
+        self.with_script_utxo(address, height, 0, script)
     }
 
     /// Mark outputs at `height` as coming from a coinbase.

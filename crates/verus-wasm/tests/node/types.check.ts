@@ -94,7 +94,10 @@ void [signatureBlockHeight(verify.signature), why];
 const output: DecodedOutput = decodeOutput(utxo.scriptPubKey);
 if (output.kind === "unsupportedCryptoCondition") {
   const evalCode: number | undefined = output.evalCode;
-  void evalCode;
+  // The flag a wallet needs to tell "undecodable and harmless" — a staker's
+  // coinbase — from "undecodable and possibly holding your money".
+  const mayCarryCurrency: boolean | undefined = output.mayCarryCurrency;
+  void [evalCode, mayCarryCurrency];
 }
 const balances: TokenAmount[] = tokenBalances([utxo]);
 const owed: string = balances[0].amount;

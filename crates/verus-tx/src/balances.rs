@@ -10,22 +10,6 @@
 //! transfer can actually spend. It needs no node: a caller who already has the
 //! outputs already has the answer.
 //!
-//! # What it cannot count, and what that costs
-//!
-//! Failing closed has a price, and it should be stated rather than discovered:
-//!
-//! * A **proof-of-stake coinbase** pays its first output to a stakeguard
-//!   CryptoCondition (eval code 1), which this crate does not decode. A recent
-//!   staker's balance is therefore *unknown*, not zero.
-//! * **Tokens held by a VerusID** are reserve outputs paying an identity
-//!   destination, which the decoder does not read yet. Counting an
-//!   i-address's holdings fails for the same reason.
-//!
-//! Both refuse by name — the outpoint is in the error — so a caller who knows
-//! an output is harmless can drop it and count the rest. A proof-of-work
-//! coinbase, which pays P2PK, *is* counted: it provably carries no currency,
-//! and refusing it would be a gap dressed as caution.
-//!
 //! # An output this crate cannot read is not zero
 //!
 //! [`token_balances`] is fallible, and that is the point of it. A
@@ -34,7 +18,49 @@
 //! ([`crate::OutputKind::UnsupportedCryptoCondition`]) rather than an error — so
 //! skipping it is precisely how a balance silently loses a token and tells a
 //! user they hold nothing when they hold something. It is refused instead, and
-//! named.
+//! named: the outpoint is in the error, so a caller who knows an output is
+//! harmless can drop it and count the rest.
+//!
+//! # …but "cannot read" is a much smaller set than it looks
+//!
+//! Failing closed has a price, and paying it where nothing is bought is not
+//! caution, it is a gap. Three shapes this crate cannot *spend* are counted
+//! anyway, because each provably holds no currency:
+//!
+//! * A **proof-of-work coinbase** pays P2PK. There is nowhere in that script
+//!   for a payload to live.
+//! * A **proof-of-stake coinbase** pays its first output to a stakeguard
+//!   CryptoCondition (eval code 1). The chain's own
+//!   `CScript::ReserveOutValue` reads currency out of five eval codes and
+//!   stakeguard is not one of them — so it is undecodable and tokenless, and
+//!   refusing it would have made a balance impossible for every staker.
+//!   [`crate::may_carry_currency`] is where that list lives.
+//! * The same goes for notarizations, finalizations, currency definitions and
+//!   identity outputs.
+//!
+//! **Tokens held by a VerusID** are counted too, and that one is not a
+//! proof-of-absence but a proof-of-presence: they are ordinary reserve outputs
+//! whose destination happens to be an identity, and the decoder now reads the
+//! destination kind instead of insisting on a key hash.
+//!
+//! # What is genuinely still uncountable
+//!
+//! Two shapes, both refused by name rather than under-counted:
+//!
+//! * A **multi-currency reserve output** — `CTokenOutput` serialized with
+//!   `VERSION_MULTIVALUE` (`0x80000000`), which holds a whole
+//!   `CCurrencyValueMap` instead of one currency and one amount.
+//!   [`crate::decode_output_script`] refuses the payload rather than misread
+//!   the bytes after the version, so an address holding one gets no balance.
+//!   Real example on VRSCTEST: output 10 of
+//!   `9d0859212eb5dd5bbcd5d8a171e8e0080e16d5629ed84bd596573aae9b086443`,
+//!   nine currencies in one output.
+//! * **Eval code 17**, `EVAL_IDENTITY_COMMITMENT`. Its payload carries
+//!   `reserveValues`, so [`crate::may_carry_currency`] says `true` and the
+//!   balance is refused — correctly, until the commitment is decoded.
+//!
+//! Both were invisible before, because everything an ordinary address holds
+//! was being refused for other reasons first.
 
 use std::collections::BTreeMap;
 
@@ -88,10 +114,20 @@ pub fn token_balances(utxos: &[Utxo]) -> Result<TokenBalances, TxError> {
             | OutputKind::PubKey { .. }
             | OutputKind::IdentityPayment { .. }
             | OutputKind::IdentityPrimary { .. } => continue,
-            OutputKind::UnsupportedCryptoCondition { eval_code } => {
+            // An eval code this crate cannot decode, but which the chain's own
+            // `CScript::ReserveOutValue` never reads currency out of — a
+            // stakeguard, a notarization, a currency definition. Undecodable
+            // *and* provably tokenless, so refusing it would fail closed
+            // against nothing while making a balance impossible for anyone who
+            // has staked. See [`crate::may_carry_currency`].
+            OutputKind::UnsupportedCryptoCondition {
+                may_carry_currency: false,
+                ..
+            } => continue,
+            OutputKind::UnsupportedCryptoCondition { eval_code, .. } => {
                 return Err(uncountable(format!(
-                    "it is a CryptoCondition with eval code {eval_code}, which this crate \
-                     cannot decode"
+                    "it is a CryptoCondition with eval code {eval_code}, which can carry \
+                     currency and which this crate cannot decode"
                 )))
             }
         };
@@ -172,15 +208,26 @@ mod tests {
     /// **Why this is fallible.** The decoder reports an unreadable
     /// CryptoCondition as a value, not an error, so a `continue` here would
     /// silently drop whatever it carries.
+    ///
+    /// Eval code 11 is `EVAL_RESERVE_DEPOSIT`, one of the five the chain's own
+    /// `CScript::ReserveOutValue` reads currency out of. That is what makes it
+    /// the right shape for this test: an output that genuinely could be hiding
+    /// a token this crate cannot see.
     #[test]
-    fn an_unreadable_output_is_refused_rather_than_counted_as_nothing() {
+    fn an_unreadable_output_that_could_hold_currency_is_refused_not_counted_as_nothing() {
         let utxo = Utxo {
             txid: Txid::from_internal([0x55; 32]),
             vout: 3,
             satoshis: Amount::from_sat(1),
             script_pubkey: cc::cc_script(
-                &cc::OptCcParams::one_of_one(0x7f, Destination::PubKeyHash([0x44; 20])),
-                &cc::OptCcParams::one_of_one(0x7f, Destination::PubKeyHash([0x44; 20])),
+                &cc::OptCcParams::one_of_one(
+                    crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                    Destination::PubKeyHash([0x44; 20]),
+                ),
+                &cc::OptCcParams::one_of_one(
+                    crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                    Destination::PubKeyHash([0x44; 20]),
+                ),
             )
             .unwrap(),
         };
@@ -190,12 +237,59 @@ mod tests {
                 assert!(txid.starts_with("5555"), "{txid}");
                 assert_eq!(vout, 3);
                 assert!(
-                    reason.contains("127"),
+                    reason.contains("11"),
                     "the eval code must be named: {reason}"
                 );
             }
             other => panic!("an unreadable output must not read as zero: {other:?}"),
         }
+    }
+
+    /// And the refusal must be **narrow**. Every eval code the chain never
+    /// reads currency out of has to be countable, or the balance is refused
+    /// for a notarization, a currency definition, an identity reservation —
+    /// shapes an ordinary address meets all the time.
+    ///
+    /// Pinned against [`crate::may_carry_currency`] directly rather than
+    /// against a list copied into the test: two copies of the list would agree
+    /// with each other and with nothing else.
+    #[test]
+    fn only_the_eval_codes_that_can_hold_currency_refuse_a_balance() {
+        let mut refused = Vec::new();
+        for eval_code in 1..=0x1au8 {
+            let script = cc::cc_script(
+                &cc::OptCcParams::one_of_one(eval_code, Destination::PubKeyHash([0x44; 20])),
+                &cc::OptCcParams::one_of_one(eval_code, Destination::PubKeyHash([0x44; 20])),
+            )
+            .unwrap();
+            // Identity outputs (14) and plain reserve outputs (9) decode into
+            // their own kinds and are not what this is about.
+            if !matches!(
+                decode_output_script(&script),
+                Ok(OutputKind::UnsupportedCryptoCondition { .. })
+            ) {
+                continue;
+            }
+            let utxo = Utxo {
+                txid: Txid::from_internal([0x66; 32]),
+                vout: 0,
+                satoshis: Amount::from_sat(1),
+                script_pubkey: script,
+            };
+            let counted = token_balances(&[utxo]).is_ok();
+            assert_eq!(
+                counted,
+                !crate::may_carry_currency(eval_code),
+                "eval code {eval_code} is counted={counted} but may_carry_currency says otherwise"
+            );
+            if !counted {
+                refused.push(eval_code);
+            }
+        }
+        assert!(
+            !refused.is_empty(),
+            "nothing was refused, so this test proves nothing"
+        );
     }
 
     /// **A proof-of-work coinbase pays P2PK**, so any address that has ever
@@ -221,18 +315,21 @@ mod tests {
         assert_eq!(held.len(), 1, "a P2PK output contributes no currency");
     }
 
-    /// **A proof-of-stake coinbase pays a stakeguard CryptoCondition**, which
-    /// this crate does not decode. So a recent staker's balance is *unknown*,
-    /// not zero — and the refusal has to say which output made it unknown,
-    /// because that is the only way a caller can decide the output is
-    /// harmless and count the rest themselves.
+    /// **A proof-of-stake coinbase pays a stakeguard CryptoCondition**, and
+    /// this crate still cannot decode its payload — but it does not have to.
+    /// `CScript::ReserveOutValue` never reads currency out of eval code 1, so
+    /// the output is provably tokenless and counting it as zero loses nothing.
+    ///
+    /// This test used to assert the opposite: that a staker got a refusal
+    /// naming the output. That was honest but it was also a wall — an address
+    /// that had staked once could not be given a balance at all. The refusal
+    /// is now narrowed to the eval codes that could actually be hiding
+    /// something, which is what `only_the_eval_codes_that_can_hold_currency…`
+    /// above pins.
     ///
     /// The script is a real one: block 1170103 on VRSCTEST, coinbase vout 0.
-    /// This test records a known limitation rather than approving of it; the
-    /// fix is to teach the decoder eval code 1, at which point this test
-    /// should change to assert the balance succeeds.
     #[test]
-    fn a_stakeguard_output_is_refused_by_name_rather_than_ignored() {
+    fn a_stakeguard_output_is_counted_as_tokenless_rather_than_refusing_the_balance() {
         let script = hex::decode(
             "3d04030001021504d72c764548836ae9e1784b54afed2c1f1061bd532103166b7813a4855a88e9ef7\
              340a692ef3c2decedfdc2c7563ec79537e89667d935cc4c8704030101011504d72c764548836ae9e17\
@@ -249,23 +346,63 @@ mod tests {
             satoshis: Amount::from_sat(600_000_000),
             script_pubkey: script,
         };
-        match token_balances(&[utxo]) {
-            Err(TxError::UncountableOutput { txid, vout, reason }) => {
-                assert!(txid.starts_with("9999"), "{txid}");
-                assert_eq!(vout, 0);
-                assert!(
-                    reason.contains('1'),
-                    "the eval code must be named: {reason}"
-                );
+        // Decoded, but only as far as its eval code — the payload is still
+        // opaque, which is the whole point: countable without being readable.
+        assert_eq!(
+            decode_output_script(&utxo.script_pubkey).unwrap(),
+            OutputKind::UnsupportedCryptoCondition {
+                eval_code: 1,
+                may_carry_currency: false,
             }
-            other => panic!("a stakeguard output must be refused, by name: {other:?}"),
-        }
+        );
+
+        let held = token_balances(&[utxo, reserve_output(A, 100)])
+            .expect("a staker must still be able to see their tokens");
+        assert_eq!(held[&A], Amount::from_sat(100));
+        assert_eq!(
+            held.len(),
+            1,
+            "a stakeguard output contributes no currency of its own"
+        );
+    }
+
+    /// **Tokens held by a VerusID.** A reserve output whose destination is an
+    /// identity is what a mint pays and what an identity-owned balance is made
+    /// of. The decoder used to refuse it — `a reserve output paying
+    /// Identity(…) is not decoded yet` — which made an i-address's holdings
+    /// uncountable even though the payload was in plain sight and the
+    /// encoder in `cc.rs` had been writing that exact shape all along.
+    #[test]
+    fn a_reserve_output_held_by_an_identity_is_counted() {
+        let identity = [0x5a; 20];
+        let script =
+            cc::reserve_output_script_to(Destination::Identity(identity), A, 250_000_000).unwrap();
+        assert_eq!(
+            decode_output_script(&script).unwrap(),
+            OutputKind::ReserveOutput {
+                destination: Destination::Identity(identity),
+                tokens: vec![(A, 250_000_000)],
+            },
+            "the destination kind must survive decoding, or the output names an \
+             R address nobody controls"
+        );
+
+        let utxo = Utxo {
+            txid: Txid::from_internal([0xab; 32]),
+            vout: 1,
+            satoshis: Amount::from_sat(0),
+            script_pubkey: script,
+        };
+        assert_eq!(
+            token_balances(&[utxo]).expect("an identity's tokens are countable")[&A],
+            Amount::from_sat(250_000_000)
+        );
     }
 
     /// Every refusal must name the output, not only the one that has a
     /// dedicated variant. A decoder error carries no outpoint of its own, so a
-    /// wallet told "a reserve output paying an identity is not decoded yet"
-    /// could not say which of forty outputs to look at.
+    /// wallet told "unsupported TokenOutput version 2147483649" could not say
+    /// which of forty outputs to go and look at.
     #[test]
     fn a_decoder_failure_is_reported_against_the_output_that_caused_it() {
         let utxo = Utxo {

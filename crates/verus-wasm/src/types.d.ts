@@ -174,7 +174,12 @@ export interface DecodedOutput {
      * address controlling the key, and the output carries native value only.
      */
     address?: string;
-    /** For `reserveOutput`: token value carried, IN ADDITION to native value. */
+    /**
+     * For `reserveOutput`: token value carried, IN ADDITION to native value.
+     *
+     * `address` may be an `i…` address here: tokens held by a VerusID are an
+     * ordinary shape, and only the identity's authority can spend one.
+     */
     tokens?: TokenAmount[];
     /** For `identityPrimary`: the identity's name. */
     name?: string;
@@ -183,8 +188,22 @@ export interface DecodedOutput {
     /** For `identityPrimary`: how many of them a spend needs. */
     minimumSignatures?: number;
     /**
-     * For `unsupportedCryptoCondition`: the eval code found. The output may
-     * carry value this SDK cannot see — do not spend it.
+     * For `unsupportedCryptoCondition`: the eval code found. This SDK cannot
+     * spend the output whatever the code is — do not select it as funding.
      */
     evalCode?: number;
+    /**
+     * For `unsupportedCryptoCondition`: whether an output with that eval code
+     * is ABLE to hold a token.
+     *
+     * `false` is a proof of absence taken from the chain's own
+     * `CScript::ReserveOutValue`, not a guess, so `tokenBalances` counts such
+     * an output as zero rather than throwing. The commonest case is the
+     * stakeguard output (eval code 1) of a proof-of-stake coinbase, which
+     * every staking address holds.
+     *
+     * `true` means the output may carry currency this SDK cannot see, and
+     * `tokenBalances` refuses the whole set rather than under-report it.
+     */
+    mayCarryCurrency?: boolean;
 }
