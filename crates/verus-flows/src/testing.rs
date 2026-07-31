@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use serde_json::json;
 use verus_rpc::{
     AddressBalance, AddressDelta, AddressUtxo, Broadcaster, ChainInfo, ChainReader, CurrencyPolicy,
-    IdentityRecord, RpcError,
+    IdentityRecord, OfferListing, RpcError,
 };
 use verus_tx::{Amount, Txid, Utxo};
 
@@ -39,6 +39,7 @@ pub struct ScriptedReader {
     broadcast_failure: RefCell<Option<RpcError>>,
     estimate: RefCell<Option<verus_rpc::ConversionEstimate>>,
     deltas: RefCell<Vec<AddressDelta>>,
+    offers: RefCell<Vec<OfferListing>>,
     pub(crate) raw_transactions: RefCell<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -59,6 +60,7 @@ impl ScriptedReader {
             broadcast_failure: RefCell::new(None),
             estimate: RefCell::new(None),
             deltas: RefCell::new(Vec::new()),
+            offers: RefCell::new(Vec::new()),
             raw_transactions: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -179,6 +181,16 @@ impl ScriptedReader {
     /// transaction, rows arriving out of chain order.
     pub fn with_deltas(self, deltas: Vec<AddressDelta>) -> Self {
         *self.deltas.borrow_mut() = deltas;
+        self
+    }
+
+    /// Offers `offers` will list, regardless of what is asked for.
+    ///
+    /// The daemon's own filtering is by currency and direction; scripting that
+    /// too would only be re-implementing it. What the flow layer decides — what
+    /// counts as still live at a given tip — is what these are here to drive.
+    pub fn with_offers(self, offers: Vec<OfferListing>) -> Self {
+        *self.offers.borrow_mut() = offers;
         self
     }
 
@@ -313,6 +325,16 @@ impl ChainReader for ScriptedReader {
             })
             .cloned()
             .collect())
+    }
+
+    fn offers(
+        &self,
+        _currency_or_id: &str,
+        _is_currency: bool,
+        _with_tx: bool,
+    ) -> Result<Vec<OfferListing>, RpcError> {
+        self.count();
+        Ok(self.offers.borrow().clone())
     }
 
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError> {

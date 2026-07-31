@@ -832,3 +832,61 @@ fn the_address_index_still_reports_signed_movements() {
 
     eprintln!("{} deltas, token nets to {token} sats", deltas.len());
 }
+
+/// The marketplace is still readable, and still has the shapes the fixtures
+/// froze.
+///
+/// Drift here is quiet in an unusual way. `getoffers` answers `{}` — an empty
+/// object, not an error — for a target it cannot make sense of, so a daemon
+/// that renamed a bucket or changed how a side is spelled would look exactly
+/// like a marketplace with nothing on it. A fixture cannot catch that; only
+/// asking the live node can.
+#[test]
+fn the_marketplace_still_lists_offers_in_the_shape_we_parse() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+
+    const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+
+    let listings = client().offers(VRSCTEST, true, false).expect("getoffers");
+    assert!(
+        !listings.is_empty(),
+        "VRSCTEST had 54 offers standing when this was written; an empty list \
+         means the shape changed, not that trading stopped"
+    );
+
+    // Both kinds of side are represented, which is the property the single
+    // `OfferSide` type exists for.
+    assert!(
+        listings
+            .iter()
+            .any(|l| matches!(l.offering, verus_rpc::OfferSide::Identity { .. })),
+        "identities are traded on VRSCTEST"
+    );
+    assert!(listings.iter().any(|l| matches!(
+        (&l.offering, &l.accepting),
+        (
+            verus_rpc::OfferSide::Currencies(_),
+            verus_rpc::OfferSide::Currencies(_)
+        )
+    )));
+
+    // The same target asked about as an identity is the quiet failure: an
+    // empty answer that reads as "nothing for sale".
+    let as_identity = client().offers(VRSCTEST, false, false).expect("getoffers");
+    assert!(
+        as_identity.is_empty(),
+        "a currency asked about as an identity answers empty rather than erroring"
+    );
+
+    eprintln!(
+        "{} offers, {} of them identities",
+        listings.len(),
+        listings
+            .iter()
+            .filter(|l| matches!(l.offering, verus_rpc::OfferSide::Identity { .. }))
+            .count()
+    );
+}

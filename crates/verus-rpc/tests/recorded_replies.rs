@@ -1,11 +1,21 @@
 //! Parsing bodies the live network actually produced.
 //!
-//! The fixtures under `fixtures/rpc/` are verbatim captures from
-//! `api.verustest.net`, committed for the same reason `fixtures/daemon/` is: a
-//! mock written from documentation tests my reading of the docs, not the wire.
-//! Two of the bugs this crate is shaped around — a money field arriving as a
-//! JSON float, and an error reply omitting `result` rather than nulling it —
-//! are invisible unless the bytes are real.
+//! The fixtures under `fixtures/rpc/` are captures from the live network,
+//! committed for the same reason `fixtures/daemon/` is: a mock written from
+//! documentation tests my reading of the docs, not the wire.
+//!
+//! Most are verbatim replies from `api.verustest.net`. The two `getoffers_*`
+//! files are the exceptions and are labelled as such in the fixture README:
+//! one is from **mainnet**, because shapes that matter — an offer side naming
+//! several currencies, an amount in exponent form — do not occur on VRSCTEST
+//! at all; and both are trimmed to a few representative entries, the full
+//! replies being 96 KB and 671 KB. Trimming drops whole listings and never
+//! edits one.
+//!
+//! Three of the bugs this crate is shaped around are invisible unless the bytes
+//! are real: a money field arriving as a JSON float, an error reply omitting
+//! `result` rather than nulling it, and an identity name arriving with its
+//! non-ASCII characters escaped.
 
 use std::cell::RefCell;
 
@@ -384,4 +394,198 @@ fn the_deltas_of_the_settled_swap_net_to_what_was_traded() {
         .map(|v| v.to_sat())
         .sum();
     assert_eq!(token, -100_000_000, "1 sdkcuralpha out");
+}
+
+/// Offers as VRSCTEST actually lists them, asked for with `with_tx`.
+///
+/// The reply is an object whose **keys are data** — one bucket per direction,
+/// named after the currencies involved — so there is no fixed schema to
+/// deserialize into and the shape has to be read as a map.
+#[test]
+fn reads_offers_from_every_bucket() {
+    let listings = client("getoffers_vrsctest")
+        .offers("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq", true, true)
+        .unwrap();
+    assert_eq!(listings.len(), 4);
+
+    // Three buckets, and the direction each one records is kept rather than
+    // flattened away.
+    let buckets: std::collections::BTreeSet<&str> =
+        listings.iter().map(|l| l.bucket.as_str()).collect();
+    assert_eq!(buckets.len(), 3);
+
+    // An identity can be on **either** side, and both directions are standing
+    // on VRSCTEST right now. That is not a curiosity — it is why the two sides
+    // share one type. A reader modelling "what is offered" as currency and only
+    // "what is wanted" as possibly-an-identity would parse half the marketplace
+    // and silently drop the rest.
+    let for_sale = listings
+        .iter()
+        .find_map(|l| match (&l.offering, &l.accepting) {
+            (verus_rpc::OfferSide::Identity { name, .. }, verus_rpc::OfferSide::Currencies(_)) => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .expect("an identity offered for currency");
+    assert_eq!(for_sale, "PulseDigital");
+
+    let wanted = listings
+        .iter()
+        .find_map(|l| match (&l.offering, &l.accepting) {
+            (verus_rpc::OfferSide::Currencies(_), verus_rpc::OfferSide::Identity { name, .. }) => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .expect("currency offered for an identity");
+    assert_eq!(wanted, "OnyxSpark");
+
+    // And the plain case: currency for currency.
+    assert!(listings.iter().any(|l| matches!(
+        (&l.offering, &l.accepting),
+        (
+            verus_rpc::OfferSide::Currencies(_),
+            verus_rpc::OfferSide::Currencies(_)
+        )
+    )));
+}
+
+/// The finding that decided what this field is called.
+///
+/// The daemon names it `txid`, which reads as "this offer's transaction". It is
+/// not: it is the **funding** outpoint's transaction, the one holding the output
+/// the maker signed away. Proven here from the reply alone — `raw_offer` is the
+/// maker's half-transaction, and its single input's prevout is exactly this
+/// value, while hashing those bytes gives something else entirely.
+#[test]
+fn the_listed_txid_is_the_funding_outpoint_not_the_offer() {
+    let listings = client("getoffers_vrsctest")
+        .offers("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq", true, true)
+        .unwrap();
+
+    let listing = listings
+        .iter()
+        .find(|l| l.raw_offer.is_some())
+        .expect("with_tx was asked for");
+    let raw = hex::decode(listing.raw_offer.as_ref().unwrap()).expect("offer hex");
+
+    // header(4) + version group id(4) + input count(1), then the prevout.
+    let prevout: [u8; 32] = raw[9..41].try_into().unwrap();
+    assert_eq!(
+        verus_tx::Txid::from_internal(prevout),
+        listing.funding_txid,
+        "the listed txid is the outpoint the offer spends"
+    );
+}
+
+/// Mainnet carries shapes VRSCTEST has none of, and both of them would have
+/// broken a narrower reader.
+///
+/// An offer side can name **several currencies at once** — a token normally
+/// travels with a little native currency, because the output must pay its own
+/// way — and the amounts arrive in exponent form, `1e-8` being one satoshi.
+/// A reader assuming one currency per side, or refusing exponents, parses
+/// VRSCTEST perfectly and fails on the chain that has the volume.
+#[test]
+fn reads_multi_currency_offer_sides_and_their_exponent_amounts() {
+    let listings = client("getoffers_mainnet_vrsc")
+        .offers("i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV", true, false)
+        .unwrap();
+
+    let multi = listings
+        .iter()
+        .find_map(|l| match &l.offering {
+            verus_rpc::OfferSide::Currencies(c) if c.len() > 1 => Some(c),
+            _ => None,
+        })
+        .expect("an offer of more than one currency");
+
+    // The satoshi-sized leg is the one an exponent-refusing reader loses.
+    assert!(
+        multi.values().any(|amount| amount.to_sat() == 1),
+        "a one-satoshi leg, which the daemon writes as 1e-8: {multi:?}"
+    );
+}
+
+/// An identity name arrives **JSON-escaped**, and stripping the quotes is not
+/// the same as decoding it.
+///
+/// `RawValue::get()` hands back verbatim wire text, which is exactly what money
+/// parsing needs and exactly wrong for a string. Identity names are chosen by
+/// people, so escapes are ordinary rather than exotic: this crate's own mainnet
+/// fixture lists one named `(⌐■_■)`, which the daemon writes as
+/// `"(⌐■_■)"`.
+///
+/// Unquoting alone yields a 21-character string of literal backslashes that
+/// matches nothing — least of all the same name read back through
+/// `getidentity`, which decodes properly. A caller cross-referencing the two
+/// would silently find no match.
+#[test]
+fn an_identity_name_is_decoded_and_not_merely_unquoted() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/rpc/getoffers_mainnet_vrsc.json"
+    ))
+    .unwrap();
+    // The escape sequence itself, as a raw string so the backslashes survive.
+    // If a regeneration ever writes the name as literal UTF-8 instead, this
+    // test stops proving anything and says so.
+    assert!(
+        raw.contains(r#""name":"(\u2310\u25a0_\u25a0)""#),
+        "the fixture no longer carries an escaped name, so this test proves nothing"
+    );
+
+    let listings = client("getoffers_mainnet_vrsc")
+        .offers("i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV", true, false)
+        .unwrap();
+
+    let names: Vec<&str> = listings
+        .iter()
+        .filter_map(|l| match &l.offering {
+            verus_rpc::OfferSide::Identity { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        names.contains(&"(⌐■_■)"),
+        "expected the decoded name, got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("\\u")),
+        "an escape survived into the typed value: {names:?}"
+    );
+}
+
+/// A side that announces itself as an identity and then does not name one is a
+/// malformed answer. Inventing an empty string for it would hand the caller an
+/// id it may go on to look up.
+#[test]
+fn an_identity_side_missing_its_fields_is_refused() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    // `identityid` present but null — the shape that read as the string "null".
+    let null_id = r#"{"result":{"b":[{"price":1.0,"offer":{"blockexpiry":0,
+        "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+        "offer":{"identityid":null,"name":"x","systemid":"y"},
+        "accept":{"iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq":1.0}}}]}}"#;
+    assert!(RpcClient::new(Body(null_id))
+        .offers("x", true, false)
+        .is_err());
+
+    // A currency side carrying a stray numeric field would otherwise become a
+    // holding of a phantom currency, and be added to a total.
+    let stray = r#"{"result":{"b":[{"price":1.0,"offer":{"blockexpiry":0,
+        "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+        "offer":{"iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq":1.0,"someheight":12345},
+        "accept":{"iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq":1.0}}}]}}"#;
+    assert!(RpcClient::new(Body(stray))
+        .offers("x", true, false)
+        .is_err());
 }

@@ -1,5 +1,7 @@
 //! The client, and the split between asking and telling.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use serde_json::json;
 use serde_json::value::RawValue;
@@ -12,8 +14,8 @@ use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
     AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy,
-    IdentityRecord, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
-    RawConversionEstimate, RawCurrency, RawIdentity,
+    IdentityRecord, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
+    RawConversionEstimate, RawCurrency, RawIdentity, RawOfferEntry,
 };
 
 /// Asking a node questions.
@@ -164,6 +166,31 @@ pub trait ChainReader {
     ///   `vdxfid` address, the same convention as a txid. This returns the key
     ///   in `vdxfid` order.
     fn vdxf_id(&self, name: &str) -> Result<[u8; 20], RpcError>;
+    /// Offers standing against a currency or an identity.
+    ///
+    /// The half of the marketplace this SDK could not reach. `make_offer` and
+    /// `take_offer` have worked since the swap settled on chain, but there was
+    /// no way to *find* an offer — so an application could complete a trade it
+    /// had been handed and could not show a user what was for sale.
+    ///
+    /// `is_currency` says how to read `currency_or_id`, and getting it wrong is
+    /// not a near miss: a currency's i-address asked for as an identity comes
+    /// back as an empty result rather than an error, which reads exactly like
+    /// "nothing is for sale". A **name** is only ever accepted as an identity —
+    /// `"VRSC"` is refused with `-8`, `"iJhCez…"` with `is_currency` works.
+    ///
+    /// `with_tx` adds the maker's signed half-transaction to each listing. It
+    /// costs a much larger reply and is what makes a listing actionable:
+    /// `verus_flows::offer::inspect` takes exactly those bytes.
+    ///
+    /// Listings arrive grouped by direction, and the grouping is kept on each
+    /// listing rather than flattened away — see [`OfferListing::bucket`].
+    fn offers(
+        &self,
+        currency_or_id: &str,
+        is_currency: bool,
+        with_tx: bool,
+    ) -> Result<Vec<OfferListing>, RpcError>;
     /// Ask the node whether a signed message checks out.
     ///
     /// **A cross-check, not the primary path.** `verus_tx::signature` verifies
@@ -527,6 +554,53 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         // gets what a content map actually holds.
         bytes.reverse();
         Ok(bytes)
+    }
+
+    fn offers(
+        &self,
+        currency_or_id: &str,
+        is_currency: bool,
+        with_tx: bool,
+    ) -> Result<Vec<OfferListing>, RpcError> {
+        // Three arguments, and the allowlist in front of `api.verustest.net`
+        // serves all three — unlike `getblock`, where a second argument is
+        // refused. Checked rather than assumed, because that trap has cost this
+        // project a wrong availability table once already.
+        let body = self.call_raw(
+            Method::GetOffers,
+            json!([currency_or_id, is_currency, with_tx]),
+        )?;
+        let result = result_of(&body, Method::GetOffers)?;
+
+        // The reply is an object whose *keys are data*: one bucket per
+        // direction, named after the currencies involved. There is no fixed set
+        // of them, so it is read as a map and the key carried through.
+        let buckets: BTreeMap<String, Vec<RawOfferEntry<'_>>> = serde_json::from_str(result.get())
+            .map_err(|e| RpcError::Unexpected(format!("getoffers: {e}")))?;
+
+        // Same posture as the other readers: a repeated row inflates whatever
+        // is folded from the answer. Here that is a marketplace listing, so a
+        // funding outpoint appearing twice within one bucket shows the same
+        // offer twice and makes a thin market look deep.
+        //
+        // Keyed per bucket, because the buckets are directions: one outpoint
+        // legitimately appears in both the currency-for-identity and
+        // identity-for-currency views of the same trade.
+        let mut listings = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (bucket, entries) in buckets {
+            for entry in entries {
+                let listing = entry.into_typed(&bucket)?;
+                if !seen.insert((bucket.clone(), listing.funding_txid)) {
+                    return Err(RpcError::Unexpected(format!(
+                        "node listed the offer funded by {} twice under {bucket}",
+                        listing.funding_txid.to_display_hex()
+                    )));
+                }
+                listings.push(listing);
+            }
+        }
+        Ok(listings)
     }
 
     fn verify_message(

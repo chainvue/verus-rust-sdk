@@ -1,4 +1,9 @@
-//! Reading an offer against the chain before completing it.
+//! Finding an offer, and reading it against the chain before completing it.
+//!
+//! [`browse`] lists what is standing against a currency or an identity. Until
+//! it existed, making and taking an offer both worked and there was no way to
+//! *discover* one — an application could complete a trade it had been handed
+//! but could not show anyone what was for sale.
 //!
 //! `verus_tx::take_offer` builds what a maker asked for. It cannot check any of
 //! it: the value a maker is giving lives in an *outpoint*, not in the offer, so
@@ -37,7 +42,7 @@
 //! output is still there" — the difference is stated rather than glossed.
 
 use verus_keys::PrivateKey;
-use verus_rpc::{Broadcaster, ChainReader};
+use verus_rpc::{Broadcaster, ChainReader, OfferListing};
 use verus_tx::offer::{offer_funding_script, take_offer, TakeParams, OFFER_HASH_TYPE};
 use verus_tx::{Amount, CurrencyId, Txid, Utxo};
 use verus_wire::hash::txid_display;
@@ -347,4 +352,142 @@ pub fn take(
 
     let txid = crate::broadcast::broadcast(broadcaster, &hex::encode(&raw), &local_txid)?;
     Ok(Taken { terms, txid })
+}
+
+/// A listing, read against a particular tip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    /// The offer as the node reports it.
+    pub listing: OfferListing,
+    /// Whether it could still be completed at the tip this was read against.
+    ///
+    /// **Usually true — and that is a measurement, not an assumption.** Every
+    /// offer the two public nodes returned was live when checked: 54 of 54 on
+    /// VRSCTEST and 1843 of 1843 on VRSC. So the daemon appears to drop expired
+    /// offers before answering, and this flag does little work today.
+    ///
+    /// It earns its place for the reason that is not about the node's
+    /// filtering. This records the offer against **a** tip, and the chain moves
+    /// afterwards: an offer expiring a block from now is listed as live and is
+    /// dead by the time a taker has finished signing. Keeping the judgement
+    /// separate from the data means [`verus_rpc::OfferListing::is_live_at`] can
+    /// answer it again later, against a newer tip, without refetching the list.
+    pub live: bool,
+}
+
+/// Every offer standing against a currency or an identity.
+///
+/// The half of the marketplace that was missing. Making and taking an offer
+/// have both been proven on chain; without this an application could complete a
+/// trade it had been handed, but could not show anyone what was for sale.
+///
+/// `is_currency` says how to read `target`, and getting it wrong fails
+/// **quietly**: a currency asked about as an identity comes back empty, which
+/// is indistinguishable from a currency nobody is trading. A plain name is only
+/// ever taken as an identity — pass an `i` address for a currency.
+///
+/// `with_offer_bytes` asks for each maker's signed half-transaction, which is
+/// what [`inspect`] takes. Without it a listing is something to display; with
+/// it, it is something that can be checked against the chain and completed. It
+/// makes the reply substantially larger, so it is a choice rather than a
+/// default.
+///
+/// Costs two requests: the offers, then the tip.
+///
+/// That order is not incidental. A block landing between the two calls makes
+/// the tip *newer* than the listings, so an offer that expired in the gap is
+/// judged dead rather than alive. The other order fails the other way, and
+/// optimistic is the wrong direction for the one question this answers.
+///
+/// # What this does not tell you
+///
+/// [`Listing::live`] rules out an offer that has expired. It says nothing about
+/// whether the maker's funding output is **still unspent** — the same limit
+/// [`inspect`] has, and for the same reason: `getspentinfo` cannot answer it on
+/// a node without `spentindex`. An offer can be live, well-formed, and already
+/// taken by somebody else.
+pub fn browse(
+    reader: &impl ChainReader,
+    target: &str,
+    is_currency: bool,
+    with_offer_bytes: bool,
+) -> Result<Vec<Listing>, FlowError> {
+    let listings = reader.offers(target, is_currency, with_offer_bytes)?;
+    let tip = reader.block_count()?;
+    Ok(listings
+        .into_iter()
+        .map(|listing| Listing {
+            live: listing.is_live_at(tip),
+            listing,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+    use crate::testing::ScriptedReader;
+    use std::collections::BTreeMap;
+    use verus_rpc::OfferSide;
+
+    fn listing(expiry: u32) -> OfferListing {
+        OfferListing {
+            offering: OfferSide::Currencies(BTreeMap::from([(
+                "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq".to_string(),
+                Amount::from_sat(1_000_000_000),
+            )])),
+            accepting: OfferSide::Identity {
+                identity_id: "iSb6MzpWJU7nWkFnzQB1uyoLWvmRMwyWs3".to_string(),
+                name: "OnyxSpark".to_string(),
+                system_id: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq".to_string(),
+            },
+            block_expiry: expiry,
+            funding_txid: Txid::from_internal([0x0a; 32]),
+            raw_offer: None,
+            price: "0.025".to_string(),
+            bucket: "currency_x_for_ids".to_string(),
+        }
+    }
+
+    /// The tip decides, not the node: an offer that expires at exactly the
+    /// current height can no longer be completed, because any transaction
+    /// taking it lands at a later one.
+    #[test]
+    fn expiry_is_judged_against_the_tip() {
+        let reader = ScriptedReader::new(1_170_800).with_offers(vec![
+            listing(1_170_799),
+            listing(1_170_800),
+            listing(1_170_801),
+            listing(0),
+        ]);
+
+        let live: Vec<bool> = browse(&reader, "iJhCez", true, false)
+            .unwrap()
+            .iter()
+            .map(|l| l.live)
+            .collect();
+        assert_eq!(live, vec![false, false, true, true], "0 means no expiry");
+    }
+
+    /// The same listing is live now and dead later, without asking again.
+    /// That is the case the flag exists for — the public nodes were observed
+    /// returning no expired offers at all, so the node's own filtering is not
+    /// what makes this useful.
+    #[test]
+    fn a_listing_can_be_rechecked_against_a_later_tip() {
+        let reader = ScriptedReader::new(1_170_800).with_offers(vec![listing(1_170_900)]);
+        let found = browse(&reader, "iJhCez", true, false).unwrap();
+
+        assert!(found[0].live);
+        assert!(!found[0].listing.is_live_at(1_170_900));
+    }
+
+    /// An empty answer is a legitimate outcome, and it is also what asking
+    /// about a currency as an identity produces. The flow does not invent a
+    /// distinction the node does not draw.
+    #[test]
+    fn nothing_for_sale_is_an_empty_list_not_an_error() {
+        let reader = ScriptedReader::new(1_170_800);
+        assert!(browse(&reader, "iJhCez", true, false).unwrap().is_empty());
+    }
 }

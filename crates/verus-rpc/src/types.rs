@@ -127,6 +127,102 @@ pub struct AddressDelta {
     pub spending: bool,
 }
 
+/// One side of an offer — what is being given, or what is wanted for it.
+///
+/// The two sides have the same shape and either can be either kind, which is
+/// what makes an identity sale and a token trade the same mechanism.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OfferSide {
+    /// Currency, possibly several at once.
+    ///
+    /// Keyed by currency i-address. More than one entry is ordinary on
+    /// mainnet — an offer of a token usually carries a little of the native
+    /// currency alongside it, because the output has to pay its own way.
+    Currencies(BTreeMap<String, Amount>),
+    /// A VerusID itself, changing hands.
+    Identity {
+        /// The identity's `i` address.
+        identity_id: String,
+        /// Its name, without the parent.
+        name: String,
+        /// The system it lives on.
+        system_id: String,
+    },
+}
+
+/// One offer standing on the marketplace, as `getoffers` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferListing {
+    /// What the maker is giving.
+    pub offering: OfferSide,
+    /// What the maker wants for it.
+    pub accepting: OfferSide,
+    /// Height after which the offer can no longer be completed.
+    pub block_expiry: u32,
+    /// The outpoint's transaction the offer spends — **not** the id of the
+    /// offer transaction itself.
+    ///
+    /// The daemon calls this field `txid`, which reads as "this offer's
+    /// transaction" and is the wrong thing to fetch. It is the *funding*
+    /// transaction: the one holding the output the maker has signed away.
+    ///
+    /// Established by parsing `tx` from the same reply and comparing — the
+    /// first input's prevout is exactly this value, while hashing `tx` gives
+    /// something else entirely. Renamed here so the mistake is harder to make.
+    ///
+    /// The funding *vout* is not listed. It is in [`OfferListing::raw_offer`],
+    /// which is one reason to ask for it.
+    pub funding_txid: Txid,
+    /// The maker's signed half-transaction, when it was asked for.
+    ///
+    /// `Some` only when `with_tx` was set. This is what turns browsing into
+    /// something actionable: it is the input `verus_flows::offer::inspect`
+    /// takes, so a listing can be checked against the chain and then completed
+    /// without a further round trip to find it.
+    pub raw_offer: Option<String>,
+    /// The daemon's own price for the offer, **verbatim**.
+    ///
+    /// Deliberately text and not an [`Amount`], for two reasons — neither of
+    /// them "an amount could not hold it". Most of these values would parse
+    /// exactly; `3.9e-7` and `1e-8` are 39 and 1 satoshis and this crate reads
+    /// both.
+    ///
+    /// The first reason is that a price is not an amount of anything. It is a
+    /// **ratio** between the two sides, so giving it a money type invites it
+    /// into arithmetic where every other operand is denominated in something.
+    ///
+    /// The second is that it is already rounded before it arrives. The daemon
+    /// divides in `double` and prints the result: one listing in this crate's
+    /// own fixtures offers 0.0001 for 258, whose true ratio is 3.8759…e-7 and
+    /// which is printed as `3.9e-07`. Reading that into an exact type would
+    /// dress a rounded figure as a precise one — and ratios below satoshi
+    /// resolution are perfectly constructible, so the exact reader would also
+    /// refuse listings the daemon is happy to advertise.
+    ///
+    /// Fine for display and for ordering a list. For anything that decides what
+    /// to pay, compute from [`OfferListing::offering`] and
+    /// [`OfferListing::accepting`], which are exact.
+    pub price: String,
+    /// The daemon's grouping key for this listing, verbatim — for example
+    /// `ids_for_currency_<id>`.
+    ///
+    /// Kept because it is the only place the *direction* of a bucket is
+    /// recorded, and dropping it would merge listings that the daemon
+    /// deliberately separated.
+    pub bucket: String,
+}
+
+impl OfferListing {
+    /// Whether the offer can still be completed at `tip`.
+    ///
+    /// Zero means no expiry, matching
+    /// [`verus_flows::offer::OfferTerms`](https://docs.rs/verus-flows).
+    #[must_use]
+    pub fn is_live_at(&self, tip: u32) -> bool {
+        self.block_expiry == 0 || tip < self.block_expiry
+    }
+}
+
 /// Confirmations a coinbase output needs before it can be spent.
 ///
 /// A wallet that ignores this selects an immature coinbase and the daemon
@@ -380,6 +476,127 @@ impl RawAddressDelta<'_> {
             satoshis: json::signed_satoshis(self.satoshis, "satoshis")?,
             currency_values,
             spending: self.spending,
+        })
+    }
+}
+
+/// One side of an offer, still as JSON.
+///
+/// Read as a plain map rather than a struct with `#[serde(flatten)]` for the
+/// currency entries, and that is forced rather than chosen: `flatten` buffers
+/// through serde's internal `Content`, which cannot yield a `RawValue`. Since
+/// keeping the original token text is the whole reason money is read through
+/// `RawValue` here, the map is what there is to work with.
+///
+/// Which kind of side it is shows in the keys. An identity side carries
+/// `identityid`; anything else is `<currency i-address>: <coins>` throughout.
+#[derive(Deserialize)]
+pub(crate) struct RawOfferSide<'a>(#[serde(borrow)] BTreeMap<String, &'a RawValue>);
+
+impl RawOfferSide<'_> {
+    fn into_typed(self, field: &'static str) -> Result<OfferSide, RpcError> {
+        // A JSON string is **decoded**, not merely unquoted. `RawValue::get()`
+        // hands back verbatim wire text, so `⌐` stays as those six literal
+        // characters unless something actually parses it — and identity names
+        // are user-chosen, so escapes are ordinary rather than exotic. One of
+        // this crate's own mainnet fixtures lists an identity named `(⌐■_■)`,
+        // which arrives as `"(⌐■_■)"`: unquoting alone gives a
+        // 21-character string that matches nothing, least of all the same name
+        // read back through `getidentity`.
+        //
+        // Required, not defaulted. A side that says it is an identity and then
+        // does not name one is a malformed answer, and inventing an empty
+        // string for it hands the caller an id it may go on to look up.
+        let text = |key: &'static str| -> Result<String, RpcError> {
+            let raw = self.0.get(key).ok_or_else(|| {
+                RpcError::Unexpected(format!("an offer's {field} side has no {key}"))
+            })?;
+            serde_json::from_str::<String>(raw.get()).map_err(|_| {
+                RpcError::Unexpected(format!(
+                    "an offer's {field} side has a {key} that is not a string: {}",
+                    raw.get()
+                ))
+            })
+        };
+
+        if self.0.contains_key("identityid") {
+            return Ok(OfferSide::Identity {
+                identity_id: text("identityid")?,
+                name: text("name")?,
+                system_id: text("systemid")?,
+            });
+        }
+
+        let mut currencies = BTreeMap::new();
+        for (currency, raw) in &self.0 {
+            // Every remaining key is taken to be a currency, so it has to look
+            // like one. Without this a stray numeric field the daemon might add
+            // later — a height, a count — would silently become a holding of
+            // some phantom currency and be added to a total. The identity side
+            // proves that non-currency keys share this namespace.
+            if !is_i_address(currency) {
+                return Err(RpcError::Unexpected(format!(
+                    "an offer's {field} side has {currency}, which is not a currency address"
+                )));
+            }
+            currencies.insert(currency.clone(), json::currency_coins(raw, field)?);
+        }
+        if currencies.is_empty() {
+            return Err(RpcError::Unexpected(format!(
+                "an offer's {field} side names neither an identity nor any currency"
+            )));
+        }
+        Ok(OfferSide::Currencies(currencies))
+    }
+}
+
+/// Whether a key is shaped like the `i` address of a currency.
+///
+/// A cheap shape test, not a checksum: enough to keep a field that is plainly
+/// not a currency from being read as one.
+fn is_i_address(text: &str) -> bool {
+    text.len() == 34
+        && text.starts_with('i')
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() && !b"0OIl".contains(&b))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawOfferBody<'a> {
+    #[serde(borrow)]
+    pub offer: RawOfferSide<'a>,
+    #[serde(borrow)]
+    pub accept: RawOfferSide<'a>,
+    // Required rather than defaulted. Zero means "never expires", so a reply
+    // that simply omitted the field would read as an offer that stands
+    // forever — failing open on the one question this type is asked.
+    pub blockexpiry: u32,
+    pub txid: String,
+    #[serde(default)]
+    pub tx: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawOfferEntry<'a> {
+    #[serde(borrow)]
+    pub offer: RawOfferBody<'a>,
+    #[serde(borrow)]
+    pub price: &'a RawValue,
+}
+
+impl RawOfferEntry<'_> {
+    pub(crate) fn into_typed(self, bucket: &str) -> Result<OfferListing, RpcError> {
+        Ok(OfferListing {
+            offering: self.offer.offer.into_typed("offer")?,
+            accepting: self.offer.accept.into_typed("accept")?,
+            block_expiry: self.offer.blockexpiry,
+            funding_txid: Txid::from_display_hex(&self.offer.txid)
+                .map_err(|e| RpcError::OutOfRange(format!("offer txid: {e}")))?,
+            raw_offer: self.offer.tx,
+            // Verbatim, and never through `Amount` — see `OfferListing::price`.
+            price: json::unquote(self.price.get()).to_string(),
+            bucket: bucket.to_string(),
         })
     }
 }

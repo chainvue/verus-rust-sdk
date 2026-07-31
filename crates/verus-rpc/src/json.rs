@@ -305,7 +305,10 @@ fn bounded_signed(
 }
 
 /// Strip the quotes off a field the daemon happened to quote.
-fn unquote(text: &str) -> &str {
+///
+/// For **numbers** that arrive quoted. Never for a string: this does no JSON
+/// decoding, so an escape survives verbatim — use `serde_json::from_str` there.
+pub(crate) fn unquote(text: &str) -> &str {
     let text = text.trim();
     let text = text.strip_prefix('"').unwrap_or(text);
     text.strip_suffix('"').unwrap_or(text)
