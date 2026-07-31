@@ -129,6 +129,28 @@ mod tests {
         fields
     }
 
+    /// The interface names a `export type X = A | B | …;` union lists.
+    ///
+    /// A variant interface that exists but is not a member of the union is
+    /// unreachable: `decodeOutput` returns the union, so a caller can never
+    /// narrow to it.
+    fn union_members(name: &str) -> BTreeSet<String> {
+        let header = format!("export type {name} =");
+        let start = TYPESCRIPT
+            .find(&header)
+            .unwrap_or_else(|| panic!("types.d.ts declares no type {name}"))
+            + header.len();
+        let len = TYPESCRIPT[start..]
+            .find(';')
+            .expect("a union declaration ends in a semicolon");
+        TYPESCRIPT[start..start + len]
+            .split('|')
+            .map(str::trim)
+            .filter(|member| !member.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
     fn assert_declared<T: Serialize>(interface: &str, value: &T) {
         let produced = field_names(value);
         let declared = declared_by(interface);
@@ -145,7 +167,7 @@ mod tests {
     /// Rust fails too.
     #[test]
     fn every_field_of_every_dto_is_declared() {
-        use crate::decode::{DecodedOutput, TokenAmount};
+        use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -169,25 +191,103 @@ mod tests {
             },
         );
         assert_declared("TokenAmount", &TokenAmount::default());
-        assert_declared(
-            "DecodedOutput",
-            &DecodedOutput {
-                kind: String::new(),
-                address: Some(String::new()),
-                tokens: Some(Vec::new()),
-                name: Some(String::new()),
-                primary_addresses: Some(Vec::new()),
-                minimum_signatures: Some(0),
-                eval_code: Some(0),
-                may_carry_currency: Some(false),
-                commitment: Some(String::new()),
-                controlling_currency: Some(String::new()),
-                flags: Some(0),
-                fee_currency: Some(String::new()),
-                fees: Some(String::new()),
-                destination_currency: Some(String::new()),
-                recipient: Some(String::new()),
+    }
+
+    /// `DecodedOutput` is a union, so the drift check has to be one too.
+    ///
+    /// Three holes are closed together, and it takes all three — each catches
+    /// what the others miss when a variant is added:
+    ///
+    /// * `interface_of` matches exhaustively, so a new Rust variant does not
+    ///   compile until it is named;
+    /// * `assert_declared` fails if that name has no interface, or if the
+    ///   interface's fields are not exactly what the variant serializes;
+    /// * comparing against `union_members` fails if an interface exists but is
+    ///   not in the union — unreachable to a caller — or if it is in the union
+    ///   but has no sample here, which is how a variant gets declared and then
+    ///   never checked again.
+    #[test]
+    fn every_decoded_output_variant_is_declared_and_reachable() {
+        use crate::decode::DecodedOutput;
+
+        /// Exhaustive by construction: adding a variant is a compile error
+        /// here before it is a test failure anywhere else.
+        fn interface_of(output: &DecodedOutput) -> &'static str {
+            match output {
+                DecodedOutput::PubKeyHash { .. } => "DecodedPubKeyHash",
+                DecodedOutput::PubKey { .. } => "DecodedPubKey",
+                DecodedOutput::ReserveOutput { .. } => "DecodedReserveOutput",
+                DecodedOutput::IdentityPayment { .. } => "DecodedIdentityPayment",
+                DecodedOutput::IdentityPrimary { .. } => "DecodedIdentityPrimary",
+                DecodedOutput::IdentityCommitment { .. } => "DecodedIdentityCommitment",
+                DecodedOutput::ReserveDeposit { .. } => "DecodedReserveDeposit",
+                DecodedOutput::ReserveTransfer { .. } => "DecodedReserveTransfer",
+                DecodedOutput::UnsupportedCryptoCondition { .. } => {
+                    "DecodedUnsupportedCryptoCondition"
+                }
+                DecodedOutput::Unknown => "DecodedUnknown",
+            }
+        }
+
+        let samples = [
+            DecodedOutput::PubKeyHash {
+                address: String::new(),
             },
+            DecodedOutput::PubKey {
+                address: String::new(),
+            },
+            DecodedOutput::ReserveOutput {
+                address: String::new(),
+                tokens: Vec::new(),
+            },
+            DecodedOutput::IdentityPayment {
+                address: String::new(),
+            },
+            DecodedOutput::IdentityPrimary {
+                address: String::new(),
+                name: String::new(),
+                primary_addresses: Vec::new(),
+                minimum_signatures: 0,
+            },
+            DecodedOutput::IdentityCommitment {
+                address: String::new(),
+                commitment: String::new(),
+                tokens: Vec::new(),
+            },
+            DecodedOutput::ReserveDeposit {
+                address: String::new(),
+                controlling_currency: String::new(),
+                tokens: Vec::new(),
+            },
+            DecodedOutput::ReserveTransfer {
+                address: String::new(),
+                tokens: Vec::new(),
+                flags: 0,
+                fee_currency: String::new(),
+                fees: String::new(),
+                destination_currency: String::new(),
+                recipient: String::new(),
+            },
+            DecodedOutput::UnsupportedCryptoCondition {
+                eval_code: 0,
+                may_carry_currency: false,
+            },
+            DecodedOutput::Unknown,
+        ];
+
+        for sample in &samples {
+            assert_declared(interface_of(sample), sample);
+        }
+
+        let sampled: BTreeSet<String> = samples
+            .iter()
+            .map(|sample| interface_of(sample).to_string())
+            .collect();
+        assert_eq!(
+            sampled,
+            union_members("DecodedOutput"),
+            "the DecodedOutput union in types.d.ts does not list exactly the variants \
+             this crate can return"
         );
     }
 
@@ -275,7 +375,11 @@ mod tests {
                 .map(|s| s.to_string())
                 .collect::<BTreeSet<_>>()
         );
-        // A nested object inside an interface must not leak its keys upward.
-        assert!(!declared_by("DecodedOutput").contains("currency"));
+        // A nested object inside an interface must not leak its keys upward:
+        // `tokens: TokenAmount[]` must not contribute TokenAmount's fields.
+        assert!(!declared_by("DecodedReserveOutput").contains("currency"));
+        // And the union parse must find members rather than silently nothing,
+        // which would make the equality above pass against an empty set.
+        assert!(union_members("DecodedOutput").contains("DecodedPubKeyHash"));
     }
 }

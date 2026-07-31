@@ -22,79 +22,122 @@ use crate::types::{DecodedOutputValue, JsText, TokenBalancesValue, UtxoListValue
 
 /// What an output turned out to be.
 ///
-/// Exactly one of the optional fields is set, selected by `kind`. A caller that
-/// switches on `kind` and has no branch for `unsupportedCryptoCondition` is a
-/// caller that will one day spend an output it could not read.
+/// A tagged union: `kind` names the shape, and each shape carries exactly the
+/// fields it has — no more, and none of them optional. That is the whole point
+/// of the type. The flat struct this replaced had fifteen optional fields of
+/// which one group was ever populated, so `output.fees` type-checked on a plain
+/// payment and came back `undefined`; here it does not exist until `kind` has
+/// been narrowed to `reserveTransfer`.
+///
+/// A caller that switches on `kind` and has no branch for
+/// `unsupportedCryptoCondition` is a caller that will one day spend an output
+/// it could not read.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DecodedOutput {
-    /// One of `pubKeyHash`, `pubKey`, `reserveOutput`, `identityPayment`,
-    /// `identityPrimary`, `identityCommitment`,
-    /// `unsupportedCryptoCondition`.
-    pub kind: String,
-    /// For `pubKeyHash`: the `R…` address paid. For `identityPayment` and
-    /// `identityPrimary`: the `i…` address of the identity. For
-    /// `reserveOutput`: the destination, as an `R…` address.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    /// For `reserveOutput`: the token value carried, which is *in addition* to
-    /// the output's native value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokens: Option<Vec<TokenAmount>>,
-    /// For `identityPrimary`: the identity's name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// For `identityPrimary`: the addresses that control it, and the number of
-    /// them a spend needs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_addresses: Option<Vec<String>>,
-    /// For `identityPrimary`: `minimumsignatures`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub minimum_signatures: Option<u32>,
-    /// For `unsupportedCryptoCondition`: the eval code found. The output may
-    /// carry value this SDK cannot see — do not spend it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub eval_code: Option<u8>,
-    /// For `unsupportedCryptoCondition`: whether an output with that eval code
-    /// is *able* to hold a token.
-    ///
-    /// `false` is a proof of absence, taken from the chain's own
-    /// `CScript::ReserveOutValue`, not a guess — so a balance can count the
-    /// output as zero instead of refusing to answer. The commonest case by far
-    /// is a proof-of-stake coinbase's stakeguard output (eval code 1), which
-    /// every staking address holds.
-    ///
-    /// The output is still unspendable by this SDK either way.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub may_carry_currency: Option<bool>,
-    /// For `identityCommitment`: the 32-byte commitment as hex, in the order
-    /// the script holds it.
-    ///
-    /// The daemon prints this reversed, the way it prints every hash. Reverse
-    /// it before comparing with `registernamecommitment` output.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commitment: Option<String>,
-    /// For `reserveDeposit`: the currency whose reserves the output holds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub controlling_currency: Option<String>,
-    /// For `reserveTransfer`: the raw flag word.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flags: Option<u64>,
-    /// For `reserveTransfer`: the currency the fee is paid in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fee_currency: Option<String>,
-    /// For `reserveTransfer`: the fee, as a decimal string.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fees: Option<String>,
-    /// For `reserveTransfer`: the currency written in the destination slot.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination_currency: Option<String>,
-    /// For `reserveTransfer`: who the value is ultimately for.
-    ///
-    /// Not `address`, which is the protocol's transfer address rather than a
-    /// recipient — the real one travels inside the payload.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recipient: Option<String>,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DecodedOutput {
+    /// A plain payment. Native value only.
+    PubKeyHash {
+        /// The `R…` address paid.
+        address: String,
+    },
+    /// A payment to a bare public key — the shape a proof-of-work coinbase
+    /// pays. Native value only.
+    PubKey {
+        /// The address controlling that key, which is what a daemon shows.
+        address: String,
+    },
+    /// An output carrying token value.
+    ReserveOutput {
+        /// The destination. May be an `i…` address: tokens held by a VerusID
+        /// are an ordinary shape, spendable only by that identity's authority.
+        address: String,
+        /// The token value carried, which is *in addition* to the output's
+        /// native value.
+        tokens: Vec<TokenAmount>,
+    },
+    /// Native value held for an identity.
+    IdentityPayment {
+        /// The `i…` address of the identity.
+        address: String,
+    },
+    /// The identity object itself.
+    IdentityPrimary {
+        /// The `i…` address of the identity.
+        address: String,
+        /// The identity's name.
+        name: String,
+        /// The addresses that control it.
+        primary_addresses: Vec<String>,
+        /// How many of them a spend needs — `minimumsignatures`.
+        minimum_signatures: u32,
+    },
+    /// A name commitment, the first half of registering an identity.
+    IdentityCommitment {
+        /// The destination.
+        address: String,
+        /// The 32-byte commitment as hex, in the order the script holds it.
+        ///
+        /// The daemon prints this reversed, the way it prints every hash.
+        /// Reverse it before comparing with `registernamecommitment` output.
+        commitment: String,
+        /// Empty for every ordinary commitment; the advanced form carries
+        /// currency alongside the hash, and that is read rather than assumed
+        /// away.
+        tokens: Vec<TokenAmount>,
+    },
+    /// Reserves backing a currency.
+    ReserveDeposit {
+        /// The destination.
+        address: String,
+        /// The currency whose reserves the output holds.
+        controlling_currency: String,
+        /// As written, the chain's own currency included — `tokenBalances`
+        /// removes that part, this reports the payload.
+        tokens: Vec<TokenAmount>,
+    },
+    /// Value in flight: a conversion, a burn, or a cross-chain send.
+    ReserveTransfer {
+        /// The protocol's transfer address, not a recipient — see `recipient`.
+        address: String,
+        /// The token value carried.
+        tokens: Vec<TokenAmount>,
+        /// The raw flag word.
+        flags: u64,
+        /// The currency the fee is paid in.
+        fee_currency: String,
+        /// The fee, as a decimal string.
+        fees: String,
+        /// The currency written in the destination slot.
+        destination_currency: String,
+        /// Who the value is ultimately for.
+        ///
+        /// Not `address`, which is the same for every transfer on the chain —
+        /// the real recipient travels inside the payload.
+        recipient: String,
+    },
+    /// An eval code this SDK does not decode. Do not spend it.
+    UnsupportedCryptoCondition {
+        /// The eval code found.
+        eval_code: u8,
+        /// Whether an output with that eval code is *able* to hold a token.
+        ///
+        /// `false` is a proof of absence, taken from the chain's own
+        /// `CScript::ReserveOutValue`, not a guess — so a balance can count
+        /// the output as zero instead of refusing to answer. The commonest
+        /// case by far is a proof-of-stake coinbase's stakeguard output (eval
+        /// code 1), which every staking address holds.
+        ///
+        /// The output is still unspendable by this SDK either way.
+        may_carry_currency: bool,
+    },
+    /// A shape this build does not know. Carries no address, so a caller
+    /// switching on `kind` treats it the way it treats anything else it does
+    /// not recognise — by leaving the output alone.
+    Unknown,
 }
 
 /// Token amounts, rendered the way every other field here renders them.
@@ -121,151 +164,83 @@ pub struct TokenAmount {
 /// Decode a scriptPubKey. Host-testable core of [`decode_output`].
 pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
     let script = dto::bytes_hex(script_hex)?;
-    let blank = DecodedOutput {
-        kind: String::new(),
-        address: None,
-        tokens: None,
-        name: None,
-        primary_addresses: None,
-        minimum_signatures: None,
-        eval_code: None,
-        may_carry_currency: None,
-        commitment: None,
-        controlling_currency: None,
-        flags: None,
-        fee_currency: None,
-        fees: None,
-        destination_currency: None,
-        recipient: None,
-    };
     Ok(match decode_output_script(&script)? {
-        OutputKind::PubKeyHash { hash } => DecodedOutput {
-            kind: "pubKeyHash".into(),
-            address: Some(
-                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string(),
-            ),
-            ..blank
+        OutputKind::PubKeyHash { hash } => DecodedOutput::PubKeyHash {
+            address: verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash)
+                .to_string(),
         },
         OutputKind::ReserveOutput {
             destination,
             tokens,
-        } => DecodedOutput {
-            kind: "reserveOutput".into(),
+        } => DecodedOutput::ReserveOutput {
             // Whatever kind of destination it pays. Tokens held by a VerusID
             // are an ordinary shape, and rendering that identity's hash as an
             // `R…` address would name an address nobody controls.
-            address: Some(destination_address(&destination)),
-            tokens: Some(
-                tokens
-                    .into_iter()
-                    .map(|(currency, amount)| TokenAmount {
-                        currency: dto::identity_address(currency.to_bytes()),
-                        amount: amount.to_string(),
-                    })
-                    .collect(),
-            ),
-            ..blank
+            address: destination_address(&destination),
+            tokens: amounts(tokens),
         },
-        OutputKind::IdentityPayment { identity } => DecodedOutput {
-            kind: "identityPayment".into(),
-            address: Some(dto::identity_address(identity)),
-            ..blank
+        OutputKind::IdentityPayment { identity } => DecodedOutput::IdentityPayment {
+            address: dto::identity_address(identity),
         },
-        OutputKind::IdentityPrimary { identity } => DecodedOutput {
-            kind: "identityPrimary".into(),
-            address: Some(dto::identity_address(verus_tx::identity_id(
+        OutputKind::IdentityPrimary { identity } => DecodedOutput::IdentityPrimary {
+            address: dto::identity_address(verus_tx::identity_id(
                 &identity.name,
                 Some(identity.parent),
-            ))),
-            name: Some(identity.name.clone()),
-            primary_addresses: Some(
-                identity
-                    .primary_addresses
-                    .iter()
-                    .map(destination_address)
-                    .collect(),
-            ),
-            minimum_signatures: Some(identity.min_sigs),
-            ..blank
+            )),
+            name: identity.name.clone(),
+            primary_addresses: identity
+                .primary_addresses
+                .iter()
+                .map(destination_address)
+                .collect(),
+            minimum_signatures: identity.min_sigs,
         },
-        OutputKind::PubKey { hash, .. } => DecodedOutput {
-            kind: "pubKey".into(),
-            // Native value only. A proof-of-work coinbase pays this shape, and
-            // the address shown is the one that controls the key.
-            address: Some(
-                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string(),
-            ),
-            ..blank
+        // Native value only. A proof-of-work coinbase pays this shape, and the
+        // address shown is the one that controls the key.
+        OutputKind::PubKey { hash, .. } => DecodedOutput::PubKey {
+            address: verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash)
+                .to_string(),
         },
         OutputKind::IdentityCommitment {
             destination,
             commitment,
             tokens,
-        } => DecodedOutput {
-            kind: "identityCommitment".into(),
-            address: Some(destination_address(&destination)),
-            commitment: Some(hex::encode(commitment)),
-            // Empty for every ordinary commitment; the advanced form carries
-            // a token output alongside the hash, and that is read rather than
-            // assumed away.
-            tokens: Some(
-                tokens
-                    .into_iter()
-                    .map(|(currency, amount)| TokenAmount {
-                        currency: dto::identity_address(currency.to_bytes()),
-                        amount: amount.to_string(),
-                    })
-                    .collect(),
-            ),
-            ..blank
+        } => DecodedOutput::IdentityCommitment {
+            address: destination_address(&destination),
+            commitment: hex::encode(commitment),
+            tokens: amounts(tokens),
         },
         OutputKind::ReserveDeposit {
             destination,
             controlling_currency,
             tokens,
-        } => DecodedOutput {
-            kind: "reserveDeposit".into(),
-            address: Some(destination_address(&destination)),
-            controlling_currency: Some(dto::identity_address(controlling_currency.to_bytes())),
-            // As written, chain's own currency included — `tokenBalances`
-            // removes that part, this reports the payload.
-            tokens: Some(amounts(tokens)),
-            ..blank
+        } => DecodedOutput::ReserveDeposit {
+            address: destination_address(&destination),
+            controlling_currency: dto::identity_address(controlling_currency.to_bytes()),
+            tokens: amounts(tokens),
         },
         OutputKind::ReserveTransfer {
             destination,
             transfer,
-        } => DecodedOutput {
-            kind: "reserveTransfer".into(),
-            address: Some(destination_address(&destination)),
-            tokens: Some(amounts(transfer.tokens.clone())),
-            flags: Some(transfer.flags),
-            fee_currency: Some(dto::identity_address(transfer.fee_currency.to_bytes())),
-            fees: Some(transfer.fees.to_string()),
-            destination_currency: Some(dto::identity_address(
-                transfer.destination_currency.to_bytes(),
-            )),
-            recipient: Some(destination_address(&transfer.destination.recipient)),
-            ..blank
+        } => DecodedOutput::ReserveTransfer {
+            address: destination_address(&destination),
+            tokens: amounts(transfer.tokens.clone()),
+            flags: transfer.flags,
+            fee_currency: dto::identity_address(transfer.fee_currency.to_bytes()),
+            fees: transfer.fees.to_string(),
+            destination_currency: dto::identity_address(transfer.destination_currency.to_bytes()),
+            recipient: destination_address(&transfer.destination.recipient),
         },
         OutputKind::UnsupportedCryptoCondition {
             eval_code,
             may_carry_currency,
-        } => DecodedOutput {
-            kind: "unsupportedCryptoCondition".into(),
-            eval_code: Some(eval_code),
-            may_carry_currency: Some(may_carry_currency),
-            ..blank
+        } => DecodedOutput::UnsupportedCryptoCondition {
+            eval_code,
+            may_carry_currency,
         },
         // `OutputKind` is non-exhaustive: this crate can learn to read a new
-        // shape between releases. Reported as unknown rather than guessed at,
-        // and with no address, so a caller switching on `kind` treats it the
-        // way it treats anything else it does not recognise — by leaving the
-        // output alone.
-        _ => DecodedOutput {
-            kind: "unknown".into(),
-            ..blank
-        },
+        // shape between releases. Reported as unknown rather than guessed at.
+        _ => DecodedOutput::Unknown,
     })
 }
 
@@ -313,46 +288,78 @@ mod tests {
         verus_keys::PrivateKey::from_bytes(&[0x11; 32], true).unwrap()
     }
 
+    /// The JSON a caller actually receives.
+    fn json(script: &str) -> serde_json::Value {
+        serde_json::to_value(decode(script).expect("decodes")).expect("serializes")
+    }
+
     #[test]
     fn a_plain_output_decodes_to_the_address_it_pays() {
         let script = hex::encode(key().address().p2pkh_script_pubkey().unwrap());
-        let output = decode(&script).unwrap();
-        assert_eq!(output.kind, "pubKeyHash");
-        assert_eq!(output.address.unwrap(), key().address().to_string());
-        assert!(output.tokens.is_none());
+        assert!(matches!(
+            decode(&script).unwrap(),
+            DecodedOutput::PubKeyHash { address } if address == key().address().to_string()
+        ));
     }
 
     #[test]
     fn an_identity_payment_reports_the_identity_it_holds_for() {
         let script = hex::encode(verus_tx::identity_payment_script([0x33; 20]).unwrap());
-        let output = decode(&script).unwrap();
-        assert_eq!(output.kind, "identityPayment");
-        assert_eq!(output.address.unwrap(), dto::identity_address([0x33; 20]));
+        assert!(matches!(
+            decode(&script).unwrap(),
+            DecodedOutput::IdentityPayment { address }
+                if address == dto::identity_address([0x33; 20])
+        ));
+    }
+
+    fn unreadable_script() -> String {
+        let params = verus_tx::cc::OptCcParams::one_of_one(
+            0x7f,
+            verus_tx::Destination::PubKeyHash([0x44; 20]),
+        );
+        hex::encode(verus_tx::cc::cc_script(&params, &params).unwrap())
     }
 
     /// The refusal that matters: an eval code this SDK cannot read must be
     /// reported as unreadable, never as a plain native output.
     #[test]
     fn an_unknown_eval_code_is_reported_not_reclassified() {
-        let script = hex::encode(
-            verus_tx::cc::cc_script(
-                &verus_tx::cc::OptCcParams::one_of_one(
-                    0x7f,
-                    verus_tx::Destination::PubKeyHash([0x44; 20]),
-                ),
-                &verus_tx::cc::OptCcParams::one_of_one(
-                    0x7f,
-                    verus_tx::Destination::PubKeyHash([0x44; 20]),
-                ),
-            )
-            .unwrap(),
+        assert!(matches!(
+            decode(&unreadable_script()).unwrap(),
+            DecodedOutput::UnsupportedCryptoCondition {
+                eval_code: 0x7f,
+                ..
+            }
+        ));
+    }
+
+    /// The union is a *wire* union, not only a Rust one: `kind` is the tag, and
+    /// a variant serializes exactly its own fields.
+    ///
+    /// This is the check that makes the flat-struct-to-enum change type-level
+    /// rather than behavioural — a caller reading the JSON must not be able to
+    /// tell the two apart. It also pins the property the TypeScript union
+    /// claims: a field belonging to another shape is *absent*, never `null`,
+    /// so `"address" in output` is a sound narrowing in JavaScript too.
+    #[test]
+    fn a_variant_serializes_as_kind_plus_exactly_its_own_fields() {
+        let script = hex::encode(key().address().p2pkh_script_pubkey().unwrap());
+        assert_eq!(
+            json(&script),
+            serde_json::json!({
+                "kind": "pubKeyHash",
+                "address": key().address().to_string(),
+            })
         );
-        let output = decode(&script).unwrap();
-        assert_eq!(output.kind, "unsupportedCryptoCondition");
-        assert_eq!(output.eval_code, Some(0x7f));
-        assert!(
-            output.address.is_none(),
-            "an unreadable output must not look payable"
+
+        assert_eq!(
+            json(&unreadable_script()),
+            serde_json::json!({
+                "kind": "unsupportedCryptoCondition",
+                "evalCode": 0x7f,
+                // Unreadable, so it must not look payable.
+                "mayCarryCurrency": false,
+            })
         );
     }
 

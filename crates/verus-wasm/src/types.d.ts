@@ -164,38 +164,150 @@ export interface TokenAmount {
     amount: string;
 }
 
-/** What an output turned out to be. Switch on `kind`. */
-export interface DecodedOutput {
-    kind: "pubKeyHash" | "pubKey" | "reserveOutput" | "identityPayment"
-        | "identityPrimary" | "identityCommitment" | "reserveDeposit"
-        | "reserveTransfer" | "unsupportedCryptoCondition" | "unknown";
+/**
+ * What an output turned out to be. Switch on `kind`.
+ *
+ * A discriminated union, so a field belongs to the shape that has it and to no
+ * other: `output.fees` is a compile error until `kind` has been narrowed to
+ * `reserveTransfer`, and once narrowed it is a `string` rather than a
+ * `string | undefined` you have to assert your way past.
+ *
+ * ```ts
+ * switch (output.kind) {
+ *   case "pubKeyHash": return pay(output.address);
+ *   case "reserveOutput": return credit(output.address, output.tokens);
+ *   default: return leaveAlone();   // including anything added later
+ * }
+ * ```
+ *
+ * A caller with no branch for `unsupportedCryptoCondition` is a caller that
+ * will one day spend an output it could not read.
+ */
+export type DecodedOutput =
+    | DecodedPubKeyHash
+    | DecodedPubKey
+    | DecodedReserveOutput
+    | DecodedIdentityPayment
+    | DecodedIdentityPrimary
+    | DecodedIdentityCommitment
+    | DecodedReserveDeposit
+    | DecodedReserveTransfer
+    | DecodedUnsupportedCryptoCondition
+    | DecodedUnknown;
+
+/** A plain payment. Native value only. */
+export interface DecodedPubKeyHash {
+    kind: "pubKeyHash";
+    /** The `R…` address paid. */
+    address: string;
+}
+
+/**
+ * A payment to a bare public key — the shape a proof-of-work coinbase pays.
+ * Native value only.
+ */
+export interface DecodedPubKey {
+    kind: "pubKey";
+    /** The address controlling that key, which is what a daemon shows. */
+    address: string;
+}
+
+/** An output carrying token value. */
+export interface DecodedReserveOutput {
+    kind: "reserveOutput";
     /**
-     * The address paid or held for. Absent when the output could not be read.
-     * For `pubKey` — the shape a proof-of-work coinbase pays — this is the
-     * address controlling the key, and the output carries native value only.
-     */
-    address?: string;
-    /**
-     * For `reserveOutput`: token value carried, IN ADDITION to native value.
-     *
-     * `address` may be an `i…` address here: tokens held by a VerusID are an
+     * The destination. May be an `i…` address: tokens held by a VerusID are an
      * ordinary shape, and only the identity's authority can spend one.
      */
-    tokens?: TokenAmount[];
-    /** For `identityPrimary`: the identity's name. */
-    name?: string;
-    /** For `identityPrimary`: the addresses that control it. */
-    primaryAddresses?: string[];
-    /** For `identityPrimary`: how many of them a spend needs. */
-    minimumSignatures?: number;
+    address: string;
+    /** Token value carried, IN ADDITION to the output's native value. */
+    tokens: TokenAmount[];
+}
+
+/** Native value held for an identity. */
+export interface DecodedIdentityPayment {
+    kind: "identityPayment";
+    /** The `i…` address of the identity. */
+    address: string;
+}
+
+/** The identity object itself. */
+export interface DecodedIdentityPrimary {
+    kind: "identityPrimary";
+    /** The `i…` address of the identity. */
+    address: string;
+    /** The identity's name. */
+    name: string;
+    /** The addresses that control it. */
+    primaryAddresses: string[];
+    /** How many of them a spend needs. */
+    minimumSignatures: number;
+}
+
+/** A name commitment, the first half of registering an identity. */
+export interface DecodedIdentityCommitment {
+    kind: "identityCommitment";
+    /** The destination. */
+    address: string;
     /**
-     * For `unsupportedCryptoCondition`: the eval code found. This SDK cannot
-     * spend the output whatever the code is — do not select it as funding.
+     * The 32-byte commitment as hex, in the order the script holds it.
+     *
+     * The daemon prints this reversed, the way it prints every hash — reverse
+     * it before comparing with `registernamecommitment` output.
      */
-    evalCode?: number;
+    commitment: string;
     /**
-     * For `unsupportedCryptoCondition`: whether an output with that eval code
-     * is ABLE to hold a token.
+     * Empty for every ordinary commitment; only the advanced form carries
+     * currency alongside the hash.
+     */
+    tokens: TokenAmount[];
+}
+
+/** Reserves backing a currency. */
+export interface DecodedReserveDeposit {
+    kind: "reserveDeposit";
+    /** The destination. */
+    address: string;
+    /** The currency whose reserves the output holds. */
+    controllingCurrency: string;
+    /**
+     * As written, the chain's own currency included — `tokenBalances` removes
+     * that part, this reports the payload.
+     */
+    tokens: TokenAmount[];
+}
+
+/** Value in flight: a conversion, a burn, or a cross-chain send. */
+export interface DecodedReserveTransfer {
+    kind: "reserveTransfer";
+    /** The protocol's transfer address, not a recipient — see `recipient`. */
+    address: string;
+    /** The token value carried. */
+    tokens: TokenAmount[];
+    /** The raw flag word. */
+    flags: number;
+    /** The currency the fee is paid in. */
+    feeCurrency: string;
+    /** The fee, in the smallest unit, as a decimal string. */
+    fees: string;
+    /** The currency in the destination slot. */
+    destinationCurrency: string;
+    /**
+     * Who the value is ultimately for.
+     *
+     * NOT `address` — that is the same for every transfer on the chain. The
+     * real recipient travels in the payload.
+     */
+    recipient: string;
+}
+
+/** An eval code this SDK does not decode. Do not select it as funding. */
+export interface DecodedUnsupportedCryptoCondition {
+    kind: "unsupportedCryptoCondition";
+    /** The eval code found. */
+    evalCode: number;
+    /**
+     * Whether an output with that eval code is ABLE to hold a token.
      *
      * `false` is a proof of absence taken from the chain's own
      * `CScript::ReserveOutValue`, not a guess, so `tokenBalances` counts such
@@ -206,32 +318,14 @@ export interface DecodedOutput {
      * `true` means the output may carry currency this SDK cannot see, and
      * `tokenBalances` refuses the whole set rather than under-report it.
      */
-    mayCarryCurrency?: boolean;
-    /**
-     * For `identityCommitment`: the 32-byte commitment as hex, in the order
-     * the script holds it.
-     *
-     * The daemon prints this reversed, the way it prints every hash — reverse
-     * it before comparing with `registernamecommitment` output. `tokens` is
-     * present and empty for every ordinary commitment; only the advanced form
-     * carries currency alongside the hash.
-     */
-    commitment?: string;
-    /** For `reserveDeposit`: the currency whose reserves the output holds. */
-    controllingCurrency?: string;
-    /** For `reserveTransfer`: the raw flag word. */
-    flags?: number;
-    /** For `reserveTransfer`: the currency the fee is paid in. */
-    feeCurrency?: string;
-    /** For `reserveTransfer`: the fee, in the smallest unit, as a string. */
-    fees?: string;
-    /** For `reserveTransfer`: the currency in the destination slot. */
-    destinationCurrency?: string;
-    /**
-     * For `reserveTransfer`: who the value is ultimately for.
-     *
-     * NOT `address` — that is the protocol's transfer address, the same for
-     * every transfer on the chain. The real recipient travels in the payload.
-     */
-    recipient?: string;
+    mayCarryCurrency: boolean;
+}
+
+/**
+ * A shape this build does not know. Carries no address, so a caller switching
+ * on `kind` treats it the way it treats anything else it does not recognise —
+ * by leaving the output alone.
+ */
+export interface DecodedUnknown {
+    kind: "unknown";
 }
