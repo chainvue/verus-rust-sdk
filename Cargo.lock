@@ -1633,6 +1633,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "ureq",
+ "verus-keys",
  "verus-tx",
  "zeroize",
 ]

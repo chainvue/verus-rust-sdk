@@ -23,6 +23,7 @@ import {
   verifyMessage,
   signatureBlockHeight,
   decodeOutput,
+  tokenBalances,
   vdxfKey,
   identityId,
   type SendRequest,
@@ -32,6 +33,7 @@ import {
   type VerifyResult,
   type DecodedOutput,
   type Utxo,
+  type TokenAmount,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -92,9 +94,15 @@ void [signatureBlockHeight(verify.signature), why];
 const output: DecodedOutput = decodeOutput(utxo.scriptPubKey);
 if (output.kind === "unsupportedCryptoCondition") {
   const evalCode: number | undefined = output.evalCode;
-  void evalCode;
+  // The flag a wallet needs to tell "undecodable and harmless" — a staker's
+  // coinbase — from "undecodable and possibly holding your money".
+  const mayCarryCurrency: boolean | undefined = output.mayCarryCurrency;
+  void [evalCode, mayCarryCurrency];
 }
-void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null)];
+const balances: TokenAmount[] = tokenBalances([utxo]);
+const owed: string = balances[0].amount;
+const which: string = balances[0].currency;
+void [vdxfKey("app::profile", "VRSCTEST", "iJhCez…"), identityId("alice", null), owed, which];
 
 // --- What the types must REFUSE. Each line fails the build if it compiles. ---
 

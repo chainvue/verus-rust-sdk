@@ -30,6 +30,37 @@ use crate::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use crate::send::SignedTransaction;
 use crate::Utxo;
 
+/// Refuse a reserve output no transparent key in this crate can sign for.
+///
+/// The decoder reads every destination kind now, because what an output
+/// *holds* does not depend on who can spend it. Selecting one as funding does:
+/// every signing path here produces a P2PKH-shaped fulfillment, so a reserve
+/// output paying an identity, a script hash or a bare public key has to be
+/// refused here rather than built into a transaction nobody can satisfy.
+///
+/// Before the decoder learned those shapes this was enforced by accident —
+/// `decode_output_script` failed outright — which is exactly the kind of guard
+/// that disappears silently when the thing failing by accident starts working.
+pub(crate) fn reject_unspendable_reserve(
+    utxo: &Utxo,
+    destination: &crate::cc::Destination,
+) -> Result<(), TxError> {
+    match destination {
+        crate::cc::Destination::PubKeyHash(_) => Ok(()),
+        crate::cc::Destination::Identity(identity) => Err(TxError::IdentityHeldFunding {
+            txid: utxo.txid.to_display_hex(),
+            vout: utxo.vout,
+            identity: hex::encode(identity),
+        }),
+        crate::cc::Destination::PubKey(_) | crate::cc::Destination::ScriptHash(_) => {
+            Err(TxError::UnsupportedFundingScript {
+                txid: utxo.txid.to_display_hex(),
+                vout: utxo.vout,
+            })
+        }
+    }
+}
+
 /// Where token value is going.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenRecipient {
@@ -176,7 +207,24 @@ pub fn build_token_send(
         .map(|utxo| {
             let (tokens, is_cryptocondition) = match decode_output_script(&utxo.script_pubkey)? {
                 OutputKind::PubKeyHash { .. } => (Vec::new(), false),
-                OutputKind::ReserveOutput { tokens, .. } => (tokens, true),
+                OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                } => {
+                    reject_unspendable_reserve(utxo, &destination)?;
+                    (tokens, true)
+                }
+                // Native value, but not value this crate can sign for: the
+                // scriptSig for a P2PK input is a bare signature, and every
+                // signing path here builds the P2PKH form. Refused rather than
+                // selected, so the failure is "cannot spend this output"
+                // instead of a transaction the network rejects.
+                OutputKind::PubKey { .. } => {
+                    return Err(TxError::UnsupportedFundingScript {
+                        txid: utxo.txid.to_display_hex(),
+                        vout: utxo.vout,
+                    })
+                }
                 // Identity-held funds are spendable only with the identity's
                 // authority, not this key's. Building a spend would produce a
                 // transaction nobody can satisfy.
@@ -194,7 +242,7 @@ pub fn build_token_send(
                         eval_code: crate::identity::EVAL_IDENTITY_PRIMARY,
                     })
                 }
-                OutputKind::UnsupportedCryptoCondition { eval_code } => {
+                OutputKind::UnsupportedCryptoCondition { eval_code, .. } => {
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),
                         vout: utxo.vout,

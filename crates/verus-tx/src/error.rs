@@ -250,6 +250,25 @@ pub enum TxError {
     #[error("malformed partial transaction: {0}")]
     MalformedPartialTransaction(String),
 
+    /// An output could not be read while counting what an address holds.
+    ///
+    /// Separate from [`TxError::UnsupportedFundingScript`], which is about
+    /// *spending*: this one says a balance would be wrong, not that a transfer
+    /// would be. Both refuse rather than treating an unreadable smart output as
+    /// native-only, which is the same rule the decoder enforces.
+    #[error(
+        "output {txid}:{vout} cannot be counted: {reason}. It may carry currency that would be \
+         missing from a balance, so no balance is reported rather than one that is too small"
+    )]
+    UncountableOutput {
+        /// The transaction that created it, display order.
+        txid: String,
+        /// Index of the output.
+        vout: u32,
+        /// Why it could not be counted.
+        reason: String,
+    },
+
     /// Amounts that overflow a u64 when summed.
     #[error("transaction value overflows a 64-bit integer")]
     ValueOverflow,

@@ -958,7 +958,11 @@ pub fn build_conversion_transaction(
         let mut held: u64 = 0;
         for utxo in params.token_funding {
             match crate::decode::decode_output_script(&utxo.script_pubkey)? {
-                crate::decode::OutputKind::ReserveOutput { tokens, .. } => {
+                crate::decode::OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                } => {
+                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
                     // A reserve output can carry several currencies. Only the
                     // one being converted counts towards the amount; the others
                     // still have to come back as change, so a multi-currency

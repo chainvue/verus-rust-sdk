@@ -16,9 +16,9 @@ use wasm_bindgen::prelude::*;
 
 use verus_tx::{decode_output_script, OutputKind};
 
-use crate::dto;
+use crate::dto::{self, JsUtxo};
 use crate::error::{WasmError, WasmResult};
-use crate::types::{DecodedOutputValue, JsText};
+use crate::types::{DecodedOutputValue, JsText, TokenBalancesValue, UtxoListValue};
 
 /// What an output turned out to be.
 ///
@@ -54,6 +54,18 @@ pub struct DecodedOutput {
     /// carry value this SDK cannot see — do not spend it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eval_code: Option<u8>,
+    /// For `unsupportedCryptoCondition`: whether an output with that eval code
+    /// is *able* to hold a token.
+    ///
+    /// `false` is a proof of absence, taken from the chain's own
+    /// `CScript::ReserveOutValue`, not a guess — so a balance can count the
+    /// output as zero instead of refusing to answer. The commonest case by far
+    /// is a proof-of-stake coinbase's stakeguard output (eval code 1), which
+    /// every staking address holds.
+    ///
+    /// The output is still unspendable by this SDK either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub may_carry_currency: Option<bool>,
 }
 
 /// How much of which token.
@@ -77,6 +89,7 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
         primary_addresses: None,
         minimum_signatures: None,
         eval_code: None,
+        may_carry_currency: None,
     };
     Ok(match decode_output_script(&script)? {
         OutputKind::PubKeyHash { hash } => DecodedOutput {
@@ -91,10 +104,10 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             tokens,
         } => DecodedOutput {
             kind: "reserveOutput".into(),
-            address: Some(
-                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, destination)
-                    .to_string(),
-            ),
+            // Whatever kind of destination it pays. Tokens held by a VerusID
+            // are an ordinary shape, and rendering that identity's hash as an
+            // `R…` address would name an address nobody controls.
+            address: Some(destination_address(&destination)),
             tokens: Some(
                 tokens
                     .into_iter()
@@ -128,9 +141,31 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             minimum_signatures: Some(identity.min_sigs),
             ..blank
         },
-        OutputKind::UnsupportedCryptoCondition { eval_code } => DecodedOutput {
+        OutputKind::PubKey { hash, .. } => DecodedOutput {
+            kind: "pubKey".into(),
+            // Native value only. A proof-of-work coinbase pays this shape, and
+            // the address shown is the one that controls the key.
+            address: Some(
+                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string(),
+            ),
+            ..blank
+        },
+        OutputKind::UnsupportedCryptoCondition {
+            eval_code,
+            may_carry_currency,
+        } => DecodedOutput {
             kind: "unsupportedCryptoCondition".into(),
             eval_code: Some(eval_code),
+            may_carry_currency: Some(may_carry_currency),
+            ..blank
+        },
+        // `OutputKind` is non-exhaustive: this crate can learn to read a new
+        // shape between releases. Reported as unknown rather than guessed at,
+        // and with no address, so a caller switching on `kind` treats it the
+        // way it treats anything else it does not recognise — by leaving the
+        // output alone.
+        _ => DecodedOutput {
+            kind: "unknown".into(),
             ..blank
         },
     })
@@ -235,4 +270,43 @@ mod tests {
         let error = decode("zzzz").expect_err("not hex");
         assert_eq!(error.code(), "InvalidHex");
     }
+}
+
+/// The total of each currency a set of outputs carries.
+///
+/// The loop every wallet would otherwise write for itself, with the two traps
+/// it would otherwise hit. A reserve output carries native satoshis **as well
+/// as** its token payload, so `satoshis` is not the token amount and must not
+/// be added to one. And an output whose eval code this SDK cannot decode may
+/// carry currency it cannot see, so this **throws** rather than returning a
+/// total that quietly omits it — a balance that is wrong downward tells a user
+/// they hold nothing when they hold something.
+///
+/// Amounts come back as decimal strings in the currency's smallest unit, the
+/// same convention as everywhere else here. Native value is not included: it
+/// has no currency id, and folding the two together is how double-counting
+/// starts.
+///
+/// Pass each outpoint at most once — this sums what it is given and cannot
+/// tell a second output from the same one listed twice, which matters when a
+/// caller concatenates paged RPC results.
+///
+/// ```js
+/// const utxos = await rpc("getaddressutxos", [{ addresses: [key.address()] }]);
+/// for (const { currency, amount } of tokenBalances(utxos.map(toUtxo))) {
+///   console.log(currency, formatCoins(amount));
+/// }
+/// ```
+#[wasm_bindgen(js_name = tokenBalances)]
+pub fn token_balances(utxos: UtxoListValue) -> Result<TokenBalancesValue, WasmError> {
+    let list: Vec<JsUtxo> = dto::from_js_list(utxos.into(), &JsUtxo::SHAPE)?;
+    let held = verus_tx::token_balances(&dto::utxos(&list)?)?;
+    let reported: Vec<TokenAmount> = held
+        .into_iter()
+        .map(|(currency, amount)| TokenAmount {
+            currency: dto::identity_address(currency.to_bytes()),
+            amount: dto::sats_string(amount),
+        })
+        .collect();
+    Ok(crate::to_js(&reported)?.unchecked_into())
 }

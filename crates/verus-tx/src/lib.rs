@@ -46,6 +46,7 @@
 
 mod amount;
 mod assemble;
+pub mod balances;
 pub mod cc;
 pub mod convert;
 mod currency;
@@ -70,13 +71,14 @@ pub mod update;
 pub mod vdxf;
 
 pub use amount::{Amount, SATS_PER_COIN};
+pub use balances::{token_balances, TokenBalances};
 pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use convert::{
     build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,
     ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
 };
 pub use currency::CurrencyId;
-pub use decode::{decode_output_script, OutputKind};
+pub use decode::{decode_output_script, may_carry_currency, OutputKind};
 pub use error::TxError;
 pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
 pub use fee::{estimate_fee, select_utxos, Selection};

@@ -22,8 +22,8 @@ import assert from "node:assert/strict";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
-const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, verifyMessage,
-        signatureBlockHeight, vdxfKey, rootNamespace, identityId } = wasm;
+const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, tokenBalances,
+        verifyMessage, signatureBlockHeight, vdxfKey, rootNamespace, identityId } = wasm;
 
 const vectors = JSON.parse(
   readFileSync(resolve(here, "../../../../fixtures/transparent/vectors.json"), "utf8"),
@@ -434,6 +434,99 @@ console.log("\noffline derivation");
   assert.equal(decoded.kind, "pubKeyHash");
   assert.equal(decoded.address, key.address());
   ok("an output decodes to the address it pays");
+
+  // Token balances, off the same fixture the token differential uses: its
+  // UTXOs carry a real reserve output, so this counts something real.
+  const tokenVector = vectors.vectors.find((v) => v.outputs.some((o) => o.currency !== null));
+  const utxos = tokenVector.utxos.map((u) => ({
+    txid: u.txid, vout: u.vout,
+    satoshis: String(u.satoshis), scriptPubKey: u.script_pubkey,
+  }));
+  const held = tokenBalances(utxos);
+  assert.ok(held.length > 0, "the token fixture must carry a token");
+  for (const entry of held) {
+    assert.match(entry.currency, /^i/, "a currency is named by its i-address");
+    assert.match(entry.amount, /^[0-9]+$/, "an amount is a decimal string");
+    // The native satoshis a reserve output also carries are NOT token value.
+    assert.notEqual(entry.amount, String(tokenVector.utxos[0].satoshis));
+  }
+  assert.deepEqual(tokenBalances([]), [], "no outputs, no balances");
+  assert.deepEqual(
+    tokenBalances([{ txid: "aa".repeat(32), vout: 0, satoshis: "1", scriptPubKey: key.scriptPubKey() }]),
+    [],
+    "a plain output carries no currency",
+  );
+  ok("token balances are counted from the outputs, native value excluded");
+
+  // An output this SDK cannot decode may carry currency it cannot see, so a
+  // balance must not be reported at all rather than reported short.
+  const opaque = "4c0f" + "00".repeat(15);
+  assert.throws(
+    () => tokenBalances([{ txid: "bb".repeat(32), vout: 2, satoshis: "1", scriptPubKey: opaque }]),
+    (e) => e instanceof Error,
+    "an unreadable output must not be counted as zero",
+  );
+  assert.throws(() => tokenBalances({ txid: "aa" }), (e) => e.name === "InvalidArgument",
+    "a single object is not a list of outputs");
+  ok("an output that cannot be read refuses the whole balance");
+
+  // …but "cannot be read" must stay narrow. A proof-of-stake coinbase pays a
+  // stakeguard CryptoCondition, and refusing that refused a balance to every
+  // staking address. The chain's own `CScript::ReserveOutValue` never reads
+  // currency out of eval code 1, so it counts as zero — cross-checked against
+  // `decodescript` on api.verustest.net, which reports no reserve for it.
+  //
+  // Real script: block 1170103 on VRSCTEST, coinbase vout 0.
+  const stakeguard =
+    "3d04030001021504d72c764548836ae9e1784b54afed2c1f1061bd532103166b7813a4855a88e9ef7340a692ef" +
+    "3c2decedfdc2c7563ec79537e89667d935cc4c8704030101011504d72c764548836ae9e1784b54afed2c1f1061" +
+    "bd5343010000a659dcb60845f0ea2f48a9a5513cd90ab986fd670d8644f52fcc153478260efdd114a32487649a" +
+    "ababf8c747cb6733b6c69da63362cd6f226fead874010000002704030101012103166b7813a4855a88e9ef7340" +
+    "a692ef3c2decedfdc2c7563ec79537e89667d93575";
+  const staked = decodeOutput(stakeguard);
+  assert.equal(staked.kind, "unsupportedCryptoCondition");
+  assert.equal(staked.evalCode, 1);
+  assert.equal(staked.mayCarryCurrency, false, "a stakeguard output holds no currency");
+  assert.deepEqual(
+    tokenBalances([{ txid: "cc".repeat(32), vout: 0, satoshis: "600000000", scriptPubKey: stakeguard }]),
+    [],
+    "a staker must get a balance, not an exception",
+  );
+  ok("a proof-of-stake coinbase counts as tokenless instead of refusing the balance");
+
+  // The same script with the eval code changed to 11 (EVAL_RESERVE_DEPOSIT),
+  // one of the five the chain does read currency out of. The refusal has to
+  // survive for those, or narrowing it turned into removing it.
+  const deposit = stakeguard.replace("cc4c870403010101", "cc4c8704030b0101");
+  assert.notEqual(deposit, stakeguard, "the eval code must actually have changed");
+  const bearing = decodeOutput(deposit);
+  assert.equal(bearing.evalCode, 11);
+  assert.equal(bearing.mayCarryCurrency, true);
+  assert.throws(
+    () => tokenBalances([{ txid: "dd".repeat(32), vout: 0, satoshis: "1", scriptPubKey: deposit }]),
+    (e) => e instanceof Error,
+    "an eval code that can hold currency still refuses the whole balance",
+  );
+  ok("an eval code that can hold currency is still refused");
+
+  // Tokens held by a VerusID. `decodescript` on api.verustest.net reports this
+  // exact script as paying i6api8faWPZjATwXGSuXZvsv5AtXN689KH and holding 0.4
+  // shylock; the decoder used to refuse it and lose an identity's holdings.
+  const identityHeld =
+    "1b0403000101150422194b8b56f7ce20f0d6bbde491e3ed37f15d5bbcc3504030901011504" +
+    "22194b8b56f7ce20f0d6bbde491e3ed37f15d5bb1901e908e3e5c373389fa7ae5d4b22a87f" +
+    "fc204a74ff9288b30075";
+  const owned = decodeOutput(identityHeld);
+  assert.equal(owned.kind, "reserveOutput");
+  assert.equal(owned.address, "i6api8faWPZjATwXGSuXZvsv5AtXN689KH",
+    "an identity destination must not be rendered as an R address nobody controls");
+  assert.deepEqual(owned.tokens, [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }]);
+  assert.deepEqual(
+    tokenBalances([{ txid: "ee".repeat(32), vout: 1, satoshis: "0", scriptPubKey: identityHeld }]),
+    [{ currency: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR", amount: "40000000" }],
+  );
+  assert.equal(formatCoins(owned.tokens[0].amount), "0.4", "the daemon reads the same 0.4");
+  ok("tokens held by a VerusID are read and counted");
   key.free();
 }
 

@@ -271,6 +271,91 @@ fn a_blocks_sapling_commitments_can_be_enumerated() {
     assert!(block["result"]["finalsaplingroot"].is_string());
 }
 
+/// **What an output holds, checked against the daemon's own reader.**
+///
+/// Two claims in `verus_tx::decode` rest on the chain's behaviour rather than
+/// on anything this workspace can prove to itself, and both were originally
+/// settled by reading `CScript::ReserveOutValue` in VerusCoin's
+/// `src/script/script.cpp`. Reading source is evidence; asking the daemon is
+/// proof, and `decodescript` gives it for free — it parses a script and reports
+/// the currency it finds, with no transaction, no inputs and no broadcast.
+///
+/// 1. A reserve output paying an **identity** holds exactly the currency its
+///    payload says, and the daemon names the `i` address. The decoder used to
+///    refuse this shape outright, which made a VerusID's holdings uncountable.
+/// 2. A **stakeguard** output — eval code 1, what a proof-of-stake coinbase
+///    pays — holds no currency at all. That is what lets `token_balances`
+///    count it as zero instead of refusing a staker a balance, and it is the
+///    claim with the most riding on it: counting a currency-bearing output as
+///    zero would under-report someone's money.
+#[test]
+fn the_daemon_agrees_about_what_each_output_shape_holds() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+
+    // shylock@ on VRSCTEST, and an identity that exists there.
+    let currency = verus_tx::CurrencyId::from_bytes(
+        "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"
+            .parse::<verus_keys::Address>()
+            .expect("i-address")
+            .hash(),
+    );
+    let identity = "i6api8faWPZjATwXGSuXZvsv5AtXN689KH";
+    let script = verus_tx::cc::reserve_output_script_to(
+        verus_tx::Destination::Identity(
+            identity.parse::<verus_keys::Address>().expect("id").hash(),
+        ),
+        currency,
+        40_000_000,
+    )
+    .expect("reserve script");
+
+    let decoded = probe("decodescript", &format!("[\"{}\"]", hex::encode(&script)));
+    let result = &decoded["result"];
+    assert_eq!(
+        result["addresses"][0].as_str(),
+        Some(identity),
+        "the daemon must see the identity as the destination: {decoded}"
+    );
+    assert_eq!(
+        result["reserveoutput"]["currencyvalues"]["iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"].as_f64(),
+        Some(0.4),
+        "the daemon must read the same token value out of it: {decoded}"
+    );
+
+    // And this crate must read it the same way.
+    assert!(matches!(
+        verus_tx::decode_output_script(&script),
+        Ok(verus_tx::OutputKind::ReserveOutput { .. })
+    ));
+
+    // Block 1170103 on VRSCTEST, coinbase vout 0 — a real proof-of-stake
+    // coinbase's stakeguard output.
+    let stakeguard = "3d04030001021504d72c764548836ae9e1784b54afed2c1f1061bd532103166b7813a4855\
+                      a88e9ef7340a692ef3c2decedfdc2c7563ec79537e89667d935cc4c8704030101011504d7\
+                      2c764548836ae9e1784b54afed2c1f1061bd5343010000a659dcb60845f0ea2f48a9a5513\
+                      cd90ab986fd670d8644f52fcc153478260efdd114a32487649aababf8c747cb6733b6c69d\
+                      a63362cd6f226fead87401000000270403010101210316 6b7813a4855a88e9ef7340a692\
+                      ef3c2decedfdc2c7563ec79537e89667d93575"
+        .replace(' ', "");
+    let decoded = probe("decodescript", &format!("[\"{stakeguard}\"]"));
+    let result = &decoded["result"];
+    assert!(
+        result["stakeguard"].is_string(),
+        "this is meant to be a stakeguard output: {decoded}"
+    );
+    // The absence is the whole point: no `reserveoutput`, no `reserve_balance`.
+    // If a daemon upgrade ever starts reporting currency here, `token_balances`
+    // is under-counting a staker and this must fail.
+    assert!(
+        result["reserveoutput"].is_null() && result["reserve_balance"].is_null(),
+        "a stakeguard output is supposed to hold no currency: {decoded}"
+    );
+    assert!(!verus_tx::may_carry_currency(1));
+}
+
 /// Ask the endpoint directly, for methods the typed client has no variant for.
 ///
 /// Returns the whole envelope rather than a result, because for these probes the

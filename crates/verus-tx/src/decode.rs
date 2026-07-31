@@ -13,11 +13,14 @@
 //! outputs take the native path.
 
 use crate::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
+use crate::convert::EVAL_RESERVE_TRANSFER;
 use crate::currency::CurrencyId;
+use crate::currency_launch::{EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT};
 use crate::error::TxError;
 use crate::identity::{
     Identity, EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
 };
+use crate::register::EVAL_IDENTITY_COMMITMENT;
 
 /// `OP_CHECKCRYPTOCONDITION`.
 const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;
@@ -30,18 +33,81 @@ const OP_PUSHDATA2: u8 = 0x4d;
 /// `OP_PUSHDATA4`.
 const OP_PUSHDATA4: u8 = 0x4e;
 
+/// Whether a CryptoCondition with this eval code is *able* to carry currency.
+///
+/// Not "does it" — "could it". A `false` here is a proof of absence: an output
+/// with that eval code carries no reserve value, whatever else it does, so a
+/// balance may count it as zero rather than refusing to answer.
+///
+/// # Where the list comes from
+///
+/// `CScript::ReserveOutValue` in VerusCoin's `src/script/script.cpp` is the one
+/// function consensus uses to ask an output what currency it holds, and it is a
+/// `switch` over exactly five eval codes. Everything else falls off the end and
+/// returns an empty map — including `EVAL_STAKEGUARD`, which is what a
+/// proof-of-stake coinbase pays its first output to, and every notarization,
+/// finalization, currency definition and identity output.
+///
+/// That matters because the alternative is a balance that fails for anyone who
+/// has ever staked. The refusal was honest but far too wide: it treated "this
+/// crate cannot decode the payload" as "this output might hold money", when the
+/// chain itself says the payload of a stakeguard output is not somewhere money
+/// can be.
+///
+/// `EVAL_CROSSCHAIN_IMPORT` is on the list even though `ReserveOutValue`
+/// returns nothing for it: the code there is commented out with the note that
+/// the value "cannot be calculated in isolation as an input". An import output
+/// does carry currency — it just cannot be read one output at a time — so this
+/// says so, and a balance keeps refusing it.
+pub const fn may_carry_currency(eval_code: u8) -> bool {
+    matches!(
+        eval_code,
+        EVAL_RESERVE_TRANSFER
+            | EVAL_RESERVE_OUTPUT
+            | EVAL_RESERVE_DEPOSIT
+            | EVAL_CROSSCHAIN_IMPORT
+            | EVAL_IDENTITY_COMMITMENT
+    )
+}
+
 /// What an output turned out to be.
+///
+/// `#[non_exhaustive]` for the same reason [`TxError`] is: this crate learns to
+/// read new output shapes over time, and a downstream `match` should get a
+/// wildcard arm once rather than break on every discovery.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputKind {
     /// A plain pay-to-public-key-hash output: native value only.
     PubKeyHash {
         /// The 20-byte hash it pays to.
         hash: [u8; 20],
     },
+    /// A pay-to-public-key output: native value only.
+    ///
+    /// The shape a proof-of-work coinbase pays itself with, so any address that
+    /// has ever mined holds some. It carries no payload and cannot hold a
+    /// currency — recognising it matters because the alternative is refusing
+    /// the whole output as unreadable, and "unreadable" would be wrong: this
+    /// crate cannot *spend* a P2PK output, but it can be certain there is no
+    /// token hiding in one.
+    PubKey {
+        /// The public key it pays, 33 bytes compressed or 65 uncompressed.
+        pubkey: Vec<u8>,
+        /// The hash of that key — the `R` address that controls it.
+        hash: [u8; 20],
+    },
     /// A CryptoCondition output holding token (reserve) value.
     ReserveOutput {
-        /// Destination hash.
-        destination: [u8; 20],
+        /// Who the output pays.
+        ///
+        /// A [`Destination`] rather than a bare hash, because the kind is the
+        /// difference between an output a transparent key can spend and one
+        /// only a VerusID's authority can. Tokens held by an identity are an
+        /// ordinary shape on Verus — a mint pays them, and the SDK's own
+        /// encoder has always been able to write them — and reading them back
+        /// as a key-hash would name an `R` address that nobody controls.
+        destination: Destination,
         /// `(currency id, amount)` pairs the output carries.
         tokens: Vec<(CurrencyId, u64)>,
     },
@@ -61,14 +127,40 @@ pub enum OutputKind {
         identity: Box<Identity>,
     },
     /// A CryptoCondition output whose eval code this crate does not decode yet
-    /// — an identity, a reserve transfer, a currency definition.
+    /// — a reserve transfer, a currency definition, a stakeguard.
     ///
     /// Returned rather than ignored so a caller can refuse to spend value it
     /// cannot account for.
     UnsupportedCryptoCondition {
         /// The eval code found.
         eval_code: u8,
+        /// [`may_carry_currency`] for that eval code — whether the output is
+        /// *able* to hold a token this crate cannot see.
+        ///
+        /// Carried on the variant rather than left to the caller to look up,
+        /// so the distinction is unmissable at the `match` that has to make
+        /// the decision. `false` means the output is undecodable *and*
+        /// provably tokenless: refusing to count it would fail closed against
+        /// nothing.
+        may_carry_currency: bool,
     },
+}
+
+/// The public key a `PUSH(len) <pubkey> OP_CHECKSIG` script pays, if it is one.
+///
+/// Only the two lengths secp256k1 defines are accepted; a push of any other
+/// size is not a public key and this crate should not claim to recognise it.
+fn pay_to_pubkey(script: &[u8]) -> Option<&[u8]> {
+    const OP_CHECKSIG: u8 = 0xac;
+    let (&length, rest) = script.split_first()?;
+    if length != 33 && length != 65 {
+        return None;
+    }
+    let length = usize::from(length);
+    if rest.len() != length + 1 || rest[length] != OP_CHECKSIG {
+        return None;
+    }
+    Some(&rest[..length])
 }
 
 /// Read pushes out of a script, rejecting anything malformed.
@@ -221,6 +313,15 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
         return Ok(OutputKind::PubKeyHash { hash });
     }
 
+    // P2PK: `PUSH(33|65) <pubkey> OP_CHECKSIG`. Native-only by construction —
+    // there is nowhere in this script for a payload to live.
+    if let Some(pubkey) = pay_to_pubkey(script) {
+        return Ok(OutputKind::PubKey {
+            hash: verus_keys::hash160(pubkey),
+            pubkey: pubkey.to_vec(),
+        });
+    }
+
     // Not a CryptoCondition output either? Then it is something this crate has
     // no opinion about, and saying so is better than guessing.
     if !script.contains(&OP_CHECKCRYPTOCONDITION) {
@@ -309,22 +410,25 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
     }
 
     if eval_code != EVAL_RESERVE_OUTPUT {
-        return Ok(OutputKind::UnsupportedCryptoCondition { eval_code });
+        return Ok(OutputKind::UnsupportedCryptoCondition {
+            eval_code,
+            may_carry_currency: may_carry_currency(eval_code),
+        });
     }
 
     let mut tokens = Vec::new();
     while !params.done() {
         tokens.push(parse_token_output(params.take_push()?)?);
     }
-    let destination = match destinations.first() {
-        Some(Destination::PubKeyHash(hash)) => *hash,
-        Some(other) => {
-            return Err(malformed(&format!(
-                "a reserve output paying {other:?} is not decoded yet"
-            )))
-        }
-        None => return Err(malformed("reserve output has no destination")),
-    };
+    // Any destination kind, not just a key hash. Which one it is decides who
+    // can *spend* the output — the funding paths in `token.rs`, `convert.rs`,
+    // `register.rs` and `offer.rs` each refuse the ones this crate cannot sign
+    // for — but it has no bearing on what the output *holds*, and refusing to
+    // read it lost every token a VerusID owns.
+    let destination = destinations
+        .into_iter()
+        .next()
+        .ok_or_else(|| malformed("reserve output has no destination"))?;
     Ok(OutputKind::ReserveOutput {
         destination,
         tokens,
@@ -352,7 +456,7 @@ mod tests {
         assert_eq!(
             decode_output_script(&script).unwrap(),
             OutputKind::ReserveOutput {
-                destination: RECIPIENT,
+                destination: Destination::PubKeyHash(RECIPIENT),
                 tokens: vec![(CURRENCY, 40_000_000)],
             }
         );
@@ -365,7 +469,7 @@ mod tests {
             assert_eq!(
                 decode_output_script(&script).unwrap(),
                 OutputKind::ReserveOutput {
-                    destination: RECIPIENT,
+                    destination: Destination::PubKeyHash(RECIPIENT),
                     tokens: vec![(CURRENCY, amount)],
                 },
                 "amount {amount} did not survive a round trip"
@@ -422,7 +526,16 @@ mod tests {
             + 1;
         script[eval_position] = 4;
         match decode_output_script(&script) {
-            Ok(OutputKind::UnsupportedCryptoCondition { eval_code }) => assert_eq!(eval_code, 4),
+            Ok(OutputKind::UnsupportedCryptoCondition {
+                eval_code,
+                may_carry_currency,
+            }) => {
+                assert_eq!(eval_code, 4);
+                assert!(
+                    !may_carry_currency,
+                    "an earned notarization holds no currency"
+                );
+            }
             other => panic!("expected an unsupported-CC report, got {other:?}"),
         }
     }
@@ -465,7 +578,10 @@ mod tests {
         let script = crate::cc::cc_script(&master, &params).unwrap();
         assert_eq!(
             decode_output_script(&script).unwrap(),
-            OutputKind::UnsupportedCryptoCondition { eval_code: 200 }
+            OutputKind::UnsupportedCryptoCondition {
+                eval_code: 200,
+                may_carry_currency: false,
+            }
         );
     }
 

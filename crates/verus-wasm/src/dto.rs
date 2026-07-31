@@ -84,6 +84,22 @@ pub fn from_js<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult
     serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
 }
 
+/// The same, for an argument that is an **array** of `shape` objects.
+///
+/// Refuses a non-array outright rather than letting serde report it, because
+/// `sanitize` passes a lone object straight through to the object branch and a
+/// caller who meant to pass one UTXO instead of a list deserves to be told so.
+pub fn from_js_list<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<Vec<T>> {
+    if !js_sys::Array::is_array(&value) {
+        return Err(WasmError::new(
+            "InvalidArgument",
+            "expected an array of outputs",
+        ));
+    }
+    let checked = sanitize(value, shape, "")?;
+    serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
+}
+
 /// A fresh, prototype-less copy of `value` carrying only `shape`'s fields.
 ///
 /// `path` names the position for an error message — `""` at the top level,

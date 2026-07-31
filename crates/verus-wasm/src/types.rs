@@ -50,6 +50,13 @@ extern "C" {
     #[wasm_bindgen(typescript_type = "DecodedOutput")]
     pub type DecodedOutputValue;
 
+    /// TypeScript `Utxo[]`.
+    #[wasm_bindgen(typescript_type = "Utxo[]")]
+    pub type UtxoListValue;
+    /// TypeScript `TokenAmount[]`.
+    #[wasm_bindgen(typescript_type = "TokenAmount[]")]
+    pub type TokenBalancesValue;
+
     /// A `string`, taken as a `JsValue` so a non-string can be *refused*
     /// rather than trapping the module.
     ///
@@ -172,6 +179,7 @@ mod tests {
                 primary_addresses: Some(Vec::new()),
                 minimum_signatures: Some(0),
                 eval_code: Some(0),
+                may_carry_currency: Some(false),
             },
         );
     }

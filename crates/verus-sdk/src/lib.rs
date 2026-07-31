@@ -99,6 +99,7 @@ pub mod cosign {
 #[cfg(feature = "transparent")]
 pub mod decode {
     pub use verus_tx::{decode_output_script, Destination, OutputKind};
+    pub use verus_tx::{token_balances, TokenBalances};
 }
 
 /// Converting between currencies: convert, preconvert, burn and mint.
@@ -198,12 +199,13 @@ pub mod vdxf {
 pub mod network {
     pub use verus_flows::offer::take;
     pub use verus_flows::{
-        broadcast, burn, convert, estimate, identity_held, inspect, launch_currency, mint,
-        plan_conversion, prepare_registration, prepare_registration_with_salt, prepare_send, send,
-        send_from_identity, send_token, sign_login, spendable, verify_login, AwaitingCommitment,
-        CommitmentStatus, ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn,
-        LoginPolicy, LoginRequest, OfferTerms, Pending, ReadyToRegister, Registered,
-        RegistrationOptions, Sent, Taken, Taking, WaitPolicy,
+        broadcast, burn, convert, currency_names, estimate, identity_held, inspect,
+        launch_currency, mint, plan_conversion, prepare_registration,
+        prepare_registration_with_salt, prepare_send, send, send_from_identity, send_token,
+        sign_login, spendable, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
+        ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn, LoginPolicy, LoginRequest,
+        OfferTerms, Pending, ReadyToRegister, Registered, RegistrationOptions, Sent, Taken, Taking,
+        TokenBalances, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,
