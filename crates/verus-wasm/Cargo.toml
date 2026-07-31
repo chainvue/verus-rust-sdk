@@ -1,0 +1,61 @@
+[package]
+name = "verus-wasm"
+description = "Verus SDK for JavaScript: build and sign in WebAssembly; the key never leaves the module."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# `unsafe_code = "forbid"` is the workspace default and every other crate keeps
+# it. This one cannot: `#[wasm_bindgen]` expands to `unsafe extern` shims and
+# `unsafe impl` marker traits, and `forbid` is not overridable by an `allow` in
+# the expansion. So the lint is relaxed HERE and nowhere else, and the property
+# it protected is kept by a different mechanism: a test greps this crate's own
+# sources for the `unsafe` keyword and fails on any hit. That distinguishes
+# "the binding macro emits unsafe" from "someone wrote unsafe", which the lint
+# on its own no longer can.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+
+[lib]
+# `cdylib` is the wasm artifact; `rlib` keeps the crate testable by plain
+# `cargo test` on the host, which is where the conversion and validation logic
+# is actually exercised.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hex = { workspace = true }
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+verus-keys = { path = "../verus-keys" }
+verus-tx = { path = "../verus-tx" }
+verus-wire = { path = "../verus-wire" }
+
+# Two transitive dependencies reach for the operating system's entropy, and on
+# `wasm32-unknown-unknown` there is no operating system to reach for — the crate
+# does not compile at all without being told to use the Web Crypto API instead.
+# Target-gated so a host build (where `cargo test` runs) is untouched.
+#
+# Nothing in this crate asks for randomness: signing is RFC 6979 deterministic,
+# and a fresh key is made from entropy the caller passes in, so the source stays
+# visible to the application rather than hidden in here.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# Only for the drift tests, which read a DTO's field names off its own
+# serialization. The behaviour of the compiled module is tested from JavaScript
+# under plain node (`tests/node/`), not through a Rust wasm test harness — the
+# oracle there is the TypeScript SDK's committed vectors, which a Rust test
+# could not drive through the binding.
+serde_json = "1"

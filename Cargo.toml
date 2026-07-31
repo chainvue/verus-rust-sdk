@@ -9,6 +9,7 @@ members = [
     "crates/verus-light",
     "crates/verus-flows",
     "crates/verus-sdk",
+    "crates/verus-wasm",
 ]
 
 # Nothing is published yet: the API has not settled, and a crates.io name is a

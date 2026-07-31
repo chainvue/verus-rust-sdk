@@ -6,3 +6,6 @@
 .env
 *.key
 *.pem
+# The wasm bundle is BUILT, never committed: `wasm-pack build` regenerates it
+# from source, and a stale copy in the tree is a copy nothing verifies.
+/crates/verus-wasm/pkg/

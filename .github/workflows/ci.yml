@@ -66,6 +66,58 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --all-features
 
+  # The browser half. Two things are checked here that the `test` job cannot:
+  # that the crate compiles for `wasm32-unknown-unknown` at all, and that the
+  # compiled module behaves under a real JavaScript engine. The host tests
+  # exercise the conversions, but `wasm-bindgen` is inert on the host — the
+  # glue, the JsValue marshalling and the thrown `Error` are only ever
+  # exercised under node.
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: '1.95.0'
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # This compiles the whole offline half for the browser, not just the
+      # binding: a transitive dependency that stops supporting wasm32 breaks the
+      # bundle, and it should break here rather than in someone's application.
+      - name: Compile for wasm32
+        run: cargo check -p verus-wasm --target wasm32-unknown-unknown --all-targets
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.14.0 --locked
+
+      - name: Build the package
+        run: wasm-pack build crates/verus-wasm --target nodejs --out-dir pkg --release
+
+      # The differential: the TypeScript SDK's own daemon-proven bytes, produced
+      # by the wasm module, driven from JavaScript.
+      - name: Differential and behaviour, under node
+        run: node crates/verus-wasm/tests/node/differential.mjs crates/verus-wasm/pkg
+
+      # The published `.d.ts` is hand-written, so it can be wrong in ways no
+      # Rust test sees. `types.check.ts` USES it the way an application would —
+      # and its `@ts-expect-error` lines fail the build if a rule the API
+      # promises (money is a string, unknown fields are refused, the height
+      # bound is required) stops being expressed in the types.
+      - name: TypeScript declarations
+        working-directory: crates/verus-wasm
+        run: >
+          npx -y -p typescript@5 tsc --noEmit --strict
+          --target esnext --lib esnext --module esnext --moduleResolution bundler
+          tests/node/types.check.ts
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
