@@ -163,9 +163,26 @@ fn to_lower_c_locale(name: &str) -> String {
 ///
 /// A root identity on a chain has that chain's system id as its parent: on
 /// VRSCTEST every ordinary registration is a child of `VRSCTEST` itself.
+/// # An all-zero parent is *no* parent
+///
+/// Folding twenty zero bytes in anyway gives a different id from the one
+/// consensus assigns. `CIdentity::GetID` skips the combine when
+/// `parent.IsNull()`; this combined unconditionally, and did not.
+///
+/// Established against the chain rather than against the source. `vrsc@`
+/// carries a null parent, and its id on mainnet is `1af5b801…`, which is
+/// exactly `hash160(sha256d("vrsc"))` — the uncombined form. Combining with
+/// zeros yields `c980a9f6…`, an address nothing is at.
+///
+/// Only zero-parent identities were affected, which is why it went unnoticed:
+/// every identity registered on a chain has that chain as its parent, so the
+/// eight golden VerusID transactions and every registration flow are unchanged
+/// by the fix. Chain roots — `vrsc@`, `vrsctest@` — are the exception, and an
+/// identity update built for one would have published its output under an id
+/// nobody holds.
 pub fn identity_id(name: &str, parent: Option<[u8; 20]>) -> [u8; 20] {
     let mut id_hash = sha256d(to_lower_c_locale(name).as_bytes());
-    if let Some(parent) = parent {
+    if let Some(parent) = parent.filter(|parent| parent != &[0u8; 20]) {
         let mut combined = Vec::with_capacity(52);
         combined.extend_from_slice(&parent);
         combined.extend_from_slice(&id_hash);
@@ -1562,5 +1579,46 @@ mod tests {
             build_identity_registration(&key, &params),
             Err(TxError::CommitmentMismatch)
         ));
+    }
+}
+
+#[cfg(test)]
+mod null_parent_tests {
+    use super::*;
+
+    /// `vrsc@` is the case that proves the rule: a chain root has a null
+    /// parent, and its id on mainnet is the **uncombined** hash.
+    ///
+    /// Taken from the chain, not from the C++ — `getidentity vrsc@` reports
+    /// `i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV`, whose 20 bytes are below. Note
+    /// that the same reply renders the null parent as
+    /// `i3UXS5QPRQGNRDDqVnyWTnmFCTHDbzmsYk`, which is simply twenty zero bytes
+    /// in `i`-address clothing — so "it has a parent" is what the JSON looks
+    /// like and not what is true.
+    #[test]
+    fn a_chain_roots_id_is_derived_without_its_null_parent() {
+        let expected =
+            hex::decode("1af5b8015c64d39ab44c60ead8317f9f5a9b6c4c").expect("literal hex");
+
+        assert_eq!(identity_id("vrsc", None).to_vec(), expected);
+        // The daemon reports the parent as all zeros, and passing that through
+        // has to reach the same place.
+        assert_eq!(identity_id("vrsc", Some([0u8; 20])).to_vec(), expected);
+
+        // What the unconditional combine used to produce: an address nothing
+        // is at.
+        assert_ne!(
+            hex::encode(identity_id("vrsc", Some([0u8; 20]))),
+            "c980a9f641086ddb6532e1aa85b540f886efa203"
+        );
+    }
+
+    /// A real parent still combines, so nothing about ordinary identities
+    /// moves. This is what keeps the golden transactions byte-identical.
+    #[test]
+    fn a_real_parent_still_changes_the_id() {
+        let parented = identity_id("rustsdk", Some([0x2b; 20]));
+        assert_ne!(parented, identity_id("rustsdk", None));
+        assert_ne!(parented, identity_id("rustsdk", Some([0u8; 20])));
     }
 }

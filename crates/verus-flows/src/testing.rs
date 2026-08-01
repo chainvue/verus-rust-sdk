@@ -361,7 +361,7 @@ impl ChainReader for ScriptedReader {
         Ok(IdentityContent {
             identity: self.identity(name_or_id)?,
             content_map: Default::default(),
-            content_multimap: serde_json::Value::Null,
+            content_multimap: Default::default(),
         })
     }
 

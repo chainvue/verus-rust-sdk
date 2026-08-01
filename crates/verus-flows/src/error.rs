@@ -25,6 +25,11 @@ pub enum FlowError {
     #[error("offer: {0}")]
     Offer(String),
 
+    /// Data published on an identity could not be read, or the identity an
+    /// update was about to be written to is not the one that was asked for.
+    #[error("identity content: {0}")]
+    Content(String),
+
     /// A shielded lookup could not be trusted to position or witness a note.
     ///
     /// Almost every case here is a *continuity* failure — a reorg under a scan,

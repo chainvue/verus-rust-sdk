@@ -800,12 +800,11 @@ fn a_currency_missing_a_universal_field_is_refused_not_defaulted() {
     assert!(format!("{error}").contains("proofprotocol"), "{error}");
 }
 
-/// An identity older than version 3 has no `contentmultimap` **key at all**,
-/// which is not the same as having an empty one. `Null` keeps that difference
-/// visible; an empty object would claim the identity can hold content and
-/// happens not to.
+/// An identity older than version 3 has no `contentmultimap` key at all. That
+/// reads as empty rather than as an error: such an identity cannot carry one,
+/// so there is nothing missing to report.
 #[test]
-fn an_identity_too_old_for_a_multimap_reports_null_not_empty() {
+fn an_identity_too_old_for_a_multimap_reads_as_empty() {
     struct Body(&'static str);
     impl Transport for Body {
         fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
@@ -818,7 +817,7 @@ fn an_identity_too_old_for_a_multimap_reports_null_not_empty() {
         "vout":0,"blockheight":1,
         "identity":{"identityaddress":"iOld","version":1,"contentmap":{}}}}"#;
     let content = RpcClient::new(Body(v1)).identity_content("old").unwrap();
-    assert!(content.content_multimap.is_null());
+    assert!(content.content_multimap.is_empty());
     assert!(content.content_map.is_empty());
 }
 
@@ -850,4 +849,64 @@ fn a_contentmap_value_that_is_not_a_hash_is_refused() {
             "{broken}"
         );
     }
+}
+
+/// The daemon renders a multimap value in more than one shape, and an earlier
+/// version of this reader accepted only one of them.
+///
+/// Taken from the reference implementation's own reader — `ContentMultiMap`
+/// in `verus-typescript-primitives` — which handles a list of hex strings **or
+/// objects**, a bare hex string, and a bare object. Which shape arrives depends
+/// on whether the daemon recognises the key, so requiring hex made every
+/// identity using a recognised key unreadable through this method.
+#[test]
+fn every_multimap_rendering_the_daemon_uses_is_readable() {
+    struct Body(String);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.clone())
+        }
+    }
+    fn read(multimap: &str) -> Result<Vec<verus_rpc::ContentValue>, RpcError> {
+        let body = format!(
+            r#"{{"result":{{"fullyqualifiedname":"x.VRSC@","status":"active",
+            "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+            "vout":0,"blockheight":1,
+            "identity":{{"identityaddress":"iX","contentmultimap":{multimap}}}}}}}"#
+        );
+        RpcClient::new(Body(body))
+            .identity_content("x")
+            .map(|c| c.content_multimap.into_values().next().unwrap_or_default())
+    }
+
+    // A list of hex — the shape both live mainnet examples use.
+    let bytes = read(r#"{"iK":["0187ff"]}"#).unwrap();
+    assert_eq!(bytes[0].as_bytes(), Some(&[0x01, 0x87, 0xff][..]));
+
+    // A bare hex string, not wrapped in a list. Normalised to one value so a
+    // caller has one shape to handle.
+    let bare = read(r#"{"iK":"0187ff"}"#).unwrap();
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].as_bytes(), Some(&[0x01, 0x87, 0xff][..]));
+
+    // A structured value: the daemon recognised the key and already decoded
+    // it, so there are no bytes in the reply to hand back.
+    let structured = read(r#"{"iK":{"iSomeKey":"a value"}}"#).unwrap();
+    assert_eq!(structured.len(), 1);
+    assert!(structured[0].as_bytes().is_none());
+    assert!(matches!(
+        structured[0],
+        verus_rpc::ContentValue::Structured(_)
+    ));
+
+    // Mixed inside one list, which the reference reader also permits.
+    let mixed = read(r#"{"iK":["0187ff",{"iSomeKey":"v"}]}"#).unwrap();
+    assert_eq!(mixed.len(), 2);
+    assert!(mixed[0].as_bytes().is_some());
+    assert!(mixed[1].as_bytes().is_none());
+
+    // What is still refused: a shape nobody meant.
+    assert!(read(r#"{"iK":[42]}"#).is_err());
+    assert!(read(r#"{"iK":["nothex"]}"#).is_err());
+    assert!(read("[]").is_err(), "a list is not a map of keys to values");
 }
