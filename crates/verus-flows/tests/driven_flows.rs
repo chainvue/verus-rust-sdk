@@ -39,7 +39,31 @@ fn replies() -> HashMap<&'static str, String> {
     HashMap::from([
         ("getinfo", fixture("getinfo")),
         ("getaddressdeltas", fixture("getaddressdeltas")),
+        // Not a captured reply: `getblockcount` returns a bare integer, and it
+        // has to agree with the capture above or every output would look
+        // immature. `getinfo` reports 1167555 for the same capture.
+        ("getblockcount", r#"{"result":1167555}"#.to_string()),
     ])
+}
+
+/// The same set, plus one spendable output belonging to `address`.
+///
+/// The captured `getaddressutxos` reply cannot be used here: the client checks
+/// that every output it is handed belongs to an address that was asked about —
+/// a node that slips in someone else's output is refused — and no private key
+/// for the captured address exists outside the wallet that made it. So the
+/// output is synthesised for a key these tests do own. Only the ownership
+/// changes; the height, value and script shape are the capture's.
+fn replies_for(address: &verus_keys::Address) -> HashMap<&'static str, String> {
+    let mut replies = replies();
+    replies.insert(
+        "getaddressutxos",
+        format!(
+            r#"{{"result":[{{"address":"{address}","blocktime":1785262420,"height":1166385,"isspendable":1,"outputIndex":1,"satoshis":8830000,"script":"76a914{}88ac","txid":"5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"}}]}}"#,
+            hex::encode(address.hash())
+        ),
+    );
+    replies
 }
 
 /// The method name inside a JSON-RPC body, for looking a fixture up.
@@ -72,11 +96,21 @@ impl Transport for Recorded {
 
 /// Drive an operation the way a browser would, returning the value and the
 /// bodies asked for in each round.
-fn drive_it<T, F>(mut operation: F) -> (T, Vec<Vec<String>>)
+fn drive_it<T, F>(operation: F) -> (T, Vec<Vec<String>>)
 where
     F: FnMut(&verus_rpc::RpcClient<verus_rpc::Cassette>) -> Result<T, FlowError>,
 {
-    let replies = replies();
+    drive_with(replies(), operation)
+}
+
+/// As [`drive_it`], against a particular set of replies.
+fn drive_with<T, F>(
+    replies: HashMap<&'static str, String>,
+    mut operation: F,
+) -> (T, Vec<Vec<String>>)
+where
+    F: FnMut(&verus_rpc::RpcClient<verus_rpc::Cassette>) -> Result<T, FlowError>,
+{
     let mut answers = Answers::new();
     let mut rounds = Vec::new();
 
@@ -238,6 +272,118 @@ fn registration_keeps_asking_rather_than_assuming_a_name_is_free() {
         bodies.iter().any(|b| method_of(b) == "getidentity"),
         "the name check must be asked, not assumed: {bodies:#?}"
     );
+}
+
+/// A key for the driven payment tests. Nothing has ever been sent to it; the
+/// recorded transport answers by method, so which address is asked about does
+/// not change the reply.
+fn spender() -> verus_keys::PrivateKey {
+    verus_keys::PrivateKey::from_bytes(&[0x7c; 32], true).expect("a valid scalar")
+}
+
+const PAYEE: &str = "RJUgxvDnDLsRGCXNKDK56Rxngzh6m25J6F";
+
+/// A **write** flow, driven — which is the half of the mechanism that was
+/// missing until the broadcast was split out.
+///
+/// `prepare_send` reads the tip and the outputs, and neither needs the other,
+/// so a browser goes to the network once. The outputs in the fixture are all
+/// older than [`COINBASE_MATURITY`](verus_flows::funding::COINBASE_MATURITY),
+/// so no maturity probe follows and there is no second round.
+#[test]
+fn preparing_a_payment_resolves_in_a_single_round() {
+    let key = spender();
+    let (_unsent, rounds) = drive_with(replies_for(&key.address()), |client| {
+        verus_flows::prepare_send(
+            client,
+            &key,
+            PAYEE,
+            verus_flows::Amount::from_sat(1_000_000),
+        )
+    });
+
+    assert_eq!(rounds.len(), 1, "one round: {rounds:#?}");
+    let mut methods: Vec<String> = rounds[0].iter().map(|b| method_of(b)).collect();
+    methods.sort();
+    assert_eq!(methods, ["getaddressutxos", "getblockcount"]);
+}
+
+/// The bytes a browser would sign must be the bytes a native caller signs.
+///
+/// Equivalence was proven for a read flow when the driver landed; this is the
+/// claim that matters commercially, because these bytes move money.
+#[test]
+fn a_driven_payment_signs_exactly_what_a_direct_reader_signs() {
+    let key = spender();
+    let amount = verus_flows::Amount::from_sat(1_000_000);
+
+    let replies = replies_for(&key.address());
+    let direct = verus_rpc::RpcClient::new(Recorded {
+        replies: replies.clone(),
+        calls: std::cell::RefCell::new(0),
+    });
+    let straight_through =
+        verus_flows::prepare_send(&direct, &key, PAYEE, amount).expect("the ordinary path");
+
+    let (driven, _) = drive_with(replies, |client| {
+        verus_flows::prepare_send(client, &key, PAYEE, amount)
+    });
+
+    assert_eq!(driven.hex, straight_through.hex);
+    assert_eq!(driven.txid, straight_through.txid);
+    assert_eq!(driven, straight_through);
+}
+
+/// Driving the **unsplit** flow by mistake is refused, loudly, rather than
+/// silently sending the transaction once per round.
+///
+/// `RpcClient<Cassette>` implements `Broadcaster` like any other client — the
+/// type system cannot stop `send(client, client, ..)` being written. If a
+/// broadcast were merely *recorded* as one more outstanding request, a driver
+/// would dutifully go and fetch it, and fetching `sendrawtransaction` means
+/// sending the money. So the cassette refuses writes outright, with an error
+/// that is deliberately not [`RpcError::AnswerNeeded`].
+///
+/// This is why the `prepare_…` half exists at all, expressed as a test rather
+/// than as a comment.
+#[test]
+fn driving_a_flow_that_broadcasts_is_refused_rather_than_recorded() {
+    let key = spender();
+    let replies = replies_for(&key.address());
+    let mut answers = Answers::new();
+
+    let operation = |client: &verus_rpc::RpcClient<verus_rpc::Cassette>| {
+        verus_flows::send(
+            client,
+            client,
+            &key,
+            PAYEE,
+            verus_flows::Amount::from_sat(1_000_000),
+        )
+    };
+
+    // Answer the reads. Once they are all known the flow reaches the broadcast,
+    // which must be where it stops.
+    let mut refusal = None;
+    for _ in 0..4 {
+        match advance(&mut answers, operation) {
+            Ok(Step::Ask(bodies)) => {
+                for body in &bodies {
+                    answers.record(body.clone(), replies[method_of(body).as_str()].clone());
+                }
+            }
+            Ok(Step::Ready(sent)) => panic!("a driven flow must not broadcast: {}", sent.txid),
+            Err(error) => {
+                refusal = Some(error);
+                break;
+            }
+        }
+    }
+
+    match refusal {
+        Some(FlowError::Rpc(RpcError::WriteThroughCassette)) => {}
+        other => panic!("expected the write to be refused, got {other:?}"),
+    }
 }
 
 /// The subtlest property in the whole mechanism: a **node error, cached**, is

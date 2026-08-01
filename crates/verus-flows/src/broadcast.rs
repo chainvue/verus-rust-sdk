@@ -40,6 +40,62 @@ use verus_rpc::{Broadcaster, RpcError};
 
 use crate::error::FlowError;
 
+/// Signed bytes that have not been sent, and what sending them will mean.
+///
+/// Every operation here that writes to the chain is split in two: a
+/// `prepare_…` half that only **reads** and returns one of these, and a thin
+/// wrapper that hands it to a node. The split is not a stylistic preference.
+///
+/// # Why the halves are separate types and not a flag
+///
+/// An operation driven by [`drive`](mod@crate::drive) runs **again from the
+/// beginning on every round** — that is the whole mechanism by which a browser
+/// gets synchronous-looking flows without an async duplicate of each one. Reads
+/// are answered from a cache and cost nothing the second time. A broadcast has
+/// no such property: running it twice sends twice, and with anything
+/// non-deterministic in the operation it sends *different bytes* twice.
+///
+/// So the re-runnable half takes no [`Broadcaster`] and therefore cannot
+/// broadcast — a signature, not a promise — and the send happens once, outside
+/// the loop, through [`Unsent::broadcast`].
+///
+/// # The fields
+///
+/// `hex` and `txid` are the bytes and their locally computed id. Where
+/// `outcome` also carries them (as [`Sent`](crate::Sent) does) they are the
+/// same values: the id is computed from the bytes, and
+/// [`broadcast`] refuses a node that answers about a different transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unsent<T> {
+    /// The signed transaction, hex-encoded, ready to submit.
+    pub hex: String,
+    /// The transaction id computed locally from `hex`.
+    pub txid: String,
+    /// What the operation will have done once these bytes are accepted.
+    pub outcome: T,
+}
+
+impl<T> Unsent<T> {
+    /// Submit the bytes, once, and yield what the operation set out to do.
+    ///
+    /// **The outcome is consumed on failure.** For most flows that costs
+    /// nothing — the whole operation can simply be built again from the chain.
+    /// It is not true of
+    /// [`Pending`](crate::Pending): the salt inside it cannot be recovered from
+    /// anywhere, so a caller sending a name commitment should persist or clone
+    /// the `Unsent` first. `Unsent<T>` is [`Clone`] whenever `T` is.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`broadcast`] reports — in particular
+    /// [`FlowError::BroadcastUncertain`], which carries `hex` and `txid` back
+    /// so the outcome can be resolved with a single read rather than a resend.
+    pub fn broadcast(self, broadcaster: &impl Broadcaster) -> Result<T, FlowError> {
+        broadcast(broadcaster, &self.hex, &self.txid)?;
+        Ok(self.outcome)
+    }
+}
+
 /// Submit signed bytes, distinguishing a refusal from an unknown outcome.
 ///
 /// `local_txid` is the id computed while building. It is compared against what
@@ -63,6 +119,15 @@ pub fn broadcast(
         // The node answered. It understood the transaction and said no, so the
         // outcome is known and resending unchanged will not help.
         Err(error @ RpcError::Node { .. }) => Err(FlowError::Rpc(error)),
+        // Nothing was sent and nothing could have been: a cassette refuses
+        // writes, so the transport never reached a node.
+        //
+        // Calling that "uncertain" would be worse than merely imprecise. The
+        // documented way to resolve an uncertain broadcast is to check for the
+        // transaction and, finding it absent, **send it** — so a caller who
+        // drove an unsplit flow by mistake would follow the recovery path
+        // straight into the broadcast the cassette exists to prevent.
+        Err(error @ RpcError::WriteThroughCassette) => Err(FlowError::Rpc(error)),
         // Everything else — a dropped connection, a timeout, a proxy's HTML —
         // leaves the outcome genuinely unknown.
         Err(error) => Err(FlowError::BroadcastUncertain {
@@ -124,6 +189,22 @@ mod tests {
         }
         // And nothing was resent behind the caller's back.
         assert!(node.broadcasts().is_empty());
+    }
+
+    /// A cassette's refusal must not be dressed up as uncertainty.
+    ///
+    /// The recovery path for [`FlowError::BroadcastUncertain`] is documented as
+    /// "check, and if it is not there, send it". Reporting a refusal that way
+    /// would walk a caller into performing the very broadcast the cassette
+    /// refused — and this is reachable, because `RpcClient<Cassette>` is a
+    /// `Broadcaster` like any other client.
+    #[test]
+    fn a_cassette_refusing_a_write_is_certain_not_uncertain() {
+        let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::WriteThroughCassette);
+        match broadcast(&node, "00ff", TXID) {
+            Err(FlowError::Rpc(RpcError::WriteThroughCassette)) => {}
+            other => panic!("a refusal is a known outcome, got {other:?}"),
+        }
     }
 
     /// If the node names a different transaction, the txid handed back would

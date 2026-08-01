@@ -88,18 +88,25 @@ pub mod shielded;
 pub mod testing;
 
 pub use balances::{currency_names, native_currency};
-pub use broadcast::broadcast;
-pub use convert::{burn, convert, estimate, mint, plan_conversion, ConversionPlan};
+pub use broadcast::{broadcast, Unsent};
+pub use convert::{
+    burn, convert, estimate, mint, plan_conversion, prepare_burn, prepare_conversion, prepare_mint,
+    ConversionPlan,
+};
 pub use error::FlowError;
 pub use funding::{identity_held, spendable, Funding};
 pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
-pub use launch::{launch_currency, Launched};
+pub use launch::{launch_currency, prepare_launch, Launched};
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
-pub use offer::{inspect, Demand, OfferTerms, Taken, Taking};
-pub use send::{prepare_send, send, send_from_identity, send_token, Sent};
+pub use offer::{inspect, prepare_take, Demand, OfferTerms, Taken, Taking};
+pub use send::{
+    prepare_send, prepare_send_from_identity, prepare_send_token, send, send_from_identity,
+    send_token, Sent,
+};
+pub use vdxf::prepare_publish;
 
 #[cfg(feature = "shielded")]
 pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};
