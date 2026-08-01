@@ -119,29 +119,60 @@ pub fn key_address(key: [u8; 20]) -> String {
     Address::new(AddressKind::Identity, key).to_string()
 }
 
-/// Everything published under one key, as raw values.
+/// What stands under one key **now**.
 ///
 /// Empty when the key is absent, which is the same answer as a key present with
 /// no values — the chain does not distinguish them either.
+///
+/// # Why this reads the identity and not `getidentitycontent`
+///
+/// The obviously-named method is the wrong one. `getidentitycontent`
+/// accumulates every value published across a height range, so a key written
+/// once and then carried through a later update comes back **twice** — and an
+/// application reading back its own data would see every revision it had ever
+/// written, concatenated, with no way to tell which is current.
+///
+/// That is not a hypothesis. `vdxf1171008.VRSCTEST@` was registered, given one
+/// key, then given a *second* key; the second update restated the first, as
+/// every update must. `getidentity` reports the first key with one value.
+/// `getidentitycontent` reports it with two. See [`read_history`] for when the
+/// accumulating view is the one you want.
 pub fn read(
     reader: &impl ChainReader,
     identity: &str,
     key: [u8; 20],
 ) -> Result<Vec<ContentValue>, FlowError> {
-    let content = reader.identity_content(identity)?;
-    Ok(content
-        .content_multimap
+    Ok(read_all(reader, identity)?
         .get(&key_address(key))
         .cloned()
         .unwrap_or_default())
 }
 
-/// Every key published on an identity, with its values.
+/// Every key an identity holds now, with its values.
 pub fn read_all(
     reader: &impl ChainReader,
     identity: &str,
 ) -> Result<BTreeMap<String, Vec<ContentValue>>, FlowError> {
-    Ok(reader.identity_content(identity)?.content_multimap)
+    let record = reader.identity(identity)?;
+    Ok(verus_rpc::content_multimap(&record.identity)?)
+}
+
+/// Every value an identity has **ever** published under one key, oldest first.
+///
+/// The audit view. A key that has been rewritten appears once per update that
+/// carried it, so this is a history rather than a state — see [`read`] for what
+/// the identity actually holds.
+pub fn read_history(
+    reader: &impl ChainReader,
+    identity: &str,
+    key: [u8; 20],
+) -> Result<Vec<ContentValue>, FlowError> {
+    Ok(reader
+        .identity_content(identity)?
+        .content_multimap
+        .get(&key_address(key))
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// What [`publish`] changed, and the transaction that changed it.
