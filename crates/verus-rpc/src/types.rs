@@ -223,6 +223,127 @@ impl OfferListing {
     }
 }
 
+/// A currency as `listcurrencies` summarises it.
+///
+/// Only the fields every currency has are typed. Across the 290 currencies on
+/// VRSCTEST a definition can carry any of some **46** different keys — weights,
+/// preallocations, carveouts, notaries, gateway plumbing — of which 16 appear
+/// on all of them and the rest depend on what kind of currency it is. That
+/// count is a snapshot and drifts upward as new currency kinds appear, which is
+/// itself the argument. Typing
+/// the long tail would produce a struct that is mostly `Option::None` and that
+/// breaks whenever a new currency kind appears, so the whole definition is kept
+/// alongside as [`CurrencySummary::definition`], the same arrangement
+/// [`IdentityRecord`] uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurrencySummary {
+    /// The currency's own `i` address.
+    pub currency_id: String,
+    /// Its name, unqualified.
+    pub name: String,
+    /// The name with its parents, dotted — `Bridge.vETH`, `mobile.Kaiju`.
+    ///
+    /// **No trailing `@`**, unlike an identity's. That suffix is the identity
+    /// convention and copying it here was wrong: none of the 290 currency names
+    /// on VRSCTEST carries one.
+    pub fully_qualified_name: String,
+    /// The currency this one was defined under.
+    ///
+    /// `None` for a root chain, which is defined under nothing — the single
+    /// currency on VRSCTEST without this field is VRSCTEST itself.
+    pub parent: Option<String>,
+    /// The system the currency lives on.
+    pub system_id: String,
+    /// Height the currency starts at.
+    pub start_block: u32,
+    /// Height it ends at, or zero for never.
+    pub end_block: u32,
+    /// The options bitfield — what kind of currency this is.
+    pub options: u32,
+    /// How a sub-identity under this currency proves itself, which decides the
+    /// shape of the fee output its registration must carry.
+    pub proof_protocol: u32,
+    /// The definition in full, for the fields not typed here.
+    pub definition: serde_json::Value,
+}
+
+/// A basket that can convert one currency into another.
+///
+/// Answers the routing question a conversion needs and had no way to ask: given
+/// a currency, which markets hold it, and what else is in them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurrencyConverter {
+    /// The converter's `i` address.
+    pub converter_id: String,
+    /// Its fully qualified name.
+    pub name: String,
+    /// Height the reported state was taken at.
+    pub height: u32,
+    /// The reserve currencies it holds, by `i` address.
+    ///
+    /// **Not the whole set this converter trades.** A fractional currency
+    /// converts between its reserves *and itself*, so its own id is routable
+    /// too and does not appear here. `getcurrencyconverters ["vlotto"]` returns
+    /// vlotto, whose reserves are `[VRSCTEST]` — a caller filtering on this
+    /// field alone would discard the very converter it just asked for.
+    ///
+    /// Use [`CurrencyConverter::trades`] rather than testing this directly.
+    pub reserves: Vec<String>,
+    /// The converter's definition in full.
+    pub definition: serde_json::Value,
+    /// `lastnotarization` — the reserve depths and prices as of
+    /// [`CurrencyConverter::height`].
+    ///
+    /// The definition above is static; this is what actually moves, and what a
+    /// router prices against. Left as JSON for the same reason the definition
+    /// is: its shape depends on the kind of currency.
+    ///
+    /// `Null` if the entry carried none.
+    pub last_notarization: serde_json::Value,
+}
+
+impl CurrencyConverter {
+    /// Whether this converter can convert `currency` at all.
+    ///
+    /// The predicate is `currency ∈ reserves ∪ {converter_id}`, and the second
+    /// half is the part that is easy to miss — see
+    /// [`CurrencyConverter::reserves`].
+    #[must_use]
+    pub fn trades(&self, currency: &str) -> bool {
+        self.converter_id == currency || self.reserves.iter().any(|held| held == currency)
+    }
+
+    /// Whether this converter can route directly between two currencies.
+    #[must_use]
+    pub fn routes(&self, from: &str, to: &str) -> bool {
+        self.trades(from) && self.trades(to)
+    }
+}
+
+/// A VerusID together with the data published on it.
+///
+/// `getidentity` returns the identity; this returns it with its content maps
+/// filled in, which is what an application storing data on an identity needs to
+/// read back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityContent {
+    /// The identity itself, as [`ChainReader::identity`](crate::ChainReader)
+    /// would return it.
+    pub identity: IdentityRecord,
+    /// `contentmap` — 20-byte VDXF key to a single 32-byte value, both hex.
+    ///
+    /// The older and narrower of the two maps: one hash per key, so it holds a
+    /// reference to content rather than content.
+    pub content_map: BTreeMap<String, String>,
+    /// `contentmultimap` — a VDXF key to any number of structured values.
+    ///
+    /// Left as JSON deliberately. The values are VDXF-encoded objects whose
+    /// shape depends on the key, and giving them a type is a larger question
+    /// than reading them: see the `verus_tx::vdxf` module. This carries the
+    /// data so it is not lost; interpreting it is separate.
+    pub content_multimap: serde_json::Value,
+}
+
 /// Confirmations a coinbase output needs before it can be spent.
 ///
 /// A wallet that ignores this selects an immature coinbase and the daemon
@@ -599,6 +720,159 @@ impl RawOfferEntry<'_> {
             bucket: bucket.to_string(),
         })
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawCurrencyEntry {
+    pub currencydefinition: serde_json::Value,
+}
+
+impl RawCurrencyEntry {
+    pub(crate) fn into_typed(self) -> Result<CurrencySummary, RpcError> {
+        let definition = self.currencydefinition;
+        let text = |key: &str| -> Result<String, RpcError> {
+            definition
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| RpcError::Unexpected(format!("a currency definition has no {key}")))
+        };
+        // Required, not defaulted — the opposite of what a "sensible default"
+        // instinct suggests, and for a concrete reason. All four of these are
+        // present, integral and within `u32` on every one of the 290
+        // currencies, so `unwrap_or(0)` could never fire on an honest reply;
+        // it could only turn a missing, negative or oversized value into a
+        // convincing zero. And zero is never neutral here: `proofprotocol` is
+        // 1, 2 or 3 and decides the fee-output shape a sub-identity
+        // registration must carry, `options` decides what kind of currency
+        // this is, and an `endblock` of zero means "never ends".
+        let number = |key: &'static str| -> Result<u32, RpcError> {
+            definition
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    RpcError::Unexpected(format!("a currency definition has no usable {key}"))
+                })
+        };
+
+        Ok(CurrencySummary {
+            currency_id: text("currencyid")?,
+            name: text("name")?,
+            fully_qualified_name: text("fullyqualifiedname")?,
+            // Absent on a root chain, and that is the one case where absence
+            // means something rather than being a gap in the reply.
+            parent: definition
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            system_id: text("systemid")?,
+            start_block: number("startblock")?,
+            end_block: number("endblock")?,
+            options: number("options")?,
+            proof_protocol: number("proofprotocol")?,
+            definition,
+        })
+    }
+}
+
+/// One converter, whose definition hides behind a **key that is its own id**.
+///
+/// The entry carries four fields with names and one whose name is data — the
+/// same shape `getoffers` uses for its buckets — so the definition is found by
+/// elimination.
+///
+/// # Elimination alone is not safe, so it checks itself
+///
+/// "The key that is not one of these four" quietly assumes the daemon will
+/// never add a fifth named field. If it ever does, elimination picks that
+/// instead, and the failure is silent in a way that matters: `serde_json`'s map
+/// is a `BTreeMap`, so iteration is lexicographic and any new lowercase key
+/// sorting before `i` wins. What comes out is a converter whose id is a field
+/// name and whose reserve list is empty — and a router built on it then answers
+/// "no route" for every currency on the chain, with nothing raised anywhere.
+///
+/// The reply already carries the detector: a real definition has a
+/// `currencyid` equal to the key it sits under, on all 26 live entries. Testing
+/// it makes the elimination self-verifying instead of a bet on a future field
+/// list.
+///
+/// The remaining fields are required for the same reason `RawCurrencyEntry`
+/// requires its own: a converter with a fabricated height, an empty name or no
+/// reserves looks like an answer and is not one.
+pub(crate) fn converter_from_entry(
+    entry: serde_json::Value,
+) -> Result<CurrencyConverter, RpcError> {
+    const KNOWN: [&str; 4] = ["fullyqualifiedname", "height", "lastnotarization", "output"];
+
+    let serde_json::Value::Object(mut object) = entry else {
+        return Err(RpcError::Unexpected(
+            "a converter entry is not an object".into(),
+        ));
+    };
+
+    let converter_id = object
+        .keys()
+        .find(|key| !KNOWN.contains(&key.as_str()))
+        .ok_or_else(|| {
+            RpcError::Unexpected(
+                "a converter entry carries no definition under its own currency id".into(),
+            )
+        })?
+        .clone();
+    let definition = object.remove(&converter_id).expect("just found by key");
+
+    if definition.get("currencyid").and_then(|v| v.as_str()) != Some(converter_id.as_str()) {
+        return Err(RpcError::Unexpected(format!(
+            "a converter entry holds {converter_id} where its definition was expected; the reply \
+             shape has changed and a definition can no longer be found by elimination"
+        )));
+    }
+
+    let reserves: Vec<String> = definition
+        .get("currencies")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .ok_or_else(|| {
+            RpcError::Unexpected(format!(
+                "converter {converter_id} lists no reserve currencies"
+            ))
+        })?;
+
+    let name = object
+        .get("fullyqualifiedname")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            RpcError::Unexpected(format!(
+                "converter {converter_id} has no fullyqualifiedname"
+            ))
+        })?
+        .to_string();
+
+    let height = object
+        .get("height")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| RpcError::Unexpected(format!("converter {converter_id} has no height")))?;
+
+    // The reserve depths and prices — what a router actually prices against.
+    // The definition is the static half; this is the half that moves, and
+    // dropping it would leave the recorded height describing a state the caller
+    // no longer has.
+    let last_notarization = object.remove("lastnotarization").unwrap_or_default();
+
+    Ok(CurrencyConverter {
+        converter_id,
+        name,
+        height,
+        reserves,
+        definition,
+        last_notarization,
+    })
 }
 
 #[derive(Deserialize)]

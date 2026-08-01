@@ -13,9 +13,10 @@ use crate::json;
 use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
-    AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyPolicy,
-    IdentityRecord, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
-    RawConversionEstimate, RawCurrency, RawIdentity, RawOfferEntry,
+    converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate,
+    CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord,
+    OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
+    RawConversionEstimate, RawCurrency, RawCurrencyEntry, RawIdentity, RawOfferEntry,
 };
 
 /// Asking a node questions.
@@ -124,6 +125,41 @@ pub trait ChainReader {
     ) -> Result<ConversionEstimate, RpcError>;
     /// The current reserves, weights and prices of a fractional currency.
     fn currency_state(&self, name_or_id: &str) -> Result<serde_json::Value, RpcError>;
+    /// Every currency the chain knows about.
+    ///
+    /// One large reply — 290 currencies on VRSCTEST — and no pagination, so
+    /// fetch it once and keep it rather than calling it per lookup.
+    fn list_currencies(&self) -> Result<Vec<CurrencySummary>, RpcError>;
+    /// Which fractional currencies can convert **all** of these.
+    ///
+    /// The routing question a conversion needs and could not ask. A conversion
+    /// runs through a fractional currency holding both sides; naming one
+    /// currency lists every market it trades in, and naming two narrows that to
+    /// the markets that can route between them directly.
+    ///
+    /// **A converter trades its own currency as well as its reserves**, and the
+    /// answers reflect that: `["vlotto"]` returns vlotto itself, whose
+    /// `reserves` are `[VRSCTEST]` and do not mention vlotto. So test
+    /// membership with [`CurrencyConverter::trades`], not against
+    /// [`CurrencyConverter::reserves`] — the latter discards exactly that case.
+    ///
+    /// An empty list is a real answer: two currencies sharing no market give
+    /// one. An **unrecognised** currency does not — that is `-32602, "Invalid
+    /// first currency"` — so a typo cannot be mistaken for a thin market.
+    fn currency_converters(&self, currencies: &[&str]) -> Result<Vec<CurrencyConverter>, RpcError>;
+    /// The fee per kilobyte the node suggests for confirmation within `blocks`.
+    ///
+    /// `None` when the node will not estimate — it answers a **negative** value
+    /// for that, which is why this is not simply an amount. Too little recent
+    /// traffic is the usual cause, and on a quiet chain it is not unusual.
+    ///
+    /// Advisory. Nothing about it is consensus, and both public endpoints
+    /// currently answer the relay-fee floor of 0.000001 for every horizon
+    /// asked. Treat it as a floor to stay above, not a price to pay.
+    ///
+    /// Sent with exactly one argument: the allowlist refuses two as `-32601`,
+    /// and none is a `-1` usage error.
+    fn estimate_fee(&self, blocks: u32) -> Result<Option<Amount>, RpcError>;
     /// A VerusID, including the output that holds it.
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError>;
     /// A VerusID **as it stood at `height`**.
@@ -137,6 +173,12 @@ pub trait ChainReader {
     /// `api.verustest.net` is arity-sensitive, and a third argument is refused
     /// as `-32601` — see [the crate docs](crate).
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError>;
+    /// A VerusID together with the data published on it.
+    ///
+    /// [`ChainReader::identity`] returns the identity; this returns it with its
+    /// content maps filled in. That is the difference between reading who
+    /// controls an identity and reading what an application stored on it.
+    fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError>;
     /// The transaction that first created this identity — its registration.
     ///
     /// **Not the same as [`ChainReader::identity`]'s outpoint**, which tracks
@@ -515,9 +557,93 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         self.call(Method::GetCurrencyState, json!([name_or_id]))
     }
 
+    fn list_currencies(&self) -> Result<Vec<CurrencySummary>, RpcError> {
+        let entries: Vec<RawCurrencyEntry> = self.call(Method::ListCurrencies, json!([]))?;
+        let currencies: Vec<CurrencySummary> = entries
+            .into_iter()
+            .map(RawCurrencyEntry::into_typed)
+            .collect::<Result<_, _>>()?;
+        refuse_repeats(&currencies, |c| &c.currency_id, "listcurrencies")?;
+        Ok(currencies)
+    }
+
+    fn currency_converters(&self, currencies: &[&str]) -> Result<Vec<CurrencyConverter>, RpcError> {
+        let entries: Vec<serde_json::Value> =
+            self.call(Method::GetCurrencyConverters, json!(currencies))?;
+        let converters: Vec<CurrencyConverter> = entries
+            .into_iter()
+            .map(converter_from_entry)
+            .collect::<Result<_, _>>()?;
+        refuse_repeats(&converters, |c| &c.converter_id, "getcurrencyconverters")?;
+        Ok(converters)
+    }
+
+    fn estimate_fee(&self, blocks: u32) -> Result<Option<Amount>, RpcError> {
+        let body = self.call_raw(Method::EstimateFee, json!([blocks]))?;
+        let result = result_of(&body, Method::EstimateFee)?;
+
+        // A negative answer means "I will not estimate", not a negative fee.
+        // It has to be recognised before the money reader sees it, because
+        // that reader refuses a negative amount — correctly — and would turn a
+        // legitimate "no opinion" into a parse failure.
+        // `unquote` first: this crate tolerates a quoted number everywhere
+        // else, and checking the bare token would let `"-1"` past to become a
+        // `LossyNumber` — fail-closed, but reported as a malformed reply
+        // rather than as the node declining to answer.
+        if json::unquote(result.get()).trim_start().starts_with('-') {
+            return Ok(None);
+        }
+        json::native_coins_lenient(result, "estimatefee").map(Some)
+    }
+
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
         let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id]))?;
         raw.into_typed()
+    }
+
+    fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError> {
+        let raw: RawIdentity = self.call(Method::GetIdentityContent, json!([name_or_id]))?;
+        let identity = raw.into_typed()?;
+
+        // Each value has to actually be the 32-byte hash the type promises. The
+        // tempting `as_str().unwrap_or_default()` turns anything else into an
+        // empty string, and to an application reading back its own stored data
+        // that is indistinguishable from having published nothing — the one
+        // reading worse than an error.
+        let mut content_map = BTreeMap::new();
+        if let Some(map) = identity
+            .identity
+            .get("contentmap")
+            .and_then(|v| v.as_object())
+        {
+            for (key, value) in map {
+                let hex = value.as_str().ok_or_else(|| {
+                    RpcError::Unexpected(format!("contentmap entry {key} is not a string"))
+                })?;
+                if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(RpcError::Unexpected(format!(
+                        "contentmap entry {key} is {hex:?}, not a 32-byte hash"
+                    )));
+                }
+                content_map.insert(key.clone(), hex.to_string());
+            }
+        }
+
+        // Absent entirely on older identity versions rather than empty — the
+        // multimap arrived with version 3, so a v1 or v2 identity has no such
+        // field at all. Null is the honest reading of "this identity cannot
+        // carry one".
+        let content_multimap = identity
+            .identity
+            .get("contentmultimap")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        Ok(IdentityContent {
+            identity,
+            content_map,
+            content_multimap,
+        })
     }
 
     fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
@@ -645,6 +771,29 @@ impl<T: Transport> Broadcaster for RpcClient<T> {
         // reporting a broken node.
         check_hash(&txid, "sendrawtransaction")
     }
+}
+
+/// Refuse a list that names the same thing twice.
+///
+/// The same posture the UTXO, delta and offer readers take: a repeat inflates
+/// whatever is folded from the answer, and here it would put one currency in a
+/// list twice — a wallet showing a duplicate, or a router weighing one market
+/// as two.
+fn refuse_repeats<T>(
+    items: &[T],
+    id: impl Fn(&T) -> &String,
+    what: &'static str,
+) -> Result<(), RpcError> {
+    let mut seen = std::collections::HashSet::with_capacity(items.len());
+    for item in items {
+        if !seen.insert(id(item)) {
+            return Err(RpcError::Unexpected(format!(
+                "{what} named {} more than once",
+                id(item)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A 32-byte hash, as a daemon prints one.
