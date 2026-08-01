@@ -95,6 +95,25 @@ impl From<verus_tx::TxError> for WasmError {
     }
 }
 
+/// A flow failure, coded by the *inner* error where there is one.
+///
+/// `FlowError::Tx` and `FlowError::Rpc` are pass-through wrappers, and taking
+/// the `Debug` prefix of the wrapper would code every one of them as `"Tx"` or
+/// `"Rpc"`. That is not merely vague, it is **inconsistent**: the same
+/// underlying failure would surface as `InsufficientFunds` from
+/// `key.send(..)` and as `Tx` from `key.planSend(..)`, so a caller's
+/// `e.name === "InsufficientFunds"` would work on one path and silently not on
+/// the other. Unwrapping them keeps the two paths speaking the same language.
+impl From<verus_flows::FlowError> for WasmError {
+    fn from(error: verus_flows::FlowError) -> Self {
+        match error {
+            verus_flows::FlowError::Tx(inner) => Self::from_source(&inner),
+            verus_flows::FlowError::Rpc(inner) => Self::from_source(&inner),
+            other => Self::from_source(&other),
+        }
+    }
+}
+
 impl From<verus_keys::KeyError> for WasmError {
     fn from(error: verus_keys::KeyError) -> Self {
         Self::from_source(&error)

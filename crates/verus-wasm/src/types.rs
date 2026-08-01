@@ -52,6 +52,18 @@ extern "C" {
     /// TypeScript `MnemonicCheck`.
     #[wasm_bindgen(typescript_type = "MnemonicCheck")]
     pub type MnemonicCheckValue;
+    /// TypeScript `PlanSendRequest`.
+    #[wasm_bindgen(typescript_type = "PlanSendRequest")]
+    pub type PlanSendRequestValue;
+    /// TypeScript `SendStep`.
+    #[wasm_bindgen(typescript_type = "SendStep")]
+    pub type SendStepValue;
+    /// TypeScript `HistoryRequest`.
+    #[wasm_bindgen(typescript_type = "HistoryRequest")]
+    pub type HistoryRequestValue;
+    /// TypeScript `HistoryStep`.
+    #[wasm_bindgen(typescript_type = "HistoryStep")]
+    pub type HistoryStepValue;
 
     /// TypeScript `Utxo[]`.
     #[wasm_bindgen(typescript_type = "Utxo[]")]
@@ -172,6 +184,10 @@ mod tests {
     fn every_field_of_every_dto_is_declared() {
         use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
+        use crate::flows::{
+            HistoryRequest, HistoryStep, JsHistoryEntry, JsPlannedTransaction, PlanSendRequest,
+            SendStep,
+        };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
 
@@ -202,6 +218,36 @@ mod tests {
                 reason: Some(String::new()),
                 position: Some(0),
                 ..crate::mnemonic::MnemonicCheck::default()
+            },
+        );
+
+        // The flow bindings. The two step types carry an optional payload that
+        // is absent on every `"ask"` round, so both are populated here — a
+        // `skip_serializing_if` field is exactly the one a drift check would
+        // otherwise never see.
+        assert_declared("PlanSendRequest", &PlanSendRequest::default());
+        assert_declared("PlannedTransaction", &JsPlannedTransaction::default());
+        assert_declared(
+            "SendStep",
+            &SendStep {
+                transaction: Some(JsPlannedTransaction::default()),
+                ..SendStep::default()
+            },
+        );
+        assert_declared(
+            "HistoryRequest",
+            &HistoryRequest {
+                start_height: Some(0),
+                end_height: Some(0),
+                ..HistoryRequest::default()
+            },
+        );
+        assert_declared("HistoryEntry", &JsHistoryEntry::default());
+        assert_declared(
+            "HistoryStep",
+            &HistoryStep {
+                entries: Some(Vec::new()),
+                ..HistoryStep::default()
             },
         );
     }
@@ -313,6 +359,7 @@ mod tests {
     #[test]
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
+        use crate::flows::{HistoryRequest, PlanSendRequest};
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
 
@@ -355,6 +402,8 @@ mod tests {
         check::<TokenSendRequest>("TokenSendRequest", &TokenSendRequest::SHAPE);
         check::<SignRequest>("SignRequest", &SignRequest::SHAPE);
         check::<VerifyRequest>("VerifyRequest", &VerifyRequest::SHAPE);
+        check::<PlanSendRequest>("PlanSendRequest", &PlanSendRequest::SHAPE);
+        check::<HistoryRequest>("HistoryRequest", &HistoryRequest::SHAPE);
 
         // Every field that carries objects, reached through the pointer the
         // guard actually follows rather than through the type it ought to be.

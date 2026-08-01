@@ -18,6 +18,8 @@
 
 import {
   Key,
+  Answers,
+  planHistory,
   parseCoins,
   formatCoins,
   verifyMessage,
@@ -38,6 +40,12 @@ import {
   type MnemonicCheck,
   type Utxo,
   type TokenAmount,
+  type PlanSendRequest,
+  type SendStep,
+  type HistoryRequest,
+  type HistoryStep,
+  type HistoryEntry,
+  type PlannedTransaction,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -240,4 +248,49 @@ if (narrowed.kind === "unsupportedCryptoCondition") {
 // @ts-expect-error "valid" is not one of the reasons
 const notAReason: boolean = validateMnemonic("…").reason === "valid";
 
+// ---------------------------------------------------------------------------
+// The flow bindings.
+// ---------------------------------------------------------------------------
+
+declare const answers: Answers;
+
+const plan: PlanSendRequest = { to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX", satoshis: "150000000" };
+const step: SendStep = key.planSend(plan, answers);
+
+// `ask` is a list of complete request bodies, so it has to be strings — a
+// declaration that let them be objects would invite a caller to re-encode
+// them, and a re-encoded body is a cache key that matches nothing.
+const bodies: string[] = step.ask;
+
+// The payload is optional, because an asking round has none. A `.d.ts` that
+// declared it required would let a caller read `step.transaction.hex` on an
+// "ask" round and get a runtime `TypeError`.
+const built: PlannedTransaction | undefined = step.transaction;
+
+// And a planned transaction is NOT a SignedTransaction: it carries no
+// inputsUsed, because a flow does not report them and an empty list would be a
+// lie about which coins are committed.
+// @ts-expect-error a planned transaction does not list its inputs
+const inputs = step.transaction?.inputsUsed;
+
+const read: HistoryRequest = { addresses: ["RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX"] };
+const reading: HistoryStep = planHistory(read, answers);
+const entries: HistoryEntry[] | undefined = reading.entries;
+
+// Money is a string here too, and the per-currency map is strings all the way
+// down — this is exactly where a `Record<string, number>` would quietly round.
+const moved: string | undefined = entries?.[0].netNative;
+const perCurrency: Record<string, string> | undefined = entries?.[0].netCurrencies;
+
+// @ts-expect-error an amount is a decimal string, never a number
+const numericAmount: PlanSendRequest = { to: "R…", satoshis: 150000000 };
+
+// @ts-expect-error a mistyped optional field is refused, as everywhere else
+const misspelled: HistoryRequest = { addresses: [], startHieght: 1 };
+
+// @ts-expect-error a height range is a number, not a decimal string
+const stringHeight: HistoryRequest = { addresses: [], startHeight: "1" };
+
 void [floatMoney, typo, unbounded, confused, wrongShape, notAReason];
+void [bodies, built, inputs, entries, moved, perCurrency];
+void [numericAmount, misspelled, stringHeight];

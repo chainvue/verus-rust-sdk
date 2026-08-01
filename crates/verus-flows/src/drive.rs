@@ -90,6 +90,26 @@
 //! Where reads genuinely do depend on one another, no reordering helps and the
 //! rounds are real: an identity's outpoint cannot be asked for before the
 //! identity, and a referral chain is walked one registration at a time.
+//!
+//! # Randomness inside an operation is survivable; randomness in a *request* is not
+//!
+//! Re-execution rests on a request body being a stable cache key, so the
+//! obvious worry is an operation that is not deterministic. There is one:
+//! [`prepare_registration`](crate::prepare_registration) draws a fresh salt on
+//! every call, and therefore a different one on every round.
+//!
+//! It is harmless, and it is worth saying why rather than leaving someone to
+//! re-derive it. No request that operation makes mentions the salt — it reads
+//! chain policy, a name and an address — so every round asks the same questions
+//! and the cache converges. The salt of the round that finally returns is the
+//! salt in the `Pending` that comes back, alongside the commitment built from
+//! it. Nothing inconsistent escapes.
+//!
+//! What would break this is randomness that reaches a request body, because
+//! then each round would ask a question the last one did not and the operation
+//! would run to [`MAX_ROUNDS`] without converging. That is the thing not to
+//! add. (Broadcasting under re-execution is a separate matter, and not
+//! possible: see below.)
 
 use verus_rpc::{Cassette, RpcClient, RpcError};
 

@@ -3,10 +3,15 @@
 //! Both bindings take the same shape — the UTXOs a wallet found, where the
 //! value goes, where change returns, and when the transaction expires — and
 //! give back signed hex plus the txid it will have. Nothing here talks to a
-//! node: finding the UTXOs and broadcasting the result are the application's,
-//! because in a browser those are `fetch` calls the application already knows
-//! how to make, and because a signer that cannot reach the network is a signer
-//! that cannot leak to one.
+//! node: a signer that cannot reach the network is a signer that cannot leak to
+//! one.
+//!
+//! **Finding the UTXOs is the caller's** — which is a real cost, because
+//! `getaddressutxos` does not say which outputs are immature coinbases and
+//! spending one is a rejection that names nothing.
+//! [`Key::plan_send`](crate::flows) does that lookup with the SDK's own rules
+//! and is the better default; this stays for a wallet that already tracks its
+//! own outputs, or is signing for a chain view it gathered elsewhere.
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;

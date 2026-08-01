@@ -22,9 +22,10 @@ import assert from "node:assert/strict";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
-const { Key, parseCoins, formatCoins, satsPerCoin, decodeOutput, tokenBalances,
-        verifyMessage, signatureBlockHeight, vdxfKey, rootNamespace, identityId,
-        validateMnemonic, mnemonicToSeed } = wasm;
+const { Key, Answers, planHistory, parseCoins, formatCoins, satsPerCoin,
+        decodeOutput, tokenBalances, verifyMessage, signatureBlockHeight,
+        vdxfKey, rootNamespace, identityId, validateMnemonic,
+        mnemonicToSeed } = wasm;
 
 const vectors = JSON.parse(
   readFileSync(resolve(here, "../../../../fixtures/transparent/vectors.json"), "utf8"),
@@ -710,6 +711,196 @@ console.log("\nrecovery phrases");
   // Deriving from words that do not check out is refused rather than done.
   assert.throws(() => mnemonicToSeed(PHRASE.replace("about", "abandon"), null), /checksum/i);
   ok("a seed is not derived from a phrase that fails its checksum");
+}
+
+// ---------------------------------------------------------------------------
+// Whole flows, driven the way a page would drive them.
+//
+// No network: a `post` stands in for `fetch` and answers from a small table of
+// recorded replies. What is under test is the loop itself — that the module
+// asks for what it needs, takes the answers back, converges, and signs the same
+// bytes the direct, vector-proven path signs.
+// ---------------------------------------------------------------------------
+
+console.log("\nflows, driven with no network");
+{
+  const TIP = 1167555;
+  const EXPIRY_BLOCKS = 20;            // the SDK's default, added to the tip
+  const vector = vectors.vectors[0];
+  const key = Key.fromWif(vector.wif);
+  const address = key.address();
+  // The vector's own funding script: this key spends it upstream, so it is
+  // this address's P2PKH script without having to derive one here.
+  const SCRIPT = vector.utxos[0].script_pubkey;
+  const TXID = "5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e";
+  const HEIGHT = 1166385;              // old enough that no maturity probe follows
+  const SATS = 1000000000;
+  const PAYEE = "RPsQDnaxXgrLjcVBh3SpvCpTabWxAdMdzu";
+
+  const replies = {
+    getblockcount: JSON.stringify({ result: TIP }),
+    getaddressutxos: JSON.stringify({
+      result: [{
+        address, blocktime: 1785262420, height: HEIGHT, isspendable: 1,
+        outputIndex: 1, satoshis: SATS, script: SCRIPT, txid: TXID,
+      }],
+    }),
+    // The live capture, so the chain-id read is answered by what a daemon
+    // really sends rather than by a hand-written subset of it.
+    getinfo: readFileSync(
+      resolve(here, "../../../../fixtures/rpc/getinfo.json"), "utf8"),
+    getaddressdeltas: JSON.stringify({
+      result: [{
+        address, blockindex: 1, blocktime: 1785262420, height: HEIGHT,
+        index: 0, satoshis: SATS, txid: TXID,
+      }],
+    }),
+  };
+
+  let posted = [];
+  /** The page's `fetch`, minus the network. */
+  const post = (body) => {
+    posted.push(body);
+    const { method } = JSON.parse(body);
+    const reply = replies[method];
+    assert.ok(reply, `nothing recorded for ${method}`);
+    return reply;
+  };
+
+  // -- a payment, planned ---------------------------------------------------
+  const answers = new Answers();
+  let step;
+  let rounds = 0;
+  for (;;) {
+    step = key.planSend({ to: PAYEE, satoshis: "150000000" }, answers);
+    if (step.kind === "ready") break;
+    rounds += 1;
+    assert.ok(step.ask.length > 0, "an asking round must ask for something");
+    for (const body of step.ask) answers.record(body, post(body));
+  }
+
+  assert.equal(rounds, 1, "the tip and the outputs go out together");
+  assert.deepEqual(
+    posted.map((body) => JSON.parse(body).method).sort(),
+    ["getaddressutxos", "getblockcount"],
+  );
+  ok("a payment plans in one round trip");
+
+  // The claim everything rests on: driving the flow signs exactly what the
+  // direct path signs from the same view of the chain — and the direct path is
+  // the one checked against the TypeScript SDK's bytes above.
+  const direct = key.send({
+    utxos: [{ txid: TXID, vout: 1, satoshis: String(SATS), scriptPubKey: SCRIPT }],
+    recipients: [{ address: PAYEE, satoshis: "150000000" }],
+    changeAddress: address,
+    expiryHeight: TIP + EXPIRY_BLOCKS,
+  });
+  assert.equal(step.transaction.hex, direct.hex);
+  assert.equal(step.transaction.txid, direct.txid);
+  assert.equal(step.transaction.fee, direct.fee);
+  ok("a planned payment is byte-identical to a directly built one");
+
+  // A plan reads. It cannot ask the page to write, and that is what makes it
+  // safe to re-run once per round.
+  assert.equal(
+    posted.some((body) => JSON.parse(body).method === "sendrawtransaction"),
+    false,
+  );
+  ok("planning never asks the page to broadcast");
+  answers.free();
+
+  // -- a body that came back changed ---------------------------------------
+  // The strings in `ask` are the cache keys. A page that re-encodes one records
+  // an answer to a question nobody asked, so the same round repeats — and the
+  // round cap is what turns that from a tab fetching forever into an error.
+  {
+    const stubborn = new Answers();
+    let thrown;
+    try {
+      for (let i = 0; i < 40; i += 1) {
+        const s = key.planSend({ to: PAYEE, satoshis: "150000000" }, stubborn);
+        if (s.kind === "ready") break;
+        // Same JSON, different bytes.
+        for (const body of s.ask) stubborn.record(`${body} `, post(body));
+      }
+    } catch (e) {
+      thrown = e;
+    }
+    assert.ok(thrown, "a plan that never converges must fail rather than spin");
+    assert.equal(thrown.name, "Stalled");
+    stubborn.free();
+    ok("a mangled request body stalls loudly instead of looping forever");
+  }
+
+  // -- history, which needs no key -----------------------------------------
+  {
+    posted = [];
+    const reading = new Answers();
+    let entries;
+    let readRounds = 0;
+    for (;;) {
+      const s = planHistory(
+        { addresses: [address], startHeight: 1166000, endHeight: TIP },
+        reading,
+      );
+      if (s.kind === "ready") { entries = s.entries; break; }
+      readRounds += 1;
+      for (const body of s.ask) reading.record(body, post(body));
+    }
+
+    assert.equal(readRounds, 1, "the chain id and the deltas go out together");
+    assert.deepEqual(
+      posted.map((body) => JSON.parse(body).method).sort(),
+      ["getaddressdeltas", "getinfo"],
+    );
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].txid, TXID);
+    // Money is a string here as everywhere, with the sign carried in it.
+    assert.equal(typeof entries[0].netNative, "string");
+    assert.equal(entries[0].netNative, String(SATS));
+    assert.equal(entries[0].spentSomething, false);
+    reading.free();
+    ok("a history read plans in one round trip and reports string amounts");
+  }
+
+  // -- the name a caller branches on ---------------------------------------
+  {
+    const broke = new Answers();
+    let thrown;
+    try {
+      for (let i = 0; i < 8; i += 1) {
+        const s = key.planSend({ to: PAYEE, satoshis: "999999999999" }, broke);
+        if (s.kind === "ready") break;
+        for (const body of s.ask) broke.record(body, post(body));
+      }
+    } catch (e) {
+      thrown = e;
+    }
+    assert.ok(thrown, "asking for more than the address holds must fail");
+    // Not "InsufficientFunds" wrapped as "Tx": `e.name` has to mean the same
+    // thing on the planned path as on the direct one, or a caller's `catch`
+    // works on one and silently not on the other.
+    assert.equal(thrown.name, "InsufficientFunds");
+    broke.free();
+    ok("a flow error is named by its own variant, not by its wrapper");
+  }
+
+  // -- the request sanitizer applies here too ------------------------------
+  {
+    const spare = new Answers();
+    assert.throws(
+      () => key.planSend({ to: PAYEE, satoshis: "1", expiryHieght: 1 }, spare),
+      (e) => e.name === "UnknownField",
+    );
+    assert.throws(
+      () => key.planSend({ to: PAYEE, satoshis: 150000000 }, spare),
+      (e) => e.name === "InvalidArgument",
+    );
+    spare.free();
+    ok("a plan request is sanitized like every other request");
+  }
+
+  key.free();
 }
 
 console.log(`\n${checks} checks passed under node ${process.version}\n`);

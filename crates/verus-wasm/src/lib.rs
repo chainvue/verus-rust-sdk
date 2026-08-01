@@ -11,16 +11,23 @@
 //!
 //! # What it does, and what it deliberately does not
 //!
-//! It builds and signs. It does not fetch, and it does not broadcast.
+//! It builds and signs. **It never opens a socket, and it never broadcasts.**
+//! JavaScript does the fetching; WebAssembly holds the key and makes the bytes.
 //!
-//! That is not an omission waiting to be filled. `verus-rpc` and `verus-flows`
-//! are built on a **synchronous** transport, and a browser has no synchronous
-//! `fetch` — binding them would mean either an async duplicate of every flow or
-//! a blocking call the main thread cannot make. Meanwhile the thing they would
-//! wrap, JSON-RPC over HTTP, is a few lines of JavaScript an application
-//! already knows how to write, with its own retries, its own auth and its own
-//! node choice. So the split is: **JavaScript asks the questions, WebAssembly
-//! holds the key and makes the bytes.**
+//! That split is kept even now that whole SDK operations run here. An earlier
+//! version of this page said the flows could not be bound at all, because
+//! `verus-rpc` and `verus-flows` are built on a **synchronous** transport and a
+//! browser has no synchronous `fetch`. The premise was right and the conclusion
+//! was wrong: the answer was not an async duplicate of every flow but to stop
+//! the flows doing their own I/O. [`flows`] is that — an operation runs against
+//! what is already known and hands back the requests it still needs, and the
+//! page fetches them. Same Rust, no second implementation, and still no HTTP
+//! client compiled into the module.
+//!
+//! Use [`flows`] when you want the SDK's own judgement — which coins are
+//! spendable *now*, what a transaction should expire at. Use the direct
+//! builders below when the application already has the data and only wants
+//! bytes signed.
 //!
 //! ```js
 //! import init, { Key, parseCoins } from "@chainvue/verus-wasm";
@@ -83,6 +90,7 @@ use wasm_bindgen::prelude::*;
 pub mod decode;
 pub mod dto;
 pub mod error;
+pub mod flows;
 pub mod keys;
 pub mod login;
 pub mod mnemonic;
