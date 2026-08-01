@@ -43,7 +43,7 @@ pub(crate) fn request<P: serde::Serialize>(
         params,
     };
     serde_json::to_string(&body)
-        .map(RequestBody::new)
+        .map(|text| RequestBody::new(text, method.is_write()))
         .map_err(|e| RpcError::Malformed(format!("could not build request: {e}")))
 }
 

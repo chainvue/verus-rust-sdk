@@ -133,12 +133,26 @@ pub fn currency_names(
     reader: &impl ChainReader,
     currencies: impl IntoIterator<Item = CurrencyId>,
 ) -> Result<BTreeMap<CurrencyId, String>, FlowError> {
+    // Every lookup is issued before any is inspected. The currencies are known
+    // from the argument and none depends on another, so a `?`-shaped loop
+    // would ask for them one at a time — and against the driver in
+    // [`crate::drive`] that is one network round trip *per currency*. A wallet
+    // naming sixteen tokens would exhaust the round budget and fail, which is
+    // neither a bug in the driver nor in this function. Collect, then fold.
+    let asked: Vec<(CurrencyId, String, Result<_, verus_rpc::RpcError>)> = currencies
+        .into_iter()
+        .map(|currency| {
+            let address =
+                verus_keys::Address::new(verus_keys::AddressKind::Identity, currency.to_bytes())
+                    .to_string();
+            let answer = reader.currency(&address);
+            (currency, address, answer)
+        })
+        .collect();
+
     let mut names = BTreeMap::new();
-    for currency in currencies {
-        let address =
-            verus_keys::Address::new(verus_keys::AddressKind::Identity, currency.to_bytes())
-                .to_string();
-        match reader.currency(&address) {
+    for (currency, address, answer) in asked {
+        match answer {
             Ok(policy) => {
                 // Free consistency check: a node that answers about a
                 // different currency than the one asked for is confused or

@@ -112,9 +112,8 @@ pub fn send_from_identity(
     amount: Amount,
 ) -> Result<Sent, FlowError> {
     let to: Address = to.parse()?;
-    let record = reader
-        .identity(identity)
-        .map_err(|_| FlowError::NoSuchIdentity(identity.to_string()))?;
+    let record = crate::error::look_up_identity(reader, identity)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
 
     // Refuse everything the chain would refuse later with a message that
     // names nothing: a revoked identity cannot spend, a key the identity does

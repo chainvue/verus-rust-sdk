@@ -64,8 +64,13 @@ impl Funding {
 /// [`COINBASE_MATURITY`] — see the module docs for why that is the right
 /// number and not one per output.
 pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, FlowError> {
-    let tip = reader.block_count()?;
-    let found = reader.address_utxos(&[address])?;
+    // Issued together, unwrapped after: neither read needs the other, and
+    // against a driver that cannot answer immediately the `?` would stop the
+    // operation at the first one. See [`crate::drive`].
+    let tip = reader.block_count();
+    let found = reader.address_utxos(&[address]);
+    let (tip, found) = (tip?, found?);
+
     let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
     let mature = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
     let mature_outpoints: Vec<_> = mature.iter().map(|u| (u.txid, u.vout)).collect();
@@ -111,13 +116,26 @@ fn probe_coinbase_heights(
     found: &[AddressUtxo],
     tip: u32,
 ) -> Result<Vec<u32>, FlowError> {
+    // Every probe is issued before any is unwrapped. The probes are mutually
+    // independent, so a `?` inside the loop would make each one its own network
+    // round trip against a non-blocking driver — turning a wallet with five
+    // young outputs into five sequential fetches. Collecting first costs a
+    // `Vec` and makes it one. See [`crate::drive`].
+    let probes: Vec<(u32, Result<bool, FlowError>)> = found
+        .iter()
+        .filter(|utxo| utxo.confirmations(tip) < COINBASE_MATURITY)
+        .map(|utxo| {
+            (
+                utxo.height,
+                is_coinbase(reader, &utxo.utxo.txid.to_display_hex()),
+            )
+        })
+        .collect();
+
     let mut heights = Vec::new();
-    for utxo in found {
-        if utxo.confirmations(tip) >= COINBASE_MATURITY {
-            continue;
-        }
-        if is_coinbase(reader, &utxo.utxo.txid.to_display_hex())? {
-            heights.push(utxo.height);
+    for (height, probe) in probes {
+        if probe? {
+            heights.push(height);
         }
     }
     Ok(heights)

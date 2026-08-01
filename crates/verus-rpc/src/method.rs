@@ -79,7 +79,7 @@ impl Method {
     ///
     /// Exactly one method can, which is the property the read/write split in
     /// [`crate::client`] rests on.
-    const fn is_write(self) -> bool {
+    pub(crate) const fn is_write(self) -> bool {
         matches!(self, Method::SendRawTransaction)
     }
 

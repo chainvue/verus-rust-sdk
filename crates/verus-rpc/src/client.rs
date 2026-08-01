@@ -313,6 +313,15 @@ impl<T: Transport> RpcClient<T> {
         &self.transport
     }
 
+    /// Take the transport back.
+    ///
+    /// For a driver that hands a [`Cassette`](crate::Cassette) to an operation
+    /// and needs it back afterwards to fill in what was missing. The client is
+    /// a thin wrapper, so nothing is lost by unwrapping it between rounds.
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
     /// Send one request and hand back the parsed result.
     ///
     /// Private, and takes a [`Method`] rather than a string, so the set of

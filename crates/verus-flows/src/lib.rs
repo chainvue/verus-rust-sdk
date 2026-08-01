@@ -70,6 +70,7 @@
 pub mod balances;
 pub mod broadcast;
 pub mod convert;
+pub mod drive;
 pub mod error;
 pub mod funding;
 pub mod history;

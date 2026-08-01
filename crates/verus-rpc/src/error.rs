@@ -82,4 +82,38 @@ pub enum RpcError {
     /// does not fit, a hash of the wrong length.
     #[error("value out of range: {0}")]
     OutOfRange(String),
+
+    /// Not a failure: a request has not been answered **yet**.
+    ///
+    /// Only [`Cassette`](crate::Cassette) produces this, and only as the way an
+    /// operation says what it still needs to know. A driver catches it, fetches
+    /// what was recorded, and runs the operation again against a fuller cache.
+    ///
+    /// It exists because a flow that needs an answer it does not have simply
+    /// has to stop, and stopping is spelled `Err` in Rust. That is the whole
+    /// mechanism — no state machine, no async colouring, and no second copy of
+    /// any flow.
+    ///
+    /// **Seeing this as a caller means the driver has a bug**, not that there
+    /// is a condition to handle: either an operation was given a `Cassette`
+    /// with nobody driving it, or it was still asking questions when the round
+    /// budget ran out.
+    #[error("an answer is needed before this can continue — a driver should have caught this")]
+    AnswerNeeded,
+
+    /// An operation tried to **broadcast** through a
+    /// [`Cassette`](crate::Cassette).
+    ///
+    /// Refused rather than recorded, and that distinction is the point. A
+    /// cassette exists to let an operation be re-run; a broadcast that was
+    /// merely *recorded* would look to a driver like one more request to go and
+    /// fetch, and fetching it means sending the transaction — once per round,
+    /// with different bytes each time if anything about the operation varies.
+    ///
+    /// So this is not [`RpcError::AnswerNeeded`] and must never be treated as
+    /// it: there is no answer to go and get.
+    #[error(
+        "a broadcast cannot be made through a cassette — an operation being re-run must only read"
+    )]
+    WriteThroughCassette,
 }

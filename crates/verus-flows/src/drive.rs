@@ -1,0 +1,279 @@
+//! Running an operation that does no I/O of its own.
+//!
+//! Every operation in this crate is written as straight-line code against a
+//! [`ChainReader`](verus_rpc::ChainReader). That reads well and it is how the
+//! flows are tested — but it needs a reader that answers *now*, and a browser
+//! has no synchronous network to answer from.
+//!
+//! This module is how the same code runs in both places. It does not rewrite
+//! the operations, duplicate them in async, or move any of them to JavaScript;
+//! it changes what they are handed.
+//!
+//! # The two callers
+//!
+//! **Native code needs nothing from this module.** It passes an
+//! `RpcClient<HttpTransport>` as it always did; every request is answered as it
+//! is made, so the operation finishes in one pass and no round machinery
+//! engages. There is deliberately no blocking driver here, because there is
+//! nothing for one to do.
+//!
+//! [`advance`] is for the other case. It performs **no I/O at all**: it runs
+//! the operation against what is already known and returns either the finished
+//! value or the requests still outstanding. A browser calls it in a loop, doing
+//! the fetching itself between calls.
+//!
+//! ```no_run
+//! # use verus_flows::drive::{advance, Step, Answers};
+//! # use verus_flows::FlowError;
+//! # fn post(_body: &str) -> Result<String, FlowError> { unimplemented!() }
+//! # fn example() -> Result<(), FlowError> {
+//! let mut answers = Answers::new();
+//! let signed = loop {
+//!     match advance(&mut answers, |client| verus_flows::history::history(client, &["R…"], None))? {
+//!         Step::Ready(value) => break value,
+//!         Step::Ask(bodies) => {
+//!             for body in bodies {
+//!                 let reply = post(&body)?;
+//!                 answers.record(body, reply);
+//!             }
+//!         }
+//!     }
+//! };
+//! # let _ = signed;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Read-only, and the compiler says so
+//!
+//! An operation driven this way **runs more than once** — once per round, each
+//! time from the beginning, against a cache that has grown. That is fine for
+//! reading and catastrophic for writing: re-running a broadcast would broadcast
+//! twice, and a failed broadcast is already ambiguous enough that this crate
+//! forbids retrying one (see [`broadcast`](mod@crate::broadcast)).
+//!
+//! So a driven operation reads and hands back finished bytes; the caller
+//! broadcasts, once, outside the loop. Nothing here can enforce that at
+//! runtime — but the operations that take no
+//! [`Broadcaster`](verus_rpc::Broadcaster) cannot broadcast, and that is a
+//! signature rather than a promise.
+//!
+//! # What a round costs, and how to spend fewer
+//!
+//! A round ends when an operation asks for something it cannot answer. It
+//! resumes from the start, gets its earlier questions from the cache for free,
+//! and stops at the next genuinely new one.
+//!
+//! **A round is therefore one `?` on an unanswered read — not one level of the
+//! dependency graph.** Two reads that need nothing from each other still cost
+//! two rounds if the first is unwrapped before the second is issued, because
+//! `?` returns and the second never runs. This was measured, not assumed:
+//! `history` makes two independent reads and took two rounds until they were
+//! reordered.
+//!
+//! The idiom that fixes it is small and local — issue, then unwrap:
+//!
+//! ```ignore
+//! let tip = reader.block_count();          // no `?`
+//! let found = reader.address_utxos(&[a]);  // no `?`
+//! let (tip, found) = (tip?, found?);       // both already asked for
+//! ```
+//!
+//! It costs nothing on a blocking client **when the reads succeed**, which is
+//! the case that matters — and it halves the latency on a browser. On the
+//! failure path it does cost something: the second request is now issued even
+//! though the first already failed, so a dead node is two timeouts rather than
+//! one. Worth knowing, not worth the round trip. The same shape applies to a loop: collect the results, then unwrap
+//! them, or every iteration is its own network round trip. [`funding`](mod@crate::funding)
+//! does exactly that for its coinbase probes.
+//!
+//! Where reads genuinely do depend on one another, no reordering helps and the
+//! rounds are real: an identity's outpoint cannot be asked for before the
+//! identity, and a referral chain is walked one registration at a time.
+
+use verus_rpc::{Cassette, RpcClient, RpcError};
+
+use crate::error::FlowError;
+
+/// How many times an operation may be resumed before this gives up.
+///
+/// A generous ceiling over the deepest flow in the crate. It is a backstop
+/// against an operation that asks for something new every round and never
+/// converges — a bug, and one that would otherwise present as a browser tab
+/// fetching forever.
+pub const MAX_ROUNDS: usize = 16;
+
+/// What an operation still needs, or what it produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step<T> {
+    /// Complete JSON-RPC bodies to POST, then hand back through
+    /// [`Answers::record`].
+    ///
+    /// They are independent of one another: an operation that needed one
+    /// answer to form the next question would have stopped at the first. So
+    /// they can be fetched concurrently, and on a browser they should be.
+    Ask(Vec<String>),
+    /// The operation finished.
+    Ready(T),
+}
+
+/// What is known so far, carried between rounds.
+///
+/// One of these belongs to one operation's planning and is discarded
+/// afterwards. That is deliberate rather than wasteful: every round sees the
+/// same tip, the same UTXO set and the same identity, so a plan cannot be built
+/// half from one view of the chain and half from another.
+#[derive(Debug, Default)]
+pub struct Answers {
+    cassette: Cassette,
+    rounds: usize,
+}
+
+impl Answers {
+    /// Nothing known yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record the reply to one of the bodies from [`Step::Ask`].
+    ///
+    /// The body is the key and must be passed back unchanged.
+    pub fn record(&mut self, body: impl Into<String>, reply: impl Into<String>) {
+        self.cassette.answer(body, reply);
+    }
+
+    /// How many rounds have run.
+    #[must_use]
+    pub fn rounds(&self) -> usize {
+        self.rounds
+    }
+
+    /// How many answers are held.
+    #[must_use]
+    pub fn known(&self) -> usize {
+        self.cassette.known()
+    }
+}
+
+/// Run one round of `operation` against what is known. **Performs no I/O.**
+///
+/// Returns [`Step::Ready`] when the operation completed, or [`Step::Ask`] with
+/// the bodies it still needs. Any other failure is the operation's own and is
+/// returned as-is.
+///
+/// # Errors
+///
+/// [`FlowError::Stalled`] if the operation is still asking after
+/// [`MAX_ROUNDS`], or if it stopped for want of an answer without recording
+/// what it wanted. Both mean it is not converging; neither is a slow network.
+pub fn advance<T, F>(answers: &mut Answers, operation: F) -> Result<Step<T>, FlowError>
+where
+    F: FnOnce(&RpcClient<Cassette>) -> Result<T, FlowError>,
+{
+    if answers.rounds >= MAX_ROUNDS {
+        return Err(FlowError::Stalled(format!(
+            "still asking for more after {MAX_ROUNDS} rounds"
+        )));
+    }
+    answers.rounds += 1;
+
+    let mut cassette = std::mem::take(&mut answers.cassette);
+    cassette.forget_misses();
+
+    let client = RpcClient::new(cassette);
+    let outcome = operation(&client);
+    let cassette = client.into_transport();
+
+    let step = match outcome {
+        Ok(value) => Step::Ready(value),
+        // Not a failure — the operation stopped because it needs to know
+        // something. Anything it asked for and could not get is in the record.
+        Err(FlowError::Rpc(RpcError::AnswerNeeded)) => {
+            let outstanding = cassette.outstanding();
+            // An empty list would send a caller round the loop with nothing to
+            // fetch and nothing to record — the browser tab spinning forever
+            // that `MAX_ROUNDS` is supposed to prevent. A `debug_assert` here
+            // would hold in tests and vanish in the build that matters.
+            if outstanding.is_empty() {
+                answers.cassette = cassette;
+                return Err(FlowError::Stalled(
+                    "an operation stopped for want of an answer without recording what it wanted"
+                        .into(),
+                ));
+            }
+            Step::Ask(outstanding)
+        }
+        Err(other) => {
+            answers.cassette = cassette;
+            return Err(other);
+        }
+    };
+
+    answers.cassette = cassette;
+    Ok(step)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape of a driven run: the operation stops, says what it needs, and
+    /// gets further on the next round.
+    #[test]
+    fn an_operation_asks_then_finishes() {
+        let mut answers = Answers::new();
+
+        let step = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("a miss is not a failure");
+
+        let bodies = match step {
+            Step::Ask(bodies) => bodies,
+            Step::Ready(value) => panic!("nothing was known, yet it answered {value}"),
+        };
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].contains(r#""method":"getblockcount""#));
+
+        answers.record(bodies[0].clone(), r#"{"result":1171000}"#);
+
+        let step = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("the answer is known now");
+        assert_eq!(step, Step::Ready(1_171_000));
+        assert_eq!(answers.rounds(), 2);
+    }
+
+    /// A real failure must not be mistaken for "needs an answer" and retried
+    /// forever.
+    #[test]
+    fn a_genuine_error_is_returned_rather_than_retried() {
+        let mut answers = Answers::new();
+        let outcome: Result<Step<u32>, FlowError> =
+            advance(&mut answers, |_| Err(FlowError::Content("no".into())));
+        assert!(matches!(outcome, Err(FlowError::Content(_))));
+    }
+
+    /// An operation that never converges would otherwise present as a browser
+    /// tab fetching forever. The cap turns that into a loud failure.
+    #[test]
+    fn a_non_converging_operation_gives_up() {
+        let mut answers = Answers::new();
+
+        // Never record the answer, so every round asks again and gets nowhere.
+        for round in 0..MAX_ROUNDS {
+            let step = advance(&mut answers, |client| {
+                Ok(verus_rpc::ChainReader::block_count(client)?)
+            })
+            .unwrap_or_else(|e| panic!("round {round} should still be allowed: {e}"));
+            assert!(matches!(step, Step::Ask(_)));
+        }
+
+        let past_the_cap: Result<Step<u32>, FlowError> = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        });
+        assert!(matches!(past_the_cap, Err(FlowError::Stalled(_))));
+    }
+}
