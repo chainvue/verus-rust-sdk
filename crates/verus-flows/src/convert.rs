@@ -235,9 +235,8 @@ pub fn mint(
     // The same prechecks the chain applies, surfaced with names. The
     // controlling identity IS the currency id; `CheckIdentitySpends` will
     // demand its primary keys and threshold, and this flow signs with one key.
-    let record = reader
-        .identity(currency)
-        .map_err(|_| FlowError::NoSuchIdentity(currency.to_string()))?;
+    let record = crate::error::look_up_identity(reader, currency)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(currency.to_string()))?;
     if record.is_revoked() {
         return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
     }

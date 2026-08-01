@@ -57,6 +57,7 @@
 
 #![doc(html_no_source)]
 
+mod cassette;
 mod client;
 mod envelope;
 mod error;
@@ -65,6 +66,7 @@ mod method;
 mod transport;
 mod types;
 
+pub use cassette::Cassette;
 pub use client::{content_multimap, registration_cost, Broadcaster, ChainReader, RpcClient};
 pub use error::RpcError;
 pub use method::{callable_methods, CallableMethod};

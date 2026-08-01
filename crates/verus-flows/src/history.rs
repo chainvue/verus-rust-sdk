@@ -145,8 +145,16 @@ pub fn history(
     addresses: &[&str],
     range: Option<(u32, u32)>,
 ) -> Result<Vec<HistoryEntry>, FlowError> {
-    let native = native_i_address(reader)?;
-    let deltas = reader.address_deltas(addresses, range)?;
+    // Both reads are issued before either is unwrapped, and that is not a
+    // style choice. Neither needs the other, so against a driver that cannot
+    // answer immediately — a browser, through [`crate::drive`] — writing
+    // `native_i_address(reader)?` first would stop the whole operation at the
+    // first miss and turn one network round trip into two. Issuing both and
+    // unwrapping after costs nothing on a blocking client and halves the
+    // latency on a non-blocking one.
+    let native = native_i_address(reader);
+    let deltas = reader.address_deltas(addresses, range);
+    let (native, deltas) = (native?, deltas?);
 
     // One movement, counted once — even when it is indexed under several of the
     // addresses that were asked about.

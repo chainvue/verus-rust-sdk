@@ -17,17 +17,34 @@ use crate::error::RpcError;
 /// A `Transport` implementation can of course ignore the body and send whatever
 /// it likes — but that is code inside the caller's own process, which is outside
 /// any boundary this crate can draw.
-pub struct RequestBody(String);
+pub struct RequestBody {
+    body: String,
+    writes: bool,
+}
 
 impl RequestBody {
     /// Only [`crate::envelope`] builds these.
-    pub(crate) fn new(body: String) -> Self {
-        RequestBody(body)
+    pub(crate) fn new(body: String, writes: bool) -> Self {
+        RequestBody { body, writes }
     }
 
     /// The bytes to send.
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.body
+    }
+
+    /// Whether delivering this can change anything anywhere.
+    ///
+    /// True for exactly one method — `sendrawtransaction` — and carried here
+    /// rather than left to be recognised from the text, so a transport can
+    /// treat a write differently without parsing what it was handed.
+    ///
+    /// [`Cassette`](crate::Cassette) is why this exists: an operation that is
+    /// going to be re-run must not be allowed to broadcast, and refusing at
+    /// the transport is the only place that holds regardless of which flow is
+    /// being driven.
+    pub fn writes(&self) -> bool {
+        self.writes
     }
 }
 

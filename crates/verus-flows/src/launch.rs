@@ -79,9 +79,8 @@ pub fn launch_currency(
         return Err(FlowError::Tx(verus_tx::TxError::NoSignatures));
     }
 
-    let record = reader
-        .identity(identity)
-        .map_err(|_| FlowError::NoSuchIdentity(identity.to_string()))?;
+    let record = crate::error::look_up_identity(reader, identity)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
     if record.is_revoked() {
         return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
     }

@@ -133,9 +133,8 @@ pub fn sign_login(
 ) -> Result<IdentitySignature, FlowError> {
     let info = reader.chain_info()?;
     let system_id = address_hash(&info.chain_id)?;
-    let record = reader
-        .identity(identity)
-        .map_err(|_| FlowError::NoSuchIdentity(identity.to_string()))?;
+    let record = crate::error::look_up_identity(reader, identity)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
     let identity_id = address_hash(&record.identity_address)?;
     let height = reader.block_count()?;
 
@@ -180,9 +179,8 @@ pub fn verify_login(
     }
 
     // The identity as it was at signing time. This is the whole point.
-    let record = reader
-        .identity_at(identity, signature.block_height)
-        .map_err(|_| FlowError::NoSuchIdentity(identity.to_string()))?;
+    let record = crate::error::look_up_identity_at(reader, identity, signature.block_height)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
 
     if record.is_revoked() {
         return Err(FlowError::NotReady(format!(

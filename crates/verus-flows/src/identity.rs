@@ -254,8 +254,18 @@ pub fn prepare_registration_with_salt(
     let system_id = currency_id_bytes(&info.chain_id)?;
 
     // Cheaper to find out now than after paying for a commitment.
+    //
+    // **A failure here is not an answer.** The obvious `if …is_ok()` reads
+    // "anything but success means the name is free", and that is wrong for
+    // every failure except the one it means: a timeout, a malformed reply, or —
+    // against the driver in [`crate::drive`] — a request that has simply not
+    // been answered yet would all be taken as permission to spend a commitment
+    // fee on a name somebody already owns.
+    //
+    // So only the node saying so counts. `-5` is what a daemon answers for an
+    // identity it does not have.
     let qualified = format!("{name}@");
-    if reader.identity(&qualified).is_ok() {
+    if crate::error::look_up_identity(reader, &qualified)?.is_some() {
         return Err(FlowError::NameTaken(qualified));
     }
 
@@ -722,9 +732,12 @@ fn referral_id(reader: &impl ChainReader, referrer: &str) -> Result<[u8; 20], Fl
     if let Ok(address) = referrer.parse::<Address>() {
         return Ok(address.hash());
     }
-    let record = reader
-        .identity(referrer)
-        .map_err(|_| FlowError::NoSuchIdentity(referrer.to_string()))?;
+    // `map_err(|_| NoSuchIdentity)` here would turn a timeout — or, driven, a
+    // request not yet answered — into a definite statement that the referrer
+    // does not exist. A caller that then registers without the referral pays
+    // the full unreferred fee.
+    let record = crate::error::look_up_identity(reader, referrer)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(referrer.to_string()))?;
     currency_id_bytes(&record.identity_address)
 }
 

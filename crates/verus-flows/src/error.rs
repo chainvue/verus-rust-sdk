@@ -21,6 +21,21 @@ pub enum FlowError {
     #[error(transparent)]
     Key(#[from] verus_keys::KeyError),
 
+    /// A driven operation stopped making progress.
+    ///
+    /// Distinct from [`FlowError::Rpc`] carrying
+    /// [`RpcError::AnswerNeeded`](verus_rpc::RpcError::AnswerNeeded), which
+    /// means a sentinel escaped and the driver has a bug. This one means the
+    /// driving worked and the operation still did not finish: it asked for
+    /// something new every round until the budget ran out, or it stopped for
+    /// want of an answer without saying which.
+    ///
+    /// The commonest honest cause is an operation whose request count grows
+    /// with its input while asking for them one at a time — see
+    /// [`crate::drive`] on issuing before unwrapping.
+    #[error("the operation stopped making progress: {0}")]
+    Stalled(String),
+
     /// An offer could not be read, or does not describe what it claims.
     #[error("offer: {0}")]
     Offer(String),
@@ -156,4 +171,46 @@ pub enum FlowError {
         /// The referrer that was asked for.
         referrer: String,
     },
+}
+
+/// Look an identity up, telling "the node says there is none" apart from every
+/// other way the request can fail.
+///
+/// One place, because getting it wrong is easy and was got wrong twice. The
+/// tempting shapes — `reader.identity(x).is_ok()`, or
+/// `.map_err(|_| NoSuchIdentity)` — both read *any* failure as a definite
+/// answer about the chain. A timeout becomes "no such identity". A malformed
+/// reply becomes "the name is free". And against the driver in
+/// [`crate::drive`], a request that has simply not been answered yet becomes
+/// both of those.
+///
+/// The consequences are not symmetric but neither is small: a registration
+/// concluding a taken name is free spends a commitment fee on it, and a login
+/// verifier concluding an identity does not exist rejects a valid sign-in.
+///
+/// `-5` is what a daemon answers for an identity it does not have.
+pub(crate) fn look_up_identity(
+    reader: &impl verus_rpc::ChainReader,
+    name: &str,
+) -> Result<Option<verus_rpc::IdentityRecord>, FlowError> {
+    absent_is_none(reader.identity(name))
+}
+
+/// As [`look_up_identity`], for the identity as it stood at a height.
+pub(crate) fn look_up_identity_at(
+    reader: &impl verus_rpc::ChainReader,
+    name: &str,
+    height: u32,
+) -> Result<Option<verus_rpc::IdentityRecord>, FlowError> {
+    absent_is_none(reader.identity_at(name, height))
+}
+
+fn absent_is_none(
+    outcome: Result<verus_rpc::IdentityRecord, verus_rpc::RpcError>,
+) -> Result<Option<verus_rpc::IdentityRecord>, FlowError> {
+    match outcome {
+        Ok(record) => Ok(Some(record)),
+        Err(verus_rpc::RpcError::Node { code: -5, .. }) => Ok(None),
+        Err(other) => Err(other.into()),
+    }
 }
