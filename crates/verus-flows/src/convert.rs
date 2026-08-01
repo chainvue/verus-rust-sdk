@@ -27,7 +27,7 @@ use verus_tx::convert::{
 };
 use verus_tx::{Amount, CurrencyId, Expiry, Utxo, DEFAULT_EXPIRY_BLOCKS};
 
-use crate::broadcast::broadcast;
+use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 use crate::send::Sent;
@@ -155,6 +155,36 @@ pub fn convert(
     min_expected: Option<Amount>,
     token_funding: &[Utxo],
 ) -> Result<Sent, FlowError> {
+    prepare_conversion(
+        reader,
+        key,
+        source,
+        amount,
+        kind,
+        recipient,
+        fee,
+        min_expected,
+        token_funding,
+    )?
+    .broadcast(broadcaster)
+}
+
+/// Build a conversion without sending it.
+///
+/// The read-only half of [`convert`], including the price floor check — that
+/// too is a read, and it belongs before signing rather than before sending.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_conversion(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    source: &str,
+    amount: Amount,
+    kind: ConversionKind,
+    recipient: &str,
+    fee: Amount,
+    min_expected: Option<Amount>,
+    token_funding: &[Utxo],
+) -> Result<Unsent<Sent>, FlowError> {
     let plan = plan_conversion(reader, source, amount, kind, recipient, fee, min_expected)?;
     if !plan.acceptable() {
         return Err(FlowError::NotReady(format!(
@@ -163,7 +193,7 @@ pub fn convert(
             plan.min_expected.unwrap_or(Amount::ZERO).to_coins_string()
         )));
     }
-    submit(reader, broadcaster, key, &plan.transfer, token_funding)
+    prepare_submission(reader, key, &plan.transfer, token_funding)
 }
 
 /// Destroy `amount` of a token.
@@ -179,6 +209,21 @@ pub fn burn(
     fee: Amount,
     token_funding: &[Utxo],
 ) -> Result<Sent, FlowError> {
+    prepare_burn(reader, key, currency, amount, fee, token_funding)?.broadcast(broadcaster)
+}
+
+/// Build a burn without sending it.
+///
+/// The read-only half of [`burn`]. Nothing about it is less irreversible; the
+/// bytes it returns destroy the value the moment they are accepted.
+pub fn prepare_burn(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    currency: &str,
+    amount: Amount,
+    fee: Amount,
+    token_funding: &[Utxo],
+) -> Result<Unsent<Sent>, FlowError> {
     let info = reader.chain_info()?;
     let chain_currency = currency_of(&info.chain_id)?;
     let transfer = build_conversion(
@@ -189,7 +234,7 @@ pub fn burn(
         chain_currency,
         fee,
     )?;
-    submit(reader, broadcaster, key, &transfer, token_funding)
+    prepare_submission(reader, key, &transfer, token_funding)
 }
 
 /// Mint new supply of a centralized currency, authorised by its identity.
@@ -219,8 +264,20 @@ pub fn mint(
     recipient: &str,
     fee: Amount,
 ) -> Result<Sent, FlowError> {
-    let info = reader.chain_info()?;
-    let chain_currency = currency_of(&info.chain_id)?;
+    prepare_mint(reader, key, currency, amount, recipient, fee)?.broadcast(broadcaster)
+}
+
+/// Build a mint without sending it.
+///
+/// The read-only half of [`mint`], including every authority precheck.
+pub fn prepare_mint(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    currency: &str,
+    amount: Amount,
+    recipient: &str,
+    fee: Amount,
+) -> Result<Unsent<Sent>, FlowError> {
     let currency_id = currency_of(currency)?;
     let recipient: Address = recipient.parse()?;
     if recipient.kind() != verus_keys::AddressKind::PubKeyHash {
@@ -232,11 +289,24 @@ pub fn mint(
         ));
     }
 
+    // All three reads are issued before any is unwrapped: none needs another's
+    // answer, and a `?` between them would cost a network round trip each
+    // against a driver that cannot answer immediately. See [`crate::drive`].
+    //
+    // It does mean a revoked identity has its outputs fetched before the
+    // refusal below — `getblockcount`, `getaddressutxos` and any coinbase
+    // probes those turn up. Wasted work on a path that was going to fail
+    // anyway, against a round saved on every path that works.
+    let info = reader.chain_info();
+    let record = crate::error::look_up_identity(reader, currency);
+    let identity_funding = crate::funding::identity_held(reader, currency);
+    let (info, record, identity_funding) = (info?, record?, identity_funding?);
+    let chain_currency = currency_of(&info.chain_id)?;
+
     // The same prechecks the chain applies, surfaced with names. The
     // controlling identity IS the currency id; `CheckIdentitySpends` will
     // demand its primary keys and threshold, and this flow signs with one key.
-    let record = crate::error::look_up_identity(reader, currency)?
-        .ok_or_else(|| FlowError::NoSuchIdentity(currency.to_string()))?;
+    let record = record.ok_or_else(|| FlowError::NoSuchIdentity(currency.to_string()))?;
     if record.is_revoked() {
         return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
     }
@@ -275,13 +345,15 @@ pub fn mint(
         fee,
     )?;
 
-    let identity_funding = crate::funding::identity_held(reader, currency)?;
     if identity_funding.is_empty() {
         return Err(FlowError::NotReady(format!(
             "{currency} holds no spendable outputs; a mint is paid for by the identity — \
              send() it some coins first"
         )));
     }
+    // `identity_held` has already asked for this, so under a driver it is a
+    // cache hit and costs no round. On a blocking client it is a second real
+    // request — cheap, and not worth threading the tip back out for.
     let tip = reader.block_count()?;
     let params = ConversionParams::new(
         &transfer,
@@ -293,23 +365,22 @@ pub fn mint(
     )
     .with_identity_funding(&identity_funding);
 
-    let signed = build_conversion_transaction(key, &params)?;
-    broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(signed.into())
+    Ok(build_conversion_transaction(key, &params)?.into())
 }
 
-/// Fund, sign and broadcast a prepared transfer.
-fn submit(
+/// Fund and sign a prepared transfer, without sending it.
+fn prepare_submission(
     reader: &impl ChainReader,
-    broadcaster: &impl Broadcaster,
     key: &PrivateKey,
     transfer: &ReserveTransfer,
     token_funding: &[Utxo],
-) -> Result<Sent, FlowError> {
-    let info = reader.chain_info()?;
-    let chain_currency = currency_of(&info.chain_id)?;
+) -> Result<Unsent<Sent>, FlowError> {
     let from = key.address();
-    let funding = funding::spendable(reader, &from.to_string())?;
+    // Issued together, unwrapped after — see [`crate::drive`].
+    let info = reader.chain_info();
+    let funding = funding::spendable(reader, &from.to_string());
+    let (info, funding) = (info?, funding?);
+    let chain_currency = currency_of(&info.chain_id)?;
 
     // What must be available natively, before the miner fee.
     let native = transfer.native_value(chain_currency)?;
@@ -324,9 +395,7 @@ fn submit(
     )
     .with_token_funding(token_funding);
 
-    let signed = build_conversion_transaction(key, &params)?;
-    broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(signed.into())
+    Ok(build_conversion_transaction(key, &params)?.into())
 }
 
 fn currency_of(id: &str) -> Result<CurrencyId, FlowError> {

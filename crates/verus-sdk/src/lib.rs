@@ -200,12 +200,14 @@ pub mod network {
     pub use verus_flows::offer::take;
     pub use verus_flows::{
         broadcast, burn, convert, currency_names, estimate, identity_held, inspect,
-        launch_currency, mint, native_currency, plan_conversion, prepare_registration,
-        prepare_registration_with_salt, prepare_send, send, send_from_identity, send_token,
-        sign_login, spendable, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
+        launch_currency, mint, native_currency, plan_conversion, prepare_burn, prepare_conversion,
+        prepare_launch, prepare_mint, prepare_publish, prepare_registration,
+        prepare_registration_with_salt, prepare_send, prepare_send_from_identity,
+        prepare_send_token, prepare_take, send, send_from_identity, send_token, sign_login,
+        spendable, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
         ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn, LoginPolicy, LoginRequest,
         OfferTerms, Pending, ReadyToRegister, Registered, RegistrationOptions, Sent, Taken, Taking,
-        TokenBalances, WaitPolicy,
+        TokenBalances, Unsent, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,

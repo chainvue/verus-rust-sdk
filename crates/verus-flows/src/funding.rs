@@ -196,8 +196,11 @@ pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Ut
         .parse()
         .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
     let expected = verus_tx::identity_payment_script(address.hash())?;
-    let tip = reader.block_count()?;
-    let found = reader.address_utxos(&[identity])?;
+    // Issued together, unwrapped after, exactly as in [`spendable`] and for the
+    // same reason — see [`crate::drive`].
+    let tip = reader.block_count();
+    let found = reader.address_utxos(&[identity]);
+    let (tip, found) = (tip?, found?);
 
     // Coinbase maturity applies here exactly as in `spendable` — an identity
     // that stakes is paid in coinbase outputs carrying this very script, and

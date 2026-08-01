@@ -111,7 +111,8 @@ fn register_one(client: &RpcClient<HttpTransport>, key: &PrivateKey, address: &s
         prepared.registration_fee.to_coins_string()
     );
 
-    let pending = prepared
+    let mut pending = prepared;
+    pending
         .broadcast_commitment(client, client)
         .expect("broadcast commitment");
 

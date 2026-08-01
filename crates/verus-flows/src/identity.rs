@@ -51,7 +51,7 @@ use verus_tx::{
     CurrencyId, Expiry, NameReservation, RegistrationParams, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
 };
 
-use crate::broadcast::broadcast;
+use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 
@@ -356,13 +356,35 @@ impl Pending<AwaitingCommitment> {
     ///
     /// **Persist this value first.** Once these bytes are on the network the
     /// commitment fee is committed, and without the salt it cannot be redeemed.
+    ///
+    /// Takes `&mut self` rather than consuming, and that is the reason: a
+    /// broadcast can fail *ambiguously*, meaning the commitment may well be on
+    /// the network. Handing the `Pending` back only on success would destroy
+    /// the salt in exactly the case where it is still needed.
     pub fn broadcast_commitment(
-        mut self,
+        &mut self,
         reader: &impl ChainReader,
         broadcaster: &impl Broadcaster,
-    ) -> Result<Self, FlowError> {
-        // Recorded before sending: a reorg is detected by comparing against
-        // where the chain was when this was committed to.
+    ) -> Result<(), FlowError> {
+        self.anchor(reader)?.broadcast(broadcaster)
+    }
+
+    /// Record where the chain was, without sending anything.
+    ///
+    /// The read-only half of [`Pending::broadcast_commitment`]: the bytes were
+    /// signed by `prepare_registration`, so all that is left before sending is
+    /// the reorg anchor.
+    ///
+    /// The anchor is written to `self` before the returned bytes go anywhere,
+    /// so it is recorded whatever the broadcast then does. Losing it would mean
+    /// the next poll had nothing to compare against and could not tell a reorg
+    /// from a normal wait.
+    ///
+    /// The outcome is `()` because there is nothing to hand back: the `Pending`
+    /// was never taken from the caller.
+    pub fn anchor(&mut self, reader: &impl ChainReader) -> Result<Unsent<()>, FlowError> {
+        // A reorg is detected by comparing against where the chain was when
+        // this was committed to.
         //
         // The hash is read with `block_hash(height)`, not `best_block_hash()`.
         // Those differ: the tip can advance between the two calls, and the pair
@@ -371,11 +393,18 @@ impl Pending<AwaitingCommitment> {
         // hash *of that height* is racy in no useful sense: the answer is the
         // same whenever it is asked, unless the block really was replaced, which
         // is precisely what this is for.
+        //
+        // These two reads are genuinely sequential — the second names the
+        // height the first returned — so they are two rounds under a driver and
+        // no reordering helps.
         let height = reader.block_count()?;
         let hash = reader.block_hash(height)?;
-        broadcast(broadcaster, &self.commitment_hex, &self.commitment_txid)?;
         self.anchored_at = Some((height, hash));
-        Ok(self)
+        Ok(Unsent {
+            hex: self.commitment_hex.clone(),
+            txid: self.commitment_txid.clone(),
+            outcome: (),
+        })
     }
 
     /// Ask once whether step 1 has confirmed.
@@ -499,6 +528,20 @@ impl Pending<ReadyToRegister> {
         broadcaster: &impl Broadcaster,
         key: &PrivateKey,
     ) -> Result<Registered, FlowError> {
+        self.prepare(reader, key)?.broadcast(broadcaster)
+    }
+
+    /// Build the registration without sending it.
+    ///
+    /// The read-only half of [`Pending::complete`]. Takes `&self` so a failed
+    /// broadcast does not consume the `Pending` — which matters more here than
+    /// anywhere else in the crate, because the salt inside it cannot be
+    /// recovered from the chain and the commitment fee is already spent.
+    pub fn prepare(
+        &self,
+        reader: &impl ChainReader,
+        key: &PrivateKey,
+    ) -> Result<Unsent<Registered>, FlowError> {
         let from = key.address();
         let funding = funding::spendable(reader, &from.to_string())?;
         funding::require(&funding, self.registration_fee, &from.to_string())?;
@@ -544,30 +587,30 @@ impl Pending<ReadyToRegister> {
         .with_referrals(self.referral_levels, &self.referral_chain);
 
         let signed = build_identity_registration(key, &params)?;
-        broadcast(
-            broadcaster,
-            &signed.transaction.hex,
-            &signed.transaction.txid,
-        )?;
 
-        Ok(Registered {
-            name: self.reservation.name.clone(),
-            identity_address: signed.identity_id,
-            txid: signed.transaction.txid,
-            hex: signed.transaction.hex,
-            fee_paid: self.registration_fee,
+        Ok(Unsent {
+            hex: signed.transaction.hex.clone(),
+            txid: signed.transaction.txid.clone(),
+            outcome: Registered {
+                name: self.reservation.name.clone(),
+                identity_address: signed.identity_id,
+                txid: signed.transaction.txid,
+                hex: signed.transaction.hex,
+                fee_paid: self.registration_fee,
+            },
         })
     }
 }
 
-/// A registration that has been broadcast.
+/// A registration — broadcast by [`Pending::complete`], still unsent from
+/// [`Pending::prepare`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registered {
     /// The name, without the parent.
     pub name: String,
     /// The identity's `i` address, as raw bytes.
     pub identity_address: [u8; 20],
-    /// The step-2 transaction id.
+    /// The step-2 transaction id, computed locally from `hex`.
     pub txid: String,
     /// The signed bytes.
     pub hex: String,

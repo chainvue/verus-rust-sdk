@@ -37,15 +37,16 @@ use verus_tx::currency_launch::{build_currency_launch, LaunchContext, LaunchPara
 use verus_tx::identity::FLAG_ACTIVE_CURRENCY;
 use verus_tx::{Amount, Expiry, Utxo, DEFAULT_EXPIRY_BLOCKS};
 
-use crate::broadcast::broadcast;
+use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 use crate::identity::check_trusted_node_fee;
 
-/// A currency launched and broadcast.
+/// A currency launch — broadcast by [`launch_currency`], still unsent from
+/// [`prepare_launch`].
 #[derive(Clone, Debug)]
 pub struct Launched {
-    /// The `definecurrency` transaction id.
+    /// The `definecurrency` transaction id, computed locally from its bytes.
     pub txid: String,
     /// The new currency's id — the defining identity's `i` address hash.
     pub currency_id: [u8; 20],
@@ -75,6 +76,20 @@ pub fn launch_currency(
     definition: &CurrencyDefinition,
     pin_launch_fee: Option<Amount>,
 ) -> Result<Launched, FlowError> {
+    prepare_launch(reader, keys, identity, definition, pin_launch_fee)?.broadcast(broadcaster)
+}
+
+/// Build the launch without sending it.
+///
+/// The read-only half of [`launch_currency`], including every check it makes
+/// against the identity, the definition and chain policy.
+pub fn prepare_launch(
+    reader: &impl ChainReader,
+    keys: &[&PrivateKey],
+    identity: &str,
+    definition: &CurrencyDefinition,
+    pin_launch_fee: Option<Amount>,
+) -> Result<Unsent<Launched>, FlowError> {
     if keys.is_empty() {
         return Err(FlowError::Tx(verus_tx::TxError::NoSignatures));
     }
@@ -209,12 +224,15 @@ pub fn launch_currency(
         },
     )?;
 
-    let txid = broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(Launched {
-        txid,
-        currency_id: identity_address.hash(),
-        start_block: definition.start_block,
-        launch_fee,
+    Ok(Unsent {
+        hex: signed.hex.clone(),
+        txid: signed.txid.clone(),
+        outcome: Launched {
+            txid: signed.txid,
+            currency_id: identity_address.hash(),
+            start_block: definition.start_block,
+            launch_fee,
+        },
     })
 }
 

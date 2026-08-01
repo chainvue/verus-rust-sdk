@@ -48,6 +48,8 @@ use verus_tx::{Amount, CurrencyId, Txid, Utxo};
 use verus_wire::hash::txid_display;
 use verus_wire::TxV4;
 
+use crate::broadcast::Unsent;
+
 use crate::error::FlowError;
 
 /// What a maker is asking to be paid.
@@ -252,12 +254,13 @@ fn read_satoshis(vout: &serde_json::Value) -> Result<Amount, FlowError> {
         .map_err(|e| FlowError::Offer(format!("the funding output's value: {e}")))
 }
 
-/// An offer completed and broadcast.
+/// An offer completed — broadcast by [`take`], still unsent from
+/// [`prepare_take`].
 #[derive(Debug, Clone)]
 pub struct Taken {
     /// The terms as they were read from the chain.
     pub terms: OfferTerms,
-    /// The completed transaction's id.
+    /// The completed transaction's id, computed locally from its bytes.
     pub txid: String,
 }
 
@@ -311,6 +314,21 @@ pub fn take(
     key: &PrivateKey,
     params: &Taking<'_>,
 ) -> Result<Taken, FlowError> {
+    prepare_take(reader, key, params)?.broadcast(broadcaster)
+}
+
+/// Complete an offer without sending it.
+///
+/// The read-only half of [`take`], including the expiry refusal.
+///
+/// Unlike [`browse`], the order of the two reads here is not load-bearing: the
+/// terms and the tip are both read before anything is signed, and the offer is
+/// judged against that tip either way.
+pub fn prepare_take(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    params: &Taking<'_>,
+) -> Result<Unsent<Taken>, FlowError> {
     let Taking {
         offer_hex,
         utxos,
@@ -318,9 +336,11 @@ pub fn take(
         change_address,
         fee,
     } = *params;
-    let terms = inspect(reader, offer_hex)?;
+    // Issued together, unwrapped after — see [`crate::drive`].
+    let terms = inspect(reader, offer_hex);
+    let tip = reader.block_count();
+    let (terms, tip) = (terms?, tip?);
 
-    let tip = reader.block_count()?;
     if !terms.is_live_at(tip) {
         return Err(FlowError::Offer(format!(
             "this offer expired at height {}, and the chain is at {tip}",
@@ -350,8 +370,14 @@ pub fn take(
             .map_err(|e| FlowError::Offer(format!("completed offer txid: {e}")))?,
     );
 
-    let txid = crate::broadcast::broadcast(broadcaster, &hex::encode(&raw), &local_txid)?;
-    Ok(Taken { terms, txid })
+    Ok(Unsent {
+        hex: hex::encode(&raw),
+        txid: local_txid.clone(),
+        outcome: Taken {
+            terms,
+            txid: local_txid,
+        },
+    })
 }
 
 /// A listing, read against a particular tip.

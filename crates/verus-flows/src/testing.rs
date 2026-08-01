@@ -647,6 +647,12 @@ impl Broadcaster for ScriptedReader {
                     code: *code,
                     message: message.clone(),
                 },
+                // Carried through as themselves rather than flattened: how
+                // `broadcast` classifies each one is exactly what a test using
+                // this double would be asserting, and `Unexpected` would make
+                // every such test pass for the wrong reason.
+                RpcError::AnswerNeeded => RpcError::AnswerNeeded,
+                RpcError::WriteThroughCassette => RpcError::WriteThroughCassette,
                 other => RpcError::Unexpected(other.to_string()),
             });
         }

@@ -63,7 +63,7 @@ use verus_tx::{
     DEFAULT_EXPIRY_BLOCKS,
 };
 
-use crate::broadcast::broadcast;
+use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 
@@ -176,13 +176,18 @@ pub fn read_history(
 }
 
 /// What [`publish`] changed, and the transaction that changed it.
+///
+/// From [`prepare_publish`] nothing has changed yet: the transaction exists but
+/// has not been offered to a node, so read every field below in the future
+/// tense until it has.
 #[derive(Clone, Debug)]
 pub struct Published {
-    /// The broadcast transaction's id.
+    /// The transaction's id, computed locally from its bytes.
     pub txid: String,
     /// The key that was written, as it will appear in `contentmultimap`.
     pub key: String,
-    /// How many values now stand under it. Zero means the key was removed.
+    /// How many values stand under it once the update confirms. Zero means the
+    /// key was removed.
     pub values: usize,
 }
 
@@ -210,6 +215,30 @@ pub fn publish(
     key: [u8; 20],
     values: Vec<Vec<u8>>,
 ) -> Result<Published, FlowError> {
+    prepare_publish(
+        reader,
+        identity_keys,
+        identity,
+        funding_address,
+        key,
+        values,
+    )?
+    .broadcast(broadcaster)
+}
+
+/// Build the identity update without sending it.
+///
+/// The read-only half of [`publish`]. Every check [`publish`] makes is here,
+/// including the one that stops a node redirecting the update to an identity
+/// the caller never named — all of them read, none of them write.
+pub fn prepare_publish(
+    reader: &impl ChainReader,
+    identity_keys: &[&PrivateKey],
+    identity: &str,
+    funding_address: &str,
+    key: [u8; 20],
+    values: Vec<Vec<u8>>,
+) -> Result<Unsent<Published>, FlowError> {
     let first = identity_keys
         .first()
         .ok_or_else(|| FlowError::Content("publishing needs at least one key".into()))?;
@@ -224,7 +253,15 @@ pub fn publish(
         )));
     }
 
-    let record = reader.identity(identity)?;
+    // Issued together, unwrapped after: the funding lookup needs nothing from
+    // the identity, and a `?` between them would make it a second network round
+    // trip against a driver. See [`crate::drive`]. What *is* irreducible is the
+    // step below — the transaction can only be asked for once the identity has
+    // named its outpoint.
+    let record = reader.identity(identity);
+    let funding = funding::spendable(reader, funding_address);
+    let (record, funding) = (record?, funding?);
+
     if record.is_revoked() {
         return Err(FlowError::Content(format!(
             "{identity} is revoked and cannot be updated"
@@ -276,8 +313,6 @@ pub fn publish(
 
     set_multimap_entry(&mut object, key, values.clone());
 
-    let funding = funding::spendable(reader, funding_address)?;
-
     // An identity output carries no native value. Reading it rather than
     // assuming means a nonzero one is named here instead of surfacing as an
     // opaque sighash rejection.
@@ -314,12 +349,14 @@ pub fn publish(
         ),
     )?;
 
-    let txid = broadcast(broadcaster, &signed.hex, &signed.txid)?;
-
-    Ok(Published {
-        txid,
-        key: key_address(key),
-        values: values.len(),
+    Ok(Unsent {
+        hex: signed.hex.clone(),
+        txid: signed.txid.clone(),
+        outcome: Published {
+            txid: signed.txid,
+            key: key_address(key),
+            values: values.len(),
+        },
     })
 }
 

@@ -11,14 +11,20 @@ use verus_tx::{
     SignedTransaction, TokenRecipient, TokenSendParams, DEFAULT_EXPIRY_BLOCKS,
 };
 
-use crate::broadcast::broadcast;
+use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 
-/// A completed operation.
+/// A payment, built and signed.
+///
+/// Returned by [`send`] once a node has accepted it, and inside an
+/// [`Unsent`] before it has been offered to one — so `txid` is the id computed
+/// from `hex` rather than one a node reported. [`broadcast`](fn@crate::broadcast)
+/// refuses a node that names a different transaction, which is what keeps the
+/// two the same value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sent {
-    /// The transaction id the node accepted.
+    /// The transaction id, computed locally from `hex`.
     pub txid: String,
     /// Fee paid.
     pub fee: Amount,
@@ -35,6 +41,18 @@ impl From<SignedTransaction> for Sent {
             fee: signed.fee,
             change: signed.change,
             hex: signed.hex,
+        }
+    }
+}
+
+/// Finished bytes, still unsent. Every `prepare_…` in this module ends here, so
+/// the two halves cannot disagree about what `hex` and `txid` are.
+impl From<SignedTransaction> for Unsent<Sent> {
+    fn from(signed: SignedTransaction) -> Self {
+        Unsent {
+            hex: signed.hex.clone(),
+            txid: signed.txid.clone(),
+            outcome: signed.into(),
         }
     }
 }
@@ -62,6 +80,21 @@ pub fn send(
     to: &str,
     amount: Amount,
 ) -> Result<Sent, FlowError> {
+    prepare_send(reader, key, to, amount)?.broadcast(broadcaster)
+}
+
+/// Build a payment without sending it.
+///
+/// Takes a [`ChainReader`] and no [`Broadcaster`], so it *cannot* broadcast —
+/// the dry run is enforced by the signature rather than by remembering not to
+/// call the other function. That is also what makes it safe to run under
+/// [`drive`](mod@crate::drive), which re-runs an operation once per round.
+pub fn prepare_send(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    to: &str,
+    amount: Amount,
+) -> Result<Unsent<Sent>, FlowError> {
     let to: Address = to.parse()?;
     let from = key.address();
     let funding = funding::spendable(reader, &from.to_string())?;
@@ -81,10 +114,7 @@ pub fn send(
         from,
         Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
     );
-    let signed = build_transparent_send(key, &params)?;
-
-    broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(signed.into())
+    Ok(build_transparent_send(key, &params)?.into())
 }
 
 /// Pay from funds a VerusID holds.
@@ -111,6 +141,20 @@ pub fn send_from_identity(
     to: &str,
     amount: Amount,
 ) -> Result<Sent, FlowError> {
+    prepare_send_from_identity(reader, keys, identity, to, amount)?.broadcast(broadcaster)
+}
+
+/// Build an identity-funded payment without sending it.
+///
+/// The read-only half of [`send_from_identity`]; every check that function
+/// makes is made here, because all of them are reads.
+pub fn prepare_send_from_identity(
+    reader: &impl ChainReader,
+    keys: &[&PrivateKey],
+    identity: &str,
+    to: &str,
+    amount: Amount,
+) -> Result<Unsent<Sent>, FlowError> {
     let to: Address = to.parse()?;
     let record = crate::error::look_up_identity(reader, identity)?
         .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
@@ -156,8 +200,12 @@ pub fn send_from_identity(
         .identity_address
         .parse()
         .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
-    let utxos = funding::identity_held(reader, &record.identity_address)?;
-    let tip = reader.block_count()?;
+    // Issued together, unwrapped after — see [`crate::drive`]. `identity_held`
+    // asks for the tip itself, so under a driver the second read is a cache hit
+    // and costs no round; on a blocking client it is a second real request.
+    let utxos = funding::identity_held(reader, &record.identity_address);
+    let tip = reader.block_count();
+    let (utxos, tip) = (utxos?, tip?);
 
     let recipients = [Recipient {
         address: to,
@@ -169,9 +217,7 @@ pub fn send_from_identity(
         &recipients,
         Expiry::within(tip, DEFAULT_EXPIRY_BLOCKS),
     );
-    let signed = verus_tx::build_identity_spend(keys, &params)?;
-    broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(signed.into())
+    Ok(verus_tx::build_identity_spend(keys, &params)?.into())
 }
 
 /// Pay a token to one address.
@@ -198,6 +244,20 @@ pub fn send_token(
     amount: Amount,
     token_utxos: &[verus_tx::Utxo],
 ) -> Result<Sent, FlowError> {
+    prepare_send_token(reader, key, currency, to, amount, token_utxos)?.broadcast(broadcaster)
+}
+
+/// Build a token payment without sending it.
+///
+/// The read-only half of [`send_token`].
+pub fn prepare_send_token(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    currency: CurrencyId,
+    to: &str,
+    amount: Amount,
+    token_utxos: &[verus_tx::Utxo],
+) -> Result<Unsent<Sent>, FlowError> {
     let to: Address = to.parse()?;
     let from = key.address();
     let funding = funding::spendable(reader, &from.to_string())?;
@@ -218,37 +278,5 @@ pub fn send_token(
         from,
         Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
     );
-    let signed = build_token_send(key, &params)?;
-
-    broadcast(broadcaster, &signed.hex, &signed.txid)?;
-    Ok(signed.into())
-}
-
-/// Build a payment without sending it.
-///
-/// Takes a [`ChainReader`] and no [`Broadcaster`], so it *cannot* broadcast —
-/// the dry run is enforced by the signature rather than by remembering not to
-/// call the other function.
-pub fn prepare_send(
-    reader: &impl ChainReader,
-    key: &PrivateKey,
-    to: &str,
-    amount: Amount,
-) -> Result<SignedTransaction, FlowError> {
-    let to: Address = to.parse()?;
-    let from = key.address();
-    let funding = funding::spendable(reader, &from.to_string())?;
-    funding::require(&funding, amount, &from.to_string())?;
-
-    let recipients = [Recipient {
-        address: to,
-        satoshis: amount,
-    }];
-    let params = SendParams::new(
-        &funding.utxos,
-        &recipients,
-        from,
-        Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
-    );
-    Ok(build_transparent_send(key, &params)?)
+    Ok(build_token_send(key, &params)?.into())
 }
