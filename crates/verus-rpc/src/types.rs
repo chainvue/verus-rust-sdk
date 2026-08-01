@@ -320,6 +320,40 @@ impl CurrencyConverter {
     }
 }
 
+/// One value published under a VDXF key.
+///
+/// The daemon renders a value one of two ways, and which one depends on whether
+/// it recognises the key. That is not a quirk to normalise away: the two carry
+/// different amounts of information, and collapsing them would either lose the
+/// structure or invent one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContentValue {
+    /// Hex on the wire — the raw VDXF-encoded bytes.
+    ///
+    /// What you get for a key the daemon does not recognise, which is every key
+    /// an application defines for itself.
+    Bytes(Vec<u8>),
+    /// The daemon recognised the key and rendered the value structured.
+    ///
+    /// Kept as JSON. Re-encoding it to bytes would mean implementing the VDXF
+    /// type system, and reading it as bytes is not possible — the daemon has
+    /// already decoded it and the original is not in the reply.
+    Structured(serde_json::Value),
+}
+
+impl ContentValue {
+    /// The raw bytes, when there are any.
+    ///
+    /// `None` for a structured value: there are no bytes in the reply to give.
+    #[must_use]
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            ContentValue::Bytes(bytes) => Some(bytes),
+            ContentValue::Structured(_) => None,
+        }
+    }
+}
+
 /// A VerusID together with the data published on it.
 ///
 /// `getidentity` returns the identity; this returns it with its content maps
@@ -335,13 +369,29 @@ pub struct IdentityContent {
     /// The older and narrower of the two maps: one hash per key, so it holds a
     /// reference to content rather than content.
     pub content_map: BTreeMap<String, String>,
-    /// `contentmultimap` — a VDXF key to any number of structured values.
+    /// `contentmultimap` — a VDXF key to any number of values.
     ///
-    /// Left as JSON deliberately. The values are VDXF-encoded objects whose
-    /// shape depends on the key, and giving them a type is a larger question
-    /// than reading them: see the `verus_tx::vdxf` module. This carries the
-    /// data so it is not lost; interpreting it is separate.
-    pub content_multimap: serde_json::Value,
+    /// **Keyed by `i` address, not hex**, unlike
+    /// [`IdentityContent::content_map`] in the same object. The two maps
+    /// genuinely disagree about how to spell the same kind of value, so a
+    /// derived key compared against the wrong rendering finds nothing.
+    ///
+    /// A value is VDXF-typed data whose encoding depends on its key — and a
+    /// VDXF key is a **one-way hash of a name**, so for a key you did not
+    /// create there is no way back to the name and therefore nothing that says
+    /// how to read the value. Only its creator knows, and only publishing the
+    /// name shares that.
+    ///
+    /// `vrsc@` and `Verus Coin Foundation@` both publish under
+    /// `iSJ38vYX7qoCtotc9wBHb1vZdR3oTgoHCX`, whose name cannot be recovered
+    /// from the key. Handing the value back untouched is the honest answer, not
+    /// a placeholder; `verus_flows::vdxf` builds on that.
+    ///
+    /// See [`ContentValue`] for why a value is not simply bytes.
+    ///
+    /// Empty for an identity older than version 3, which has no such field at
+    /// all.
+    pub content_multimap: BTreeMap<String, Vec<ContentValue>>,
 }
 
 /// Confirmations a coinbase output needs before it can be spent.

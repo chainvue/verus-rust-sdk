@@ -13,9 +13,9 @@ use crate::json;
 use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
-    converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate,
-    CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord,
-    OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
+    converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
+    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent,
+    IdentityRecord, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
     RawConversionEstimate, RawCurrency, RawCurrencyEntry, RawIdentity, RawOfferEntry,
 };
 
@@ -629,15 +629,29 @@ impl<T: Transport> ChainReader for RpcClient<T> {
             }
         }
 
-        // Absent entirely on older identity versions rather than empty — the
-        // multimap arrived with version 3, so a v1 or v2 identity has no such
-        // field at all. Null is the honest reading of "this identity cannot
-        // carry one".
-        let content_multimap = identity
-            .identity
-            .get("contentmultimap")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+        // Three shapes, all of them legitimate, taken from the reference
+        // implementation's own reader (`ContentMultiMap.fromJson` in
+        // `verus-typescript-primitives`): a list whose items are hex strings
+        // **or** objects, a bare hex string, and a bare object. An earlier
+        // version here accepted only the first and errored on the rest, which
+        // made every identity using a key the daemon recognises unreadable
+        // through this method — fail-closed, but unreadable.
+        //
+        // Absent entirely on an identity older than version 3, which reads as
+        // empty: such an identity cannot carry a multimap, so nothing is
+        // missing. Present-but-not-an-object is a different matter and is an
+        // error, because that is a shape nobody meant.
+        let mut content_multimap = BTreeMap::new();
+        if let Some(raw_map) = identity.identity.get("contentmultimap") {
+            let map = raw_map.as_object().ok_or_else(|| {
+                RpcError::Unexpected(format!(
+                    "contentmultimap is {raw_map}, not a map of keys to values"
+                ))
+            })?;
+            for (key, value) in map {
+                content_multimap.insert(key.clone(), content_values(key, value)?);
+            }
+        }
 
         Ok(IdentityContent {
             identity,
@@ -770,6 +784,34 @@ impl<T: Transport> Broadcaster for RpcClient<T> {
         // polls a payment that looks permanently unconfirmed instead of
         // reporting a broken node.
         check_hash(&txid, "sendrawtransaction")
+    }
+}
+
+/// Read the values published under one VDXF key.
+///
+/// See the call site for the three shapes and where they come from.
+fn content_values(key: &str, value: &serde_json::Value) -> Result<Vec<ContentValue>, RpcError> {
+    let one = |item: &serde_json::Value| -> Result<ContentValue, RpcError> {
+        match item {
+            serde_json::Value::String(hex) => {
+                hex::decode(hex).map(ContentValue::Bytes).map_err(|_| {
+                    RpcError::Unexpected(format!(
+                        "contentmultimap entry {key} holds {hex:?}, which is not hex"
+                    ))
+                })
+            }
+            serde_json::Value::Object(_) => Ok(ContentValue::Structured(item.clone())),
+            other => Err(RpcError::Unexpected(format!(
+                "contentmultimap entry {key} holds {other}, which is neither hex nor an object"
+            ))),
+        }
+    };
+
+    match value {
+        serde_json::Value::Array(items) => items.iter().map(one).collect(),
+        // A single value need not be wrapped in a list on the wire; it is one
+        // here, so a caller has one shape to handle rather than two.
+        single => Ok(vec![one(single)?]),
     }
 }
 

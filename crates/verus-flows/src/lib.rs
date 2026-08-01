@@ -29,6 +29,8 @@
 //!   same as which coins exist.
 //! * [`history`] — what already happened, which a UTXO set cannot tell you:
 //!   an output that arrived and was spent is simply gone from it.
+//! * [`vdxf`](mod@vdxf) — keeping application data on a VerusID, and the care an
+//!   update needs given that it republishes the identity in full.
 //! * [`broadcast`](mod@broadcast) — and the one failure that must never be retried
 //!   automatically.
 //!
@@ -76,6 +78,7 @@ pub mod launch;
 pub mod login;
 pub mod offer;
 pub mod send;
+pub mod vdxf;
 
 #[cfg(feature = "shielded")]
 pub mod shielded;

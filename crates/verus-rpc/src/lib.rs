@@ -72,7 +72,7 @@ pub use method::{callable_methods, CallableMethod};
 pub use transport::HttpTransport;
 pub use transport::{RequestBody, Transport};
 pub use types::{
-    spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate,
-    CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord,
-    OfferListing, OfferSide, SignedAmount, COINBASE_MATURITY,
+    spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
+    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent,
+    IdentityRecord, OfferListing, OfferSide, SignedAmount, COINBASE_MATURITY,
 };
