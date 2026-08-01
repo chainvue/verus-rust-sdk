@@ -173,11 +173,23 @@ pub trait ChainReader {
     /// `api.verustest.net` is arity-sensitive, and a third argument is refused
     /// as `-32601` — see [the crate docs](crate).
     fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError>;
-    /// A VerusID together with the data published on it.
+    /// Every value an identity has **ever** published, accumulated.
     ///
-    /// [`ChainReader::identity`] returns the identity; this returns it with its
-    /// content maps filled in. That is the difference between reading who
-    /// controls an identity and reading what an application stored on it.
+    /// **Not its current content**, and the difference is not a nuance. The
+    /// reply carries `fromheight` and `toheight`, and with no range given the
+    /// daemon accumulates across the whole chain: a key written twice comes
+    /// back with *both* values, oldest first, even though only one of them is
+    /// on the identity now.
+    ///
+    /// Proven on chain rather than read off the docs. `vdxf1171008.VRSCTEST@`
+    /// had one key published and then republished by a second update touching
+    /// a different key; `getidentity` shows that key with one value and this
+    /// method shows it with two.
+    ///
+    /// So this answers "what has this identity published over time", which is
+    /// an audit question. For "what does it hold now" — which is what an
+    /// application reading back its own data wants — use
+    /// [`ChainReader::identity`] and [`content_multimap`].
     fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError>;
     /// The transaction that first created this identity — its registration.
     ///
@@ -629,29 +641,10 @@ impl<T: Transport> ChainReader for RpcClient<T> {
             }
         }
 
-        // Three shapes, all of them legitimate, taken from the reference
-        // implementation's own reader (`ContentMultiMap.fromJson` in
-        // `verus-typescript-primitives`): a list whose items are hex strings
-        // **or** objects, a bare hex string, and a bare object. An earlier
-        // version here accepted only the first and errored on the rest, which
-        // made every identity using a key the daemon recognises unreadable
-        // through this method — fail-closed, but unreadable.
-        //
-        // Absent entirely on an identity older than version 3, which reads as
-        // empty: such an identity cannot carry a multimap, so nothing is
-        // missing. Present-but-not-an-object is a different matter and is an
-        // error, because that is a shape nobody meant.
-        let mut content_multimap = BTreeMap::new();
-        if let Some(raw_map) = identity.identity.get("contentmultimap") {
-            let map = raw_map.as_object().ok_or_else(|| {
-                RpcError::Unexpected(format!(
-                    "contentmultimap is {raw_map}, not a map of keys to values"
-                ))
-            })?;
-            for (key, value) in map {
-                content_multimap.insert(key.clone(), content_values(key, value)?);
-            }
-        }
+        // Every value published across the range this reply covers — which is
+        // the whole chain unless the daemon was told otherwise, and is not the
+        // same as the identity's current content. See the method's docs.
+        let content_multimap = content_multimap(&identity.identity)?;
 
         Ok(IdentityContent {
             identity,
@@ -785,6 +778,32 @@ impl<T: Transport> Broadcaster for RpcClient<T> {
         // reporting a broken node.
         check_hash(&txid, "sendrawtransaction")
     }
+}
+
+/// The `contentmultimap` of an identity object, typed.
+///
+/// Takes the `identity` field of a `getidentity` or `getidentitycontent` reply.
+/// Public because **which** of those you pass changes what you get, and that
+/// difference is not cosmetic — see [`ChainReader::identity_content`].
+///
+/// Empty when the identity carries no multimap, which is every identity older
+/// than version 3.
+pub fn content_multimap(
+    identity: &serde_json::Value,
+) -> Result<BTreeMap<String, Vec<ContentValue>>, RpcError> {
+    let mut multimap = BTreeMap::new();
+    let Some(raw) = identity.get("contentmultimap") else {
+        return Ok(multimap);
+    };
+    let map = raw.as_object().ok_or_else(|| {
+        RpcError::Unexpected(format!(
+            "contentmultimap is {raw}, not a map of keys to values"
+        ))
+    })?;
+    for (key, value) in map {
+        multimap.insert(key.clone(), content_values(key, value)?);
+    }
+    Ok(multimap)
 }
 
 /// Read the values published under one VDXF key.

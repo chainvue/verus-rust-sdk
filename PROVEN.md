@@ -35,6 +35,22 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | Recovery, under a different key | `088db56d780cb943f888f0bd98329764ee4e1f6467c18f2d506cc94f12e9179d` | 1167199 |
 | `flows::register` through the public node → `flow1167608.VRSCTEST@` | `431aa039f6b0ed163c0baeeebf729d86b99be572359bce07aa90db348cddcdd7` | 1167611 |
 | `flows::register`, custom primaries + `minsigs 2` → `rustms1168959@` | `7ed0224c98f4986f9e9c1a475e10f93d645f32785239efb2c2f5e7db449cbb7c` | 1168963 |
+| `flows::vdxf::publish` — application data under a derived VDXF key → `vdxf1171008.VRSCTEST@` | `715d698bad6129ff35114786676c4f851eea345bd0685bf3611ce0c595a34083` | 1171012 |
+| **…and a second key published without erasing the first** | `adfdc3235ea2618b96d11f8a54edde8b71448ac9a55439fbedc6c4427e965551` | 1171013 |
+
+The second of those two is the row that matters. An identity update
+republishes the identity **in full**, so the update writing the second key had
+to carry the first one over untouched — along with both authorities and the
+primary addresses. Nothing offline can confirm that reconstruction is faithful;
+only the chain's own copy can, read back afterwards.
+
+It also corrected a reader. The first attempt asserted against
+`getidentitycontent` and failed with the first value appearing **twice** — the
+transaction was right and the reader was wrong. That method accumulates every
+value published across a height range rather than reporting current state, so
+an application reading back its own data would have seen every revision it had
+ever written, concatenated. The identity now holds one value under that key and
+reports four in its history, and both views are asserted.
 
 VerusID **login** (message signing) is also proven live, in both directions
 against the daemon's `signmessage`/`verifymessage` — but a signature is not a

@@ -65,7 +65,7 @@ mod method;
 mod transport;
 mod types;
 
-pub use client::{registration_cost, Broadcaster, ChainReader, RpcClient};
+pub use client::{content_multimap, registration_cost, Broadcaster, ChainReader, RpcClient};
 pub use error::RpcError;
 pub use method::{callable_methods, CallableMethod};
 #[cfg(feature = "http")]
