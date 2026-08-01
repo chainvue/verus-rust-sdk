@@ -197,7 +197,8 @@ fn a_verusid_registration_completes_on_chain() {
     let persisted = serde_json::to_string(&prepared).expect("serialize");
     assert!(persisted.contains("salt"));
 
-    let pending = prepared
+    let mut pending = prepared;
+    pending
         .broadcast_commitment(&client, &client)
         .expect("broadcast commitment");
     eprintln!("  commitment broadcast, waiting for a block");

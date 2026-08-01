@@ -15,10 +15,16 @@ use crate::broadcast::Unsent;
 use crate::error::FlowError;
 use crate::funding;
 
-/// A completed operation.
+/// A payment, built and signed.
+///
+/// Returned by [`send`] once a node has accepted it, and inside an
+/// [`Unsent`] before it has been offered to one — so `txid` is the id computed
+/// from `hex` rather than one a node reported. [`broadcast`](fn@crate::broadcast)
+/// refuses a node that names a different transaction, which is what keeps the
+/// two the same value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sent {
-    /// The transaction id the node accepted.
+    /// The transaction id, computed locally from `hex`.
     pub txid: String,
     /// Fee paid.
     pub fee: Amount,
@@ -195,8 +201,8 @@ pub fn prepare_send_from_identity(
         .parse()
         .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
     // Issued together, unwrapped after — see [`crate::drive`]. `identity_held`
-    // asks for the tip itself, so the second read is a cache hit under a driver
-    // and a no-op cost on a blocking client.
+    // asks for the tip itself, so under a driver the second read is a cache hit
+    // and costs no round; on a blocking client it is a second real request.
     let utxos = funding::identity_held(reader, &record.identity_address);
     let tip = reader.block_count();
     let (utxos, tip) = (utxos?, tip?);

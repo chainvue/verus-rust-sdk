@@ -76,7 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             persist(&state_file, &serde_json::to_string_pretty(&pending)?)?;
             println!("salt persisted to {state_file}");
 
-            let pending = pending.broadcast_commitment(&node, &node)?;
+            let mut pending = pending;
+            pending.broadcast_commitment(&node, &node)?;
             // Re-persist: broadcasting recorded a (height, hash) anchor used to
             // notice reorgs. A resume from the pre-broadcast file still works —
             // it only polls without reorg detection for that run.

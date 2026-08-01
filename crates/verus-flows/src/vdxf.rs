@@ -176,13 +176,18 @@ pub fn read_history(
 }
 
 /// What [`publish`] changed, and the transaction that changed it.
+///
+/// From [`prepare_publish`] nothing has changed yet: the transaction exists but
+/// has not been offered to a node, so read every field below in the future
+/// tense until it has.
 #[derive(Clone, Debug)]
 pub struct Published {
-    /// The broadcast transaction's id.
+    /// The transaction's id, computed locally from its bytes.
     pub txid: String,
     /// The key that was written, as it will appear in `contentmultimap`.
     pub key: String,
-    /// How many values now stand under it. Zero means the key was removed.
+    /// How many values stand under it once the update confirms. Zero means the
+    /// key was removed.
     pub values: usize,
 }
 

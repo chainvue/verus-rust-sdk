@@ -356,11 +356,16 @@ impl Pending<AwaitingCommitment> {
     ///
     /// **Persist this value first.** Once these bytes are on the network the
     /// commitment fee is committed, and without the salt it cannot be redeemed.
+    ///
+    /// Takes `&mut self` rather than consuming, and that is the reason: a
+    /// broadcast can fail *ambiguously*, meaning the commitment may well be on
+    /// the network. Handing the `Pending` back only on success would destroy
+    /// the salt in exactly the case where it is still needed.
     pub fn broadcast_commitment(
-        self,
+        &mut self,
         reader: &impl ChainReader,
         broadcaster: &impl Broadcaster,
-    ) -> Result<Self, FlowError> {
+    ) -> Result<(), FlowError> {
         self.anchor(reader)?.broadcast(broadcaster)
     }
 
@@ -370,11 +375,14 @@ impl Pending<AwaitingCommitment> {
     /// signed by `prepare_registration`, so all that is left before sending is
     /// the reorg anchor.
     ///
-    /// The anchor is set on the value returned here, which means it survives an
-    /// *ambiguous* broadcast — the case where the commitment may well be on the
-    /// network. Losing it there would mean the next poll had nothing to compare
-    /// against and could not tell a reorg from a normal wait.
-    pub fn anchor(mut self, reader: &impl ChainReader) -> Result<Unsent<Self>, FlowError> {
+    /// The anchor is written to `self` before the returned bytes go anywhere,
+    /// so it is recorded whatever the broadcast then does. Losing it would mean
+    /// the next poll had nothing to compare against and could not tell a reorg
+    /// from a normal wait.
+    ///
+    /// The outcome is `()` because there is nothing to hand back: the `Pending`
+    /// was never taken from the caller.
+    pub fn anchor(&mut self, reader: &impl ChainReader) -> Result<Unsent<()>, FlowError> {
         // A reorg is detected by comparing against where the chain was when
         // this was committed to.
         //
@@ -395,7 +403,7 @@ impl Pending<AwaitingCommitment> {
         Ok(Unsent {
             hex: self.commitment_hex.clone(),
             txid: self.commitment_txid.clone(),
-            outcome: self,
+            outcome: (),
         })
     }
 
@@ -594,14 +602,15 @@ impl Pending<ReadyToRegister> {
     }
 }
 
-/// A registration that has been broadcast.
+/// A registration — broadcast by [`Pending::complete`], still unsent from
+/// [`Pending::prepare`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registered {
     /// The name, without the parent.
     pub name: String,
     /// The identity's `i` address, as raw bytes.
     pub identity_address: [u8; 20],
-    /// The step-2 transaction id.
+    /// The step-2 transaction id, computed locally from `hex`.
     pub txid: String,
     /// The signed bytes.
     pub hex: String,

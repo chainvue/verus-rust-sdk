@@ -119,15 +119,23 @@ pub fn broadcast(
         // The node answered. It understood the transaction and said no, so the
         // outcome is known and resending unchanged will not help.
         Err(error @ RpcError::Node { .. }) => Err(FlowError::Rpc(error)),
-        // Nothing was sent and nothing could have been: a cassette refuses
-        // writes, so the transport never reached a node.
+        // Nothing was sent and nothing could have been: both of these come from
+        // a cassette, which has no node behind it at all.
         //
-        // Calling that "uncertain" would be worse than merely imprecise. The
+        // Calling either "uncertain" would be worse than merely imprecise. The
         // documented way to resolve an uncertain broadcast is to check for the
         // transaction and, finding it absent, **send it** — so a caller who
         // drove an unsplit flow by mistake would follow the recovery path
         // straight into the broadcast the cassette exists to prevent.
-        Err(error @ RpcError::WriteThroughCassette) => Err(FlowError::Rpc(error)),
+        //
+        // `AnswerNeeded` is not reachable here today, because a cassette
+        // refuses a write before it ever looks the request up. It is matched
+        // anyway: the catch-all below is the dangerous classification, and a
+        // future write method that slipped past `RequestBody::writes` would
+        // land in it silently.
+        Err(error @ (RpcError::WriteThroughCassette | RpcError::AnswerNeeded)) => {
+            Err(FlowError::Rpc(error))
+        }
         // Everything else — a dropped connection, a timeout, a proxy's HTML —
         // leaves the outcome genuinely unknown.
         Err(error) => Err(FlowError::BroadcastUncertain {
@@ -204,6 +212,17 @@ mod tests {
         match broadcast(&node, "00ff", TXID) {
             Err(FlowError::Rpc(RpcError::WriteThroughCassette)) => {}
             other => panic!("a refusal is a known outcome, got {other:?}"),
+        }
+    }
+
+    /// The same, for the other error only a cassette produces. Unreachable
+    /// today; pinned so that it stays a certainty if it ever becomes reachable.
+    #[test]
+    fn an_unanswered_request_is_certain_too() {
+        let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::AnswerNeeded);
+        match broadcast(&node, "00ff", TXID) {
+            Err(FlowError::Rpc(RpcError::AnswerNeeded)) => {}
+            other => panic!("nothing was sent, so nothing is uncertain: {other:?}"),
         }
     }
 

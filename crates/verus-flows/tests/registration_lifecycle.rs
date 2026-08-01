@@ -65,7 +65,8 @@ fn a_registration_runs_from_prepare_to_identity() {
     assert!(chain.broadcasts().is_empty());
     assert!(pending.anchored_at.is_none());
 
-    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let mut pending = pending;
+    pending.broadcast_commitment(&chain, &chain).unwrap();
     assert_eq!(chain.broadcasts().len(), 1);
     assert!(pending.anchored_at.is_some());
 
@@ -80,6 +81,60 @@ fn a_registration_runs_from_prepare_to_identity() {
     assert_eq!(chain.broadcasts().len(), 2);
     // The identity id is computable before the identity exists.
     assert_ne!(registered.identity_address, [0u8; 20]);
+}
+
+/// An **ambiguous** broadcast must not cost the caller their `Pending`.
+///
+/// The commitment may well be on the network — that is what makes the failure
+/// ambiguous — and the salt inside the `Pending` cannot be recovered from
+/// anywhere else, so handing it back only on success would destroy it in
+/// exactly the case where it is still needed. The reorg anchor has to land too,
+/// or the poll that follows the recovery has nothing to compare against and
+/// silently stops detecting reorgs.
+#[test]
+fn an_uncertain_broadcast_leaves_the_caller_holding_the_commitment() {
+    let chain = funded_chain(1_000)
+        .failing_broadcast(verus_rpc::RpcError::Transport("connection reset".into()));
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "uncertain", &options(), SALT).unwrap();
+    let salt = pending.reservation.salt;
+
+    let error = pending
+        .broadcast_commitment(&chain, &chain)
+        .expect_err("a dropped connection is not a success");
+    assert!(matches!(error, FlowError::BroadcastUncertain { .. }));
+
+    // Still ours, still complete, and now anchored.
+    assert_eq!(pending.reservation.salt, salt);
+    assert!(
+        pending.anchored_at.is_some(),
+        "the anchor must be recorded whatever the broadcast then does"
+    );
+}
+
+/// `Pending::prepare` borrows rather than consumes, for the same reason.
+///
+/// It is also the read-only half a driver runs: it takes no `Broadcaster`, so
+/// re-running it cannot send anything, and the same `Pending` can be asked for
+/// the bytes twice.
+#[test]
+fn preparing_a_registration_neither_sends_nor_consumes() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "prepared", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let ready = match pending.poll(&chain).unwrap() {
+        CommitmentStatus::Ready(ready) => ready,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+
+    let before = chain.broadcasts().len();
+    let first = ready.prepare(&chain, &key()).unwrap();
+    let second = ready.prepare(&chain, &key()).unwrap();
+
+    assert_eq!(chain.broadcasts().len(), before, "nothing may be sent");
+    assert_eq!(first.hex, second.hex, "and it is deterministic");
+    assert_eq!(first.txid, first.outcome.txid);
 }
 
 /// The safety property the API is arranged around: everything needed to finish
@@ -105,7 +160,8 @@ fn the_salt_is_persistable_before_any_money_moves() {
     assert_eq!(restored.registration_fee, pending.registration_fee);
 
     // And the restored value can still finish the job.
-    let pending = restored.broadcast_commitment(&chain, &chain).unwrap();
+    let mut pending = restored;
+    pending.broadcast_commitment(&chain, &chain).unwrap();
     assert!(matches!(
         pending.poll(&chain).unwrap(),
         CommitmentStatus::Ready(_)
@@ -117,10 +173,9 @@ fn the_salt_is_persistable_before_any_money_moves() {
 #[test]
 fn a_resumed_registration_still_knows_where_it_was_anchored() {
     let chain = funded_chain(1_000);
-    let pending = prepare_registration_with_salt(&chain, &key(), "resume", &options(), SALT)
-        .unwrap()
-        .broadcast_commitment(&chain, &chain)
-        .unwrap();
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "resume", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
 
     let saved = serde_json::to_string(&pending).unwrap();
     let restored: Pending<verus_flows::AwaitingCommitment> = serde_json::from_str(&saved).unwrap();
@@ -145,7 +200,8 @@ fn an_unconfirmed_commitment_reports_waiting() {
     let pending =
         prepare_registration_with_salt(&chain, &key(), "waiting", &options(), SALT).unwrap();
     let txid = pending.commitment_txid.clone();
-    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let mut pending = pending;
+    pending.broadcast_commitment(&chain, &chain).unwrap();
 
     // Zero confirmations: accepted, not mined.
     let chain = funded_chain(1_000).with_confirmations(&txid, 0);
@@ -160,10 +216,9 @@ fn an_unconfirmed_commitment_reports_waiting() {
 #[test]
 fn a_commitment_the_node_never_saw_is_reported_as_gone() {
     let chain = funded_chain(1_000);
-    let pending = prepare_registration_with_salt(&chain, &key(), "vanished", &options(), SALT)
-        .unwrap()
-        .broadcast_commitment(&chain, &chain)
-        .unwrap();
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "vanished", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
 
     // A chain that knows about some other transaction, but not this one.
     let chain = funded_chain(1_000).with_confirmations(&"cd".repeat(32), 5);
@@ -178,10 +233,9 @@ fn a_commitment_the_node_never_saw_is_reported_as_gone() {
 #[test]
 fn a_chain_that_shrank_is_reported_as_a_reorg() {
     let chain = funded_chain(1_000);
-    let pending = prepare_registration_with_salt(&chain, &key(), "shrank", &options(), SALT)
-        .unwrap()
-        .broadcast_commitment(&chain, &chain)
-        .unwrap();
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "shrank", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
 
     // The tip fell below where this was anchored.
     let chain = funded_chain(900);
@@ -196,10 +250,9 @@ fn a_chain_that_shrank_is_reported_as_a_reorg() {
 #[test]
 fn polling_is_cheap() {
     let chain = funded_chain(1_000);
-    let pending = prepare_registration_with_salt(&chain, &key(), "cheap", &options(), SALT)
-        .unwrap()
-        .broadcast_commitment(&chain, &chain)
-        .unwrap();
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "cheap", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
 
     let before = chain.requests();
     let _ = pending.poll(&chain).unwrap();
@@ -415,7 +468,8 @@ fn a_referred_registration_completes_and_pays_the_referrer() {
     // supply — this is exactly the field H2 adds.
     assert_eq!(pending.referral_levels, 3);
 
-    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let mut pending = pending;
+    pending.broadcast_commitment(&chain, &chain).unwrap();
     let ready = match pending.poll(&chain).unwrap() {
         CommitmentStatus::Ready(ready) => ready,
         other => panic!("expected Ready, got {other:?}"),
@@ -669,7 +723,8 @@ fn a_referrer_who_was_themselves_referred_has_their_own_referrer_paid_too() {
         "the upstream referrer was not inherited from the referrer's registration"
     );
 
-    let pending = pending.broadcast_commitment(&chain, &chain).unwrap();
+    let mut pending = pending;
+    pending.broadcast_commitment(&chain, &chain).unwrap();
     let ready = match pending.poll(&chain).unwrap() {
         CommitmentStatus::Ready(ready) => ready,
         other => panic!("expected Ready, got {other:?}"),

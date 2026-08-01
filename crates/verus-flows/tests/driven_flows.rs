@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use verus_flows::drive::{advance, Answers, Step};
 use verus_flows::FlowError;
 use verus_rpc::{RequestBody, RpcError, Transport};
+use verus_tx::Identity;
 
 /// A recorded reply for every request these tests can make.
 ///
@@ -384,6 +385,209 @@ fn driving_a_flow_that_broadcasts_is_refused_rather_than_recorded() {
         Some(FlowError::Rpc(RpcError::WriteThroughCassette)) => {}
         other => panic!("expected the write to be refused, got {other:?}"),
     }
+}
+
+/// An identity whose sole primary address is `signer`, rendered the way
+/// `getidentity` renders one, holding `multimap` in its content multimap.
+///
+/// The name and parent are the fixture's, so `identityaddress` below is the
+/// real derivation for them rather than a made-up `i` address — which matters,
+/// because `prepare_publish` refuses an identity whose decoded id does not
+/// match the one the node reported.
+fn identity_of(signer: &verus_keys::Address, multimap: Vec<([u8; 20], Vec<Vec<u8>>)>) -> Identity {
+    Identity {
+        version: 3,
+        flags: 0,
+        primary_addresses: vec![verus_tx::Destination::PubKeyHash(signer.hash())],
+        min_sigs: 1,
+        parent: PARENT,
+        name: "rustsdk".into(),
+        content_multimap: multimap,
+        content_map: Vec::new(),
+        revocation_authority: [0x33; 20],
+        recovery_authority: [0x44; 20],
+        private_addresses: Vec::new(),
+        system_id: PARENT,
+        unlock_after: 0,
+    }
+}
+
+/// VRSCTEST's own currency id, as the fixtures report it.
+const PARENT: [u8; 20] = [
+    0xf0, 0x76, 0xdd, 0xdd, 0x21, 0x0d, 0x11, 0xb6, 0x67, 0xef, 0x1b, 0xdc, 0x54, 0x24, 0x8f, 0xf3,
+    0x84, 0x63, 0xd8, 0x66,
+];
+
+/// `getidentity`, for an identity whose id is derived rather than invented.
+fn identity_reply(identity: &Identity, outpoint: &verus_tx::Txid) -> String {
+    let id = verus_tx::identity_id(&identity.name, Some(identity.parent));
+    let address = verus_keys::Address::new(verus_keys::AddressKind::Identity, id);
+    let primary: Vec<String> = identity
+        .primary_addresses
+        .iter()
+        .map(|d| match d {
+            verus_tx::Destination::PubKeyHash(h) => {
+                verus_keys::Address::new(verus_keys::AddressKind::PubKeyHash, *h).to_string()
+            }
+            other => panic!("unexpected primary address {other:?}"),
+        })
+        .collect();
+    serde_json::json!({"result": {
+        "blockheight": 1_166_566,
+        "fullyqualifiedname": "rustsdk.VRSCTEST@",
+        "status": "active",
+        "txid": outpoint.to_display_hex(),
+        "vout": 0,
+        "identity": {
+            "identityaddress": address.to_string(),
+            "minimumsignatures": identity.min_sigs,
+            "name": identity.name,
+            "primaryaddresses": primary,
+            "version": identity.version,
+        },
+    }})
+    .to_string()
+}
+
+/// The `i` address of an identity, which is also its currency id when it is
+/// tokenised.
+fn identity_address(identity: &Identity) -> verus_keys::Address {
+    verus_keys::Address::new(
+        verus_keys::AddressKind::Identity,
+        verus_tx::identity_id(&identity.name, Some(identity.parent)),
+    )
+}
+
+/// A mint is paid for by the identity it spends from, so the outputs it reads
+/// are the identity's own pay-to-identity ones — and the three reads it needs
+/// (the chain, the identity, the identity's outputs) need nothing from each
+/// other.
+///
+/// Also the only coverage `mint` has anywhere: it was rearranged more than any
+/// other flow in this split and had none.
+#[test]
+fn preparing_a_mint_resolves_in_a_single_round() {
+    let key = spender();
+    let identity = identity_of(&key.address(), Vec::new());
+    let address = identity_address(&identity);
+    let script = verus_tx::identity_payment_script(address.hash()).expect("payment script");
+
+    let mut replies = replies();
+    replies.insert(
+        "getidentity",
+        identity_reply(&identity, &verus_tx::Txid::from_internal([0x22; 32])),
+    );
+    replies.insert(
+        "getaddressutxos",
+        format!(
+            r#"{{"result":[{{"address":"{address}","blocktime":1785262420,"height":1166385,"isspendable":1,"outputIndex":0,"satoshis":500000000,"script":"{}","txid":"5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"}}]}}"#,
+            hex::encode(&script)
+        ),
+    );
+
+    let currency = address.to_string();
+    let (_unsent, rounds) = drive_with(replies, |client| {
+        verus_flows::prepare_mint(
+            client,
+            &key,
+            &currency,
+            verus_flows::Amount::from_sat(100_000_000),
+            PAYEE,
+            verus_flows::Amount::from_sat(20_010),
+        )
+    });
+
+    assert_eq!(rounds.len(), 1, "one round: {rounds:#?}");
+    let mut methods: Vec<String> = rounds[0].iter().map(|b| method_of(b)).collect();
+    methods.sort();
+    assert_eq!(
+        methods,
+        ["getaddressutxos", "getblockcount", "getidentity", "getinfo"],
+        "all four reads must go out together"
+    );
+}
+
+/// Publishing has one **irreducible** round boundary and one that was avoidable.
+///
+/// The transaction holding the identity cannot be asked for until the identity
+/// has named its outpoint — that is a real dependency and no reordering helps.
+/// The funding lookup is not: it reads an address the caller supplied, so it
+/// belongs in the first round with `getidentity`. Two rounds, not three.
+#[test]
+fn preparing_a_publish_costs_the_one_round_it_cannot_avoid() {
+    let key = spender();
+    let theirs = [0xaa; 20];
+    let identity = identity_of(&key.address(), vec![(theirs, vec![b"not mine".to_vec()])]);
+    let outpoint = verus_tx::Txid::from_internal([0x22; 32]);
+
+    let script = verus_tx::cc::identity_primary_script(
+        verus_tx::identity_id(&identity.name, Some(identity.parent)),
+        identity.to_bytes().expect("identity encodes"),
+        identity.revocation_authority,
+        identity.recovery_authority,
+    )
+    .expect("identity script");
+
+    let mut replies = replies_for(&key.address());
+    replies.insert("getidentity", identity_reply(&identity, &outpoint));
+    replies.insert(
+        "getrawtransaction",
+        serde_json::json!({"result": {"vout": [
+            {"valueSat": 0, "scriptPubKey": {"hex": hex::encode(&script)}}
+        ]}})
+        .to_string(),
+    );
+
+    let funding_address = key.address().to_string();
+    let (unsent, rounds) = drive_with(replies, |client| {
+        verus_flows::prepare_publish(
+            client,
+            &[&key],
+            "rustsdk.VRSCTEST@",
+            &funding_address,
+            [0xbb; 20],
+            vec![b"mine".to_vec()],
+        )
+    });
+
+    assert_eq!(rounds.len(), 2, "two rounds: {rounds:#?}");
+    let mut first: Vec<String> = rounds[0].iter().map(|b| method_of(b)).collect();
+    first.sort();
+    assert_eq!(
+        first,
+        ["getaddressutxos", "getblockcount", "getidentity"],
+        "the funding lookup does not wait on the identity"
+    );
+    assert_eq!(
+        rounds[1].iter().map(|b| method_of(b)).collect::<Vec<_>>(),
+        ["getrawtransaction"],
+        "and the transaction cannot be asked for before the outpoint is known"
+    );
+
+    // The erase invariant, on the bytes a browser would send: an update
+    // republishes the identity in full, so another application's key has to
+    // survive being driven exactly as it survives the one-pass path.
+    let raw = hex::decode(&unsent.hex).expect("hex");
+    let republished = verus_wire::TxV4::deserialize(&raw)
+        .expect("parse")
+        .outputs
+        .iter()
+        .find_map(
+            |out| match verus_tx::decode_output_script(&out.script_pubkey) {
+                Ok(verus_tx::OutputKind::IdentityPrimary { identity }) => Some(*identity),
+                _ => None,
+            },
+        )
+        .expect("the update carries an identity output");
+    assert_eq!(
+        republished
+            .content_multimap
+            .iter()
+            .find(|(k, _)| *k == theirs)
+            .expect("another application's key must survive")
+            .1,
+        vec![b"not mine".to_vec()]
+    );
 }
 
 /// The subtlest property in the whole mechanism: a **node error, cached**, is

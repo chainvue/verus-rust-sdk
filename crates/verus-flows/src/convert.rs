@@ -293,9 +293,10 @@ pub fn prepare_mint(
     // answer, and a `?` between them would cost a network round trip each
     // against a driver that cannot answer immediately. See [`crate::drive`].
     //
-    // It does mean a revoked identity is looked up *and* has its outputs
-    // fetched before the refusal below. That is one wasted read on a path that
-    // was going to fail anyway, against a round saved on every path that works.
+    // It does mean a revoked identity has its outputs fetched before the
+    // refusal below — `getblockcount`, `getaddressutxos` and any coinbase
+    // probes those turn up. Wasted work on a path that was going to fail
+    // anyway, against a round saved on every path that works.
     let info = reader.chain_info();
     let record = crate::error::look_up_identity(reader, currency);
     let identity_funding = crate::funding::identity_held(reader, currency);
@@ -350,7 +351,9 @@ pub fn prepare_mint(
              send() it some coins first"
         )));
     }
-    // Already asked for inside `identity_held`, so this is a cache hit.
+    // `identity_held` has already asked for this, so under a driver it is a
+    // cache hit and costs no round. On a blocking client it is a second real
+    // request — cheap, and not worth threading the tip back out for.
     let tip = reader.block_count()?;
     let params = ConversionParams::new(
         &transfer,

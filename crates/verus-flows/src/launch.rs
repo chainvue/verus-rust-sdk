@@ -42,10 +42,11 @@ use crate::error::FlowError;
 use crate::funding;
 use crate::identity::check_trusted_node_fee;
 
-/// A currency launched and broadcast.
+/// A currency launch — broadcast by [`launch_currency`], still unsent from
+/// [`prepare_launch`].
 #[derive(Clone, Debug)]
 pub struct Launched {
-    /// The `definecurrency` transaction id.
+    /// The `definecurrency` transaction id, computed locally from its bytes.
     pub txid: String,
     /// The new currency's id — the defining identity's `i` address hash.
     pub currency_id: [u8; 20],

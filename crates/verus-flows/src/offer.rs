@@ -254,12 +254,13 @@ fn read_satoshis(vout: &serde_json::Value) -> Result<Amount, FlowError> {
         .map_err(|e| FlowError::Offer(format!("the funding output's value: {e}")))
 }
 
-/// An offer completed and broadcast.
+/// An offer completed — broadcast by [`take`], still unsent from
+/// [`prepare_take`].
 #[derive(Debug, Clone)]
 pub struct Taken {
     /// The terms as they were read from the chain.
     pub terms: OfferTerms,
-    /// The completed transaction's id.
+    /// The completed transaction's id, computed locally from its bytes.
     pub txid: String,
 }
 
