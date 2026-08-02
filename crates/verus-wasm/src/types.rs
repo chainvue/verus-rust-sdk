@@ -88,6 +88,12 @@ extern "C" {
     /// TypeScript `PendingRequest`.
     #[wasm_bindgen(typescript_type = "PendingRequest")]
     pub type PendingRequestValue;
+    /// TypeScript `PlanLaunchRequest`.
+    #[wasm_bindgen(typescript_type = "PlanLaunchRequest")]
+    pub type PlanLaunchRequestValue;
+    /// TypeScript `LaunchStep`.
+    #[wasm_bindgen(typescript_type = "LaunchStep")]
+    pub type LaunchStepValue;
     /// TypeScript `RegistrationStep`.
     #[wasm_bindgen(typescript_type = "RegistrationStep")]
     pub type RegistrationStepValue;
@@ -285,9 +291,10 @@ mod tests {
         use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::flows::{
-            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsListing,
-            JsLoggedIn, JsOfferTerms, JsPlannedTransaction, JsPlannedUpdate, JsTaken, LoginRequest,
-            OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest, PlanMintRequest,
+            ContentRequest, HistoryRequest, JsContentValue, JsCurrencyDefinition, JsFunding,
+            JsHistoryEntry, JsLaunched, JsListing, JsLoggedIn, JsOfferTerms, JsPlannedTransaction,
+            JsPlannedUpdate, JsPreallocation, JsTaken, LoginRequest, OfferTermsRequest,
+            OffersRequest, PlanBurnRequest, PlanConvertRequest, PlanLaunchRequest, PlanMintRequest,
             PlanPublishRequest, PlanRegistrationRequest, PlanSendFromIdentityRequest,
             PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
             VerifyLoginRequest,
@@ -408,6 +415,27 @@ mod tests {
         assert_declared("Pending", &crate::flows::JsPending::default());
         assert_declared("PendingRequest", &crate::flows::PendingRequest::default());
         assert_declared("Registered", &crate::flows::JsRegistered::default());
+        assert_declared("Preallocation", &JsPreallocation::default());
+        assert_declared(
+            "CurrencyDefinition",
+            &JsCurrencyDefinition {
+                end_block: Some(0.0),
+                initial_supply: Some(String::new()),
+                proof_protocol: Some(0),
+                id_registration_fees: Some(String::new()),
+                id_referral_levels: Some(0.0),
+                id_import_fees: Some(String::new()),
+                ..JsCurrencyDefinition::default()
+            },
+        );
+        assert_declared(
+            "PlanLaunchRequest",
+            &PlanLaunchRequest {
+                pin_launch_fee: Some(String::new()),
+                ..PlanLaunchRequest::default()
+            },
+        );
+        assert_declared("Launched", &JsLaunched::default());
         assert_declared("Taken", &JsTaken::default());
         assert_declared(
             "ContentValue",
@@ -634,10 +662,11 @@ mod tests {
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
-            ContentRequest, HistoryRequest, LoginRequest, OfferTermsRequest, OffersRequest,
-            PlanBurnRequest, PlanConvertRequest, PlanMintRequest, PlanPublishRequest,
-            PlanRegistrationRequest, PlanSendFromIdentityRequest, PlanSendRequest,
-            PlanSendTokenRequest, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            ContentRequest, HistoryRequest, JsCurrencyDefinition, JsPreallocation,
+            LoginRequest, OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest,
+            PlanLaunchRequest, PlanMintRequest, PlanPublishRequest, PlanRegistrationRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
+            TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -706,6 +735,15 @@ mod tests {
         check::<crate::flows::PendingRequest>(
             "PendingRequest",
             &crate::flows::PendingRequest::SHAPE,
+        );
+        check::<PlanLaunchRequest>("PlanLaunchRequest", &PlanLaunchRequest::SHAPE);
+        check::<JsCurrencyDefinition>(
+            "PlanLaunchRequest.definition",
+            nested(&PlanLaunchRequest::SHAPE, "definition"),
+        );
+        check::<JsPreallocation>(
+            "CurrencyDefinition.preallocations",
+            nested(&JsCurrencyDefinition::SHAPE, "preallocations"),
         );
         check::<crate::dto::JsUtxo>(
             "PlanConvertRequest.tokenFunding",

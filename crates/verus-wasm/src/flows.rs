@@ -96,19 +96,21 @@ use wasm_bindgen::prelude::*;
 
 use verus_flows::drive::{advance, Step};
 use verus_rpc::{Cassette, ChainReader, RpcClient};
+use verus_tx::currency_definition::CurrencyDefinition;
 
 use crate::dto::{self, Shape};
 use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{
     CommitmentStatusStepValue, ContentRequestValue, ContentStepValue, HistoryRequestValue,
-    HistoryStepValue, JsText, LoginRequestValue, LoginStepValue, OfferTermsRequestValue,
-    OfferTermsStepValue, OffersRequestValue, OffersStepValue, PendingRequestValue,
-    PlanBurnRequestValue, PlanConvertRequestValue, PlanMintRequestValue, PlanPublishRequestValue,
-    PlanRegistrationRequestValue, PlanSendFromIdentityRequestValue, PlanSendRequestValue,
-    PlanSendTokenRequestValue, RegisteredStepValue, RegistrationStepValue, SpendableRequestValue,
-    SpendableStepValue, TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue,
-    UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
+    HistoryStepValue, JsText, LaunchStepValue, LoginRequestValue, LoginStepValue,
+    OfferTermsRequestValue, OfferTermsStepValue, OffersRequestValue, OffersStepValue,
+    PendingRequestValue, PlanBurnRequestValue, PlanConvertRequestValue, PlanLaunchRequestValue,
+    PlanMintRequestValue, PlanPublishRequestValue, PlanRegistrationRequestValue,
+    PlanSendFromIdentityRequestValue, PlanSendRequestValue, PlanSendTokenRequestValue,
+    RegisteredStepValue, RegistrationStepValue, SpendableRequestValue, SpendableStepValue,
+    TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue, UpdateStepValue,
+    VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -1106,6 +1108,325 @@ pub struct JsRegistered {
     pub identity_address: String,
     /// What the registration cost, in satoshis, as a decimal string.
     pub fee_paid: String,
+}
+
+/// A currency to define and launch.
+///
+/// # The parallel arrays
+///
+/// A fractional basket is described by several arrays that are read
+/// **positionally**: `currencies[i]`, `weights[i]`, `conversions[i]` and the
+/// preconversion bounds all describe the same reserve. They must therefore be
+/// the same length and in the same order, and nothing on chain checks that for
+/// you — a launch defined with them misaligned pays its fee and creates a
+/// currency whose reserves are not what its author meant.
+///
+/// So they are checked here, by name, before anything is built. It is the one
+/// guard worth having: a launch fee is not refundable and a currency cannot be
+/// redefined.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JsCurrencyDefinition {
+    /// The name, without the parent. Must match the defining identity's.
+    pub name: String,
+    /// The parent currency, as an `i…` address — the chain's own currency for
+    /// a top-level identity, or the parent identity's id for a sub-identity.
+    ///
+    /// Named rather than derived, and then **checked against the identity the
+    /// chain holds**: a definition whose parent disagrees with its identity
+    /// builds cleanly and dies at consensus, after the fee is burned.
+    pub parent: String,
+    /// `"token"` for a simple token, `"fractional"` for a reserve basket.
+    pub kind: String,
+    /// The height conversions become possible and preconversions stop. Must be
+    /// after the current tip — the chain refuses a launch in the past.
+    pub start_block: f64,
+    /// The height the currency stops, or omit for never.
+    #[serde(default)]
+    pub end_block: Option<f64>,
+    /// Supply created at launch, in satoshis, as a decimal string.
+    #[serde(default)]
+    pub initial_supply: Option<String>,
+    /// `2` makes the currency **centralized**: its controlling identity may
+    /// mint new supply. Omit for `1`, which cannot.
+    #[serde(default)]
+    pub proof_protocol: Option<i32>,
+    /// The reserve currencies, as `i…` addresses. Fractional only.
+    #[serde(default)]
+    pub currencies: Vec<String>,
+    /// Each reserve's weight, in satoshis. Same length and order as
+    /// `currencies`.
+    #[serde(default)]
+    pub weights: Vec<String>,
+    /// Each reserve's launch price, in satoshis. Same length and order.
+    #[serde(default)]
+    pub conversions: Vec<String>,
+    /// The least that must be preconverted per reserve for the launch to go
+    /// ahead. Below it, **every** contribution is refunded.
+    #[serde(default)]
+    pub min_preconversion: Vec<String>,
+    /// The most that may be preconverted per reserve.
+    #[serde(default)]
+    pub max_preconversion: Vec<String>,
+    /// What the definer contributes per reserve at launch.
+    ///
+    /// The daemon initialises `preconverted` equal to this and nothing in its
+    /// RPC output reveals the second field, so this binding sets both together.
+    /// Setting them apart is possible in Rust and is almost always a mistake.
+    #[serde(default)]
+    pub initial_contributions: Vec<String>,
+    /// Supply handed to named identities at launch.
+    #[serde(default)]
+    pub preallocations: Vec<JsPreallocation>,
+    /// What registering a sub-identity under this currency costs, in satoshis.
+    #[serde(default)]
+    pub id_registration_fees: Option<String>,
+    /// How many referral levels pay out.
+    #[serde(default)]
+    pub id_referral_levels: Option<f64>,
+    /// What importing an identity costs, in satoshis.
+    #[serde(default)]
+    pub id_import_fees: Option<String>,
+}
+
+/// Supply handed to a named identity at launch.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JsPreallocation {
+    /// The recipient identity's `i…` address.
+    pub recipient: String,
+    /// How much, in satoshis, as a decimal string.
+    pub amount: String,
+}
+
+impl JsPreallocation {
+    /// The keys a preallocation object may carry.
+    pub const SHAPE: Shape = Shape {
+        fields: &[("recipient", None), ("amount", None)],
+    };
+}
+
+impl JsCurrencyDefinition {
+    /// The keys a `CurrencyDefinition` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("name", None),
+            ("parent", None),
+            ("kind", None),
+            ("startBlock", None),
+            ("endBlock", None),
+            ("initialSupply", None),
+            ("proofProtocol", None),
+            ("currencies", None),
+            ("weights", None),
+            ("conversions", None),
+            ("minPreconversion", None),
+            ("maxPreconversion", None),
+            ("initialContributions", None),
+            ("preallocations", Some(&JsPreallocation::SHAPE)),
+            ("idRegistrationFees", None),
+            ("idReferralLevels", None),
+            ("idImportFees", None),
+        ],
+    };
+}
+
+/// What to launch, and under which identity.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanLaunchRequest {
+    /// The defining identity — a name or an `i…` address. The currency takes
+    /// its name and its id.
+    pub identity: String,
+    /// The currency to define.
+    pub definition: JsCurrencyDefinition,
+    /// Override the launch fee read from the parent's chain policy, in
+    /// satoshis. The node reports that figure and it is **burned outright**,
+    /// so pinning it is the escape hatch for a node that misreports it.
+    #[serde(default)]
+    pub pin_launch_fee: Option<String>,
+}
+
+impl PlanLaunchRequest {
+    /// The keys a `PlanLaunchRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("definition", Some(&JsCurrencyDefinition::SHAPE)),
+            ("pinLaunchFee", None),
+        ],
+    };
+}
+
+/// A currency launch, built and signed. **Not broadcast.**
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsLaunched {
+    /// The raw transaction, hex — what `sendrawtransaction` takes.
+    pub hex: String,
+    /// Its txid in display order, computed before anything is sent.
+    pub txid: String,
+    /// The new currency's id — the defining identity's `i` address.
+    pub currency_id: String,
+    /// The height conversions become possible.
+    pub start_block: f64,
+    /// The launch fee, in satoshis. **Burned**, not paid to anyone.
+    pub launch_fee: String,
+}
+
+impl JsCurrencyDefinition {
+    /// Build the SDK's definition, checking what only the caller can get wrong.
+    fn to_definition(&self) -> WasmResult<CurrencyDefinition> {
+        let parent = dto::currency("parent", &self.parent)?;
+        // The parallel arrays, checked against `currencies` by name. A launch
+        // defined with them misaligned pays its fee and creates a currency
+        // whose reserves are not what its author meant, and no chain rule
+        // catches it.
+        let reserves = self.currencies.len();
+        for (field, list) in [
+            ("weights", &self.weights),
+            ("conversions", &self.conversions),
+            ("minPreconversion", &self.min_preconversion),
+            ("maxPreconversion", &self.max_preconversion),
+            ("initialContributions", &self.initial_contributions),
+        ] {
+            if !list.is_empty() && list.len() != reserves {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!(
+                        "{field} has {} entries but currencies has {reserves}; they describe the \
+                         same reserves position by position",
+                        list.len()
+                    ),
+                ));
+            }
+        }
+
+        let fractional = match self.kind.as_str() {
+            "token" => false,
+            "fractional" => true,
+            other => {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!("unknown currency kind {other:?}; expected token or fractional"),
+                ))
+            }
+        };
+        if fractional && reserves == 0 {
+            return Err(WasmError::new(
+                "InvalidArgument",
+                "a fractional currency is a basket of reserves and needs at least one",
+            ));
+        }
+        if !fractional && reserves > 0 {
+            return Err(WasmError::new(
+                "InvalidArgument",
+                "a token holds no reserves; use kind \"fractional\" to define a basket",
+            ));
+        }
+
+        let mut definition = CurrencyDefinition::token(
+            parent,
+            self.name.clone(),
+            height("startBlock", self.start_block)?,
+        );
+        if fractional {
+            definition.options |= verus_tx::currency_definition::option::FRACTIONAL;
+        }
+        if let Some(end) = self.end_block {
+            definition.end_block = height("endBlock", end)?;
+        }
+        if let Some(supply) = &self.initial_supply {
+            definition.initial_supply = dto::sats(supply)?;
+        }
+        if let Some(protocol) = self.proof_protocol {
+            definition.proof_protocol = protocol;
+        }
+
+        definition.currencies = self
+            .currencies
+            .iter()
+            .map(|id| dto::currency("currencies", id))
+            .collect::<WasmResult<_>>()?;
+        definition.weights = amounts("weights", &self.weights)?
+            .into_iter()
+            .map(|amount| i32::try_from(amount.to_sat()).unwrap_or(i32::MAX))
+            .collect();
+        definition.conversions = amounts("conversions", &self.conversions)?;
+        definition.min_preconversion = amounts("minPreconversion", &self.min_preconversion)?;
+        definition.max_preconversion = amounts("maxPreconversion", &self.max_preconversion)?;
+
+        // `preconverted` is set equal to the contributions rather than exposed:
+        // the daemon initialises the two together, nothing in its RPC output
+        // reveals the second, and setting them apart is almost always a
+        // mistake — one a browser caller has no way to notice.
+        let contributions = amounts("initialContributions", &self.initial_contributions)?;
+        definition.preconverted = contributions.clone();
+        definition.initial_contributions = contributions;
+
+        definition.preallocations = self
+            .preallocations
+            .iter()
+            .map(|pre| {
+                Ok(verus_tx::currency_definition::Preallocation {
+                    recipient: dto::identity_id("preallocations.recipient", &pre.recipient)?,
+                    amount: dto::sats(&pre.amount)?,
+                })
+            })
+            .collect::<WasmResult<_>>()?;
+
+        if let Some(fee) = &self.id_registration_fees {
+            definition.id_registration_fees = dto::sats(fee)?.to_sat();
+        }
+        if let Some(levels) = self.id_referral_levels {
+            definition.id_referral_levels = height("idReferralLevels", levels)?;
+        }
+        if let Some(fee) = &self.id_import_fees {
+            definition.id_import_fees = dto::sats(fee)?.to_sat();
+        }
+        Ok(definition)
+    }
+}
+
+/// A launch height on its way back to JavaScript.
+///
+/// Heights are well inside what a float64 holds exactly, so this is not the
+/// lossy conversion the money rule exists to prevent — written out rather than
+/// left implicit so that is visible.
+fn launch_height(height: u64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    {
+        height as f64
+    }
+}
+
+/// A list of decimal-string satoshi amounts.
+fn amounts(field: &str, list: &[String]) -> WasmResult<Vec<verus_tx::Amount>> {
+    list.iter()
+        .enumerate()
+        .map(|(index, text)| {
+            dto::sats(text)
+                .map_err(|e| WasmError::new(e.code(), format!("{field}[{index}]: {}", e.message())))
+        })
+        .collect()
+}
+
+/// A block height from a JavaScript number, refusing one that is not a height.
+///
+/// A `number` is a float64, so it can arrive fractional, negative or beyond
+/// what a height can hold. Silently truncating any of those picks a block
+/// nobody asked for — and `startBlock` decides when a currency launches.
+fn height(field: &str, value: f64) -> WasmResult<u64> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_992.0
+    {
+        return Err(WasmError::new(
+            "InvalidArgument",
+            format!("{field} must be a whole, non-negative block height, not {value}"),
+        ));
+    }
+    // Exact: the guard above bounds it to the integers a float64 holds.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(value as u64)
 }
 
 /// What is standing on the marketplace against a currency or an identity.
@@ -2324,6 +2645,63 @@ impl Key {
                 name: unsent.outcome.name,
                 identity_address: dto::identity_address(unsent.outcome.identity_address),
                 fee_paid: dto::sats_string(unsent.outcome.fee_paid),
+            },
+        );
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan defining and launching a currency under an identity's authority.
+    ///
+    /// The currency takes the identity's name, and **the identity's id becomes
+    /// the currency's id**. An identity defines exactly one currency, ever, so
+    /// this is not an operation to retry casually: the launch fee is **burned**
+    /// rather than paid to anyone, and a currency cannot be redefined.
+    ///
+    /// Checked before anything is signed — each of these otherwise costs the
+    /// fee and produces a currency nobody wanted:
+    ///
+    /// * the identity exists, is not revoked, and this key is a primary address
+    ///   on it;
+    /// * it does not already define a currency;
+    /// * the definition's name and parent match the identity the chain holds;
+    /// * `startBlock` is after the tip, because the chain refuses a launch in
+    ///   the past;
+    /// * the reserve arrays are the same length, because they are read position
+    ///   by position and nothing on chain notices when they are not.
+    ///
+    /// # One signature only
+    ///
+    /// As with the other identity-authorised plans, this signs with this key
+    /// alone, so an identity needing more is refused by name.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planLaunch)]
+    pub fn plan_launch(
+        &self,
+        request: PlanLaunchRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<LaunchStepValue> {
+        let request: PlanLaunchRequest = dto::from_js(request.into(), &PlanLaunchRequest::SHAPE)?;
+        let pin = match &request.pin_launch_fee {
+            Some(text) => Some(dto::sats(text)?),
+            None => None,
+        };
+        let definition = request.definition.to_definition()?;
+        let identity = request.identity;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_launch(client, &[self.private()], &identity, &definition, pin)
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(
+            step,
+            |unsent: verus_flows::Unsent<verus_flows::Launched>| JsLaunched {
+                hex: unsent.hex,
+                txid: unsent.txid,
+                currency_id: dto::identity_address(unsent.outcome.currency_id),
+                start_block: launch_height(unsent.outcome.start_block),
+                launch_fee: dto::sats_string(unsent.outcome.launch_fee),
             },
         );
         Ok(crate::to_js(&step)?.unchecked_into())

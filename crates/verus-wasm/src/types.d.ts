@@ -1037,3 +1037,109 @@ export type RegistrationStep = PlanStep<Pending>;
 export type CommitmentStatusStep = PlanStep<CommitmentStatus>;
 /** @see Key.planRegistrationComplete */
 export type RegisteredStep = PlanStep<Registered>;
+
+/** Supply handed to a named identity at launch. */
+export interface Preallocation {
+    /** The recipient identity's `i…` address. */
+    recipient: string;
+    /** How much, in satoshis, as a decimal string. */
+    amount: string;
+}
+
+/**
+ * A currency to define and launch.
+ *
+ * **The reserve arrays are read positionally.** `currencies[i]`, `weights[i]`,
+ * `conversions[i]` and the preconversion bounds all describe the same reserve,
+ * so they must be the same length and in the same order. Nothing on chain
+ * checks that — a launch defined with them misaligned pays its fee and creates
+ * a currency whose reserves are not what its author meant — so it is checked
+ * here, by name, before anything is built.
+ */
+export interface CurrencyDefinition {
+    /** The name, without the parent. Must match the defining identity's. */
+    name: string;
+    /**
+     * The parent currency, as an `i…` address — the chain's own currency for a
+     * top-level identity, or the parent identity's id for a sub-identity.
+     * Checked against the identity the chain holds.
+     */
+    parent: string;
+    /** A simple token, or a basket of reserves. */
+    kind: "token" | "fractional";
+    /**
+     * The height conversions become possible and preconversions stop. Must be
+     * after the current tip: the chain refuses a launch in the past.
+     */
+    startBlock: number;
+    /** The height the currency stops, or omit for never. */
+    endBlock?: number;
+    /** Supply created at launch, in satoshis, as a decimal string. */
+    initialSupply?: string;
+    /**
+     * `2` makes the currency **centralized**: its controlling identity may mint
+     * new supply with `planMint`. Omit for `1`, which cannot.
+     */
+    proofProtocol?: number;
+    /** The reserve currencies, as `i…` addresses. Fractional only. */
+    currencies?: string[];
+    /** Each reserve's weight, in satoshis. Same length and order. */
+    weights?: string[];
+    /** Each reserve's launch price, in satoshis. Same length and order. */
+    conversions?: string[];
+    /**
+     * The least that must be preconverted per reserve for the launch to go
+     * ahead. Below it, **every** contribution is refunded.
+     */
+    minPreconversion?: string[];
+    /** The most that may be preconverted per reserve. */
+    maxPreconversion?: string[];
+    /**
+     * What the definer contributes per reserve at launch. The daemon
+     * initialises `preconverted` equal to this, and this binding does the same
+     * — setting them apart is possible in Rust and almost always a mistake.
+     */
+    initialContributions?: string[];
+    /** Supply handed to named identities at launch. */
+    preallocations?: Preallocation[];
+    /** What registering a sub-identity costs, in satoshis. */
+    idRegistrationFees?: string;
+    /** How many referral levels pay out. */
+    idReferralLevels?: number;
+    /** What importing an identity costs, in satoshis. */
+    idImportFees?: string;
+}
+
+/** What to launch, and under which identity. */
+export interface PlanLaunchRequest {
+    /**
+     * The defining identity — a name or an `i…` address. The currency takes its
+     * name, and the identity's id becomes the currency's id.
+     */
+    identity: string;
+    /** The currency to define. */
+    definition: CurrencyDefinition;
+    /**
+     * Override the launch fee read from the parent's chain policy, in satoshis.
+     * The node reports that figure and it is **burned outright**, so this is the
+     * escape hatch for a node that misreports it.
+     */
+    pinLaunchFee?: string;
+}
+
+/** A currency launch, built and signed. **Not broadcast.** */
+export interface Launched {
+    /** The raw transaction, hex — what `sendrawtransaction` takes. */
+    hex: string;
+    /** Its txid in display order, computed before anything is sent. */
+    txid: string;
+    /** The new currency's id — the defining identity's `i` address. */
+    currencyId: string;
+    /** The height conversions become possible. */
+    startBlock: number;
+    /** The launch fee, in satoshis. **Burned**, not paid to anyone. */
+    launchFee: string;
+}
+
+/** @see Key.planLaunch */
+export type LaunchStep = PlanStep<Launched>;
