@@ -55,15 +55,43 @@ extern "C" {
     /// TypeScript `PlanSendRequest`.
     #[wasm_bindgen(typescript_type = "PlanSendRequest")]
     pub type PlanSendRequestValue;
-    /// TypeScript `SendStep`.
-    #[wasm_bindgen(typescript_type = "SendStep")]
-    pub type SendStepValue;
     /// TypeScript `HistoryRequest`.
     #[wasm_bindgen(typescript_type = "HistoryRequest")]
     pub type HistoryRequestValue;
+    /// TypeScript `LoginRequest`.
+    #[wasm_bindgen(typescript_type = "LoginRequest")]
+    pub type LoginRequestValue;
+    /// TypeScript `VerifyLoginRequest`.
+    #[wasm_bindgen(typescript_type = "VerifyLoginRequest")]
+    pub type VerifyLoginRequestValue;
+    /// TypeScript `SpendableRequest`.
+    #[wasm_bindgen(typescript_type = "SpendableRequest")]
+    pub type SpendableRequestValue;
+    /// TypeScript `ContentRequest`.
+    #[wasm_bindgen(typescript_type = "ContentRequest")]
+    pub type ContentRequestValue;
+
+    // Every `plan…` call returns a `PlanStep<T>`; these name the `T`. One Rust
+    // struct, one TypeScript interface, and an alias per flow so a caller gets
+    // the payload typed instead of `unknown`.
+    /// TypeScript `SendStep`.
+    #[wasm_bindgen(typescript_type = "SendStep")]
+    pub type SendStepValue;
     /// TypeScript `HistoryStep`.
     #[wasm_bindgen(typescript_type = "HistoryStep")]
     pub type HistoryStepValue;
+    /// TypeScript `LoginStep`.
+    #[wasm_bindgen(typescript_type = "LoginStep")]
+    pub type LoginStepValue;
+    /// TypeScript `VerifyLoginStep`.
+    #[wasm_bindgen(typescript_type = "VerifyLoginStep")]
+    pub type VerifyLoginStepValue;
+    /// TypeScript `SpendableStep`.
+    #[wasm_bindgen(typescript_type = "SpendableStep")]
+    pub type SpendableStepValue;
+    /// TypeScript `ContentStep`.
+    #[wasm_bindgen(typescript_type = "ContentStep")]
+    pub type ContentStepValue;
 
     /// TypeScript `Utxo[]`.
     #[wasm_bindgen(typescript_type = "Utxo[]")]
@@ -110,11 +138,29 @@ mod tests {
     /// more would be a TypeScript parser, and anything less — searching the
     /// whole file for `"name:"` — is what let a deleted field pass.
     fn declared_by(interface: &str) -> BTreeSet<String> {
-        let header = format!("export interface {interface} {{");
-        let start = TYPESCRIPT
-            .find(&header)
-            .unwrap_or_else(|| panic!("types.d.ts declares no interface {interface}"))
-            + header.len();
+        // `PlanStep<T>` is generic, so a header is the name followed by either
+        // a space or a type-parameter list — not simply `name {`.
+        //
+        // The name must still match *whole*: `DecodedPubKey` occurs inside
+        // `DecodedPubKeyHash`, and both are declared here. So every occurrence
+        // is scanned and the first one whose next character ends the name wins.
+        // (The previous parser got this right by accident, by requiring a
+        // literal `" {"`; making room for generics lost that, and this test
+        // caught it.)
+        let header = format!("export interface {interface}");
+        let at = TYPESCRIPT
+            .match_indices(&header)
+            .map(|(at, _)| at)
+            .find(|at| {
+                let next = TYPESCRIPT[at + header.len()..].chars().next();
+                matches!(next, Some('<') | Some(' '))
+            })
+            .unwrap_or_else(|| panic!("types.d.ts declares no interface {interface}"));
+        let after = &TYPESCRIPT[at + header.len()..];
+        let brace = after
+            .find('{')
+            .unwrap_or_else(|| panic!("interface {interface} has no body"));
+        let start = at + header.len() + brace + 1;
         let body = &TYPESCRIPT[start..];
 
         let mut fields = BTreeSet::new();
@@ -185,8 +231,9 @@ mod tests {
         use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::flows::{
-            HistoryRequest, HistoryStep, JsHistoryEntry, JsPlannedTransaction, PlanSendRequest,
-            SendStep,
+            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsLoggedIn,
+            JsPlannedTransaction, LoginRequest, PlanSendRequest, PlanStep, SpendableRequest,
+            VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -221,19 +268,18 @@ mod tests {
             },
         );
 
-        // The flow bindings. The two step types carry an optional payload that
-        // is absent on every `"ask"` round, so both are populated here — a
+        // The flow bindings. Every optional field is populated, because a
         // `skip_serializing_if` field is exactly the one a drift check would
         // otherwise never see.
-        assert_declared("PlanSendRequest", &PlanSendRequest::default());
-        assert_declared("PlannedTransaction", &JsPlannedTransaction::default());
         assert_declared(
-            "SendStep",
-            &SendStep {
-                transaction: Some(JsPlannedTransaction::default()),
-                ..SendStep::default()
+            "PlanStep",
+            &PlanStep {
+                value: Some(String::new()),
+                ..PlanStep::<String>::default()
             },
         );
+        assert_declared("PlanSendRequest", &PlanSendRequest::default());
+        assert_declared("PlannedTransaction", &JsPlannedTransaction::default());
         assert_declared(
             "HistoryRequest",
             &HistoryRequest {
@@ -243,11 +289,24 @@ mod tests {
             },
         );
         assert_declared("HistoryEntry", &JsHistoryEntry::default());
+        assert_declared("LoginRequest", &LoginRequest::default());
         assert_declared(
-            "HistoryStep",
-            &HistoryStep {
-                entries: Some(Vec::new()),
-                ..HistoryStep::default()
+            "VerifyLoginRequest",
+            &VerifyLoginRequest {
+                max_age_blocks: Some(0),
+                max_future_blocks: Some(0),
+                ..VerifyLoginRequest::default()
+            },
+        );
+        assert_declared("LoggedIn", &JsLoggedIn::default());
+        assert_declared("SpendableRequest", &SpendableRequest::default());
+        assert_declared("Funding", &JsFunding::default());
+        assert_declared("ContentRequest", &ContentRequest::default());
+        assert_declared(
+            "ContentValue",
+            &JsContentValue {
+                hex: Some(String::new()),
+                structured: Some(serde_json::Value::Null),
             },
         );
     }
@@ -359,7 +418,10 @@ mod tests {
     #[test]
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
-        use crate::flows::{HistoryRequest, PlanSendRequest};
+        use crate::flows::{
+            ContentRequest, HistoryRequest, LoginRequest, PlanSendRequest, SpendableRequest,
+            VerifyLoginRequest,
+        };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
 
@@ -404,6 +466,10 @@ mod tests {
         check::<VerifyRequest>("VerifyRequest", &VerifyRequest::SHAPE);
         check::<PlanSendRequest>("PlanSendRequest", &PlanSendRequest::SHAPE);
         check::<HistoryRequest>("HistoryRequest", &HistoryRequest::SHAPE);
+        check::<LoginRequest>("LoginRequest", &LoginRequest::SHAPE);
+        check::<VerifyLoginRequest>("VerifyLoginRequest", &VerifyLoginRequest::SHAPE);
+        check::<SpendableRequest>("SpendableRequest", &SpendableRequest::SHAPE);
+        check::<ContentRequest>("ContentRequest", &ContentRequest::SHAPE);
 
         // Every field that carries objects, reached through the pointer the
         // guard actually follows rather than through the type it ought to be.
@@ -440,6 +506,14 @@ mod tests {
         // A nested object inside an interface must not leak its keys upward:
         // `tokens: TokenAmount[]` must not contribute TokenAmount's fields.
         assert!(!declared_by("DecodedReserveOutput").contains("currency"));
+        // A name that is a prefix of another declared name must resolve to
+        // itself. `DecodedPubKey` sits inside `DecodedPubKeyHash`, and the
+        // latter is declared first, so a parser that takes the first textual
+        // match reads the wrong block entirely.
+        assert!(declared_by("DecodedPubKey").contains("address"));
+        assert_eq!(declared_by("DecodedPubKey").len(), 2);
+        // And a generic header is found at all.
+        assert!(declared_by("PlanStep").contains("value"));
         // And the union parse must find members rather than silently nothing,
         // which would make the equality above pass against an empty set.
         assert!(union_members("DecodedOutput").contains("DecodedPubKeyHash"));

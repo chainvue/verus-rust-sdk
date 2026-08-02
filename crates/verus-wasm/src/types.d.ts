@@ -390,8 +390,14 @@ export interface PlannedTransaction {
     change: string;
 }
 
-/** One round of a payment plan. */
-export interface SendStep {
+/**
+ * One round of any plan: what it still needs, or what it produced.
+ *
+ * One shape for every `plan…` call. `value` is present exactly when `kind` is
+ * `"ready"`, and `ask` is empty exactly then — so `if (step.kind === "ready")`
+ * narrows `value` for you.
+ */
+export interface PlanStep<T> {
     /** `"ask"` while the plan still needs answers, `"ready"` when it is done. */
     kind: "ask" | "ready";
     /**
@@ -401,8 +407,8 @@ export interface SendStep {
      * Independent of one another within a round, so fetch them concurrently.
      */
     ask: string[];
-    /** Present only when `kind` is `"ready"`. */
-    transaction?: PlannedTransaction;
+    /** What the plan produced. Present only when `kind` is `"ready"`. */
+    value?: T;
 }
 
 /** Which addresses to report on, and over what stretch of chain. */
@@ -455,12 +461,136 @@ export interface HistoryEntry {
     spentSomething: boolean;
 }
 
-/** One round of a history read. */
-export interface HistoryStep {
-    /** `"ask"` while the read still needs answers, `"ready"` when it is done. */
-    kind: "ask" | "ready";
-    /** Complete JSON-RPC bodies to POST verbatim. Empty when ready. */
-    ask: string[];
-    /** The transactions, oldest first. Present only when `kind` is `"ready"`. */
-    entries?: HistoryEntry[];
+/** What a login challenge commits to. */
+export interface LoginRequest {
+    /**
+     * Who is asking. Included in the signed text, so a signature made for one
+     * site cannot be replayed at another.
+     */
+    audience: string;
+    /** Random and single-use. 32 bytes of entropy, hex or base64, is ample. */
+    challenge: string;
 }
+
+/** What to verify, and how strict to be about its age. */
+export interface VerifyLoginRequest {
+    /** The identity that supposedly signed — a name or an `i…` address. */
+    identity: string;
+    /** The signature it presented, base64. */
+    signature: string;
+    /** The audience the challenge was issued for. Must match. */
+    audience: string;
+    /** The challenge nonce. Must be the one this server issued. */
+    challenge: string;
+    /**
+     * How old the signature's height may be, in blocks. Roughly a block a
+     * minute on Verus, so 60 is an hour. Omit for that default.
+     */
+    maxAgeBlocks?: number;
+    /** How far ahead of the tip a signature may be stamped. Omit for 2. */
+    maxFutureBlocks?: number;
+}
+
+/** Who signed in, and under what authority. */
+export interface LoggedIn {
+    /** The fully qualified name, e.g. `alice.VRSCTEST@`. */
+    name: string;
+    /**
+     * The identity's `i…` address. **Key the session on this, not on `name`** —
+     * a name can be transferred to someone else, an `i` address cannot.
+     */
+    identityAddress: string;
+    /** The height the signature was stamped with. */
+    signedAt: number;
+    /**
+     * The addresses that actually signed, and were authorised to at that
+     * height rather than at the tip.
+     */
+    signers: string[];
+}
+
+/** Whose coins to look at. */
+export interface SpendableRequest {
+    /** The address to assess. A node sees it. */
+    address: string;
+}
+
+/**
+ * What an address can actually spend right now — which is not its balance. A
+ * balance counts what exists; this counts what a transaction can use.
+ */
+export interface Funding {
+    /**
+     * The chain tip this was decided against. Everything else here is a
+     * statement about that height, not about now.
+     */
+    tip: number;
+    /** Total spendable, in satoshis, as a decimal string. */
+    total: string;
+    /** The outputs a builder can use. */
+    utxos: Utxo[];
+    /**
+     * Value that exists but cannot be spent **yet** — mostly immature
+     * coinbases. This is the gap between a balance and a payment, in satoshis
+     * as a decimal string, and a wallet needs it to explain why the two differ.
+     */
+    notYetSpendable: string;
+    /**
+     * How many outputs are not plain P2PKH: reserve outputs holding tokens,
+     * identity outputs, anything CryptoCondition. Excluded from `utxos` because
+     * spending one as ordinary funding destroys what it carries.
+     */
+    other: number;
+}
+
+/** Which identity's stored data to read. */
+export interface ContentRequest {
+    /** The identity holding it — a name or an `i…` address. */
+    identity: string;
+}
+
+/**
+ * One value stored under a VDXF key.
+ *
+ * A VDXF key is a one-way hash of a name, so for a key you did not create there
+ * is no way to recover the name and therefore no way to know how to read the
+ * bytes. This hands them over and stops. For your own keys that costs nothing —
+ * you chose the encoding.
+ */
+export interface ContentValue {
+    /**
+     * The raw bytes as hex, for a key the daemon does not recognise — which is
+     * every key an application defines for itself. Absent when the daemon
+     * decoded the value, because the original bytes are then not in the reply.
+     */
+    hex?: string;
+    /** The daemon's decoded rendering, when it had one. */
+    structured?: unknown;
+}
+
+/**
+ * What an identity stores, keyed by the VDXF key as a `contentmultimap` prints
+ * it — an `i` address, **not** hex. The older `contentmap` spells its keys as
+ * hex, so comparing a derived key against the wrong rendering finds nothing.
+ */
+export type Content = Record<string, ContentValue[]>;
+
+/**
+ * What each `plan…` call gives back.
+ *
+ * Aliases rather than separate interfaces: the shape is one thing, and only the
+ * payload differs. Declaring six interfaces that agree on `kind` and `ask` and
+ * disagree on one field name is how the payload field ends up called
+ * `transaction` in one place and `entries` in another for no reason.
+ */
+export type SendStep = PlanStep<PlannedTransaction>;
+/** @see planHistory */
+export type HistoryStep = PlanStep<HistoryEntry[]>;
+/** The signature, base64. @see Key.planLogin */
+export type LoginStep = PlanStep<string>;
+/** @see planVerifyLogin */
+export type VerifyLoginStep = PlanStep<LoggedIn>;
+/** @see planSpendable */
+export type SpendableStep = PlanStep<Funding>;
+/** @see planContent */
+export type ContentStep = PlanStep<Content>;
