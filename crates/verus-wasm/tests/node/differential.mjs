@@ -34,6 +34,46 @@ const vectors = JSON.parse(
 let checks = 0;
 const ok = (name) => { checks += 1; console.log(`  ok  ${name}`); };
 
+/**
+ * Every output script in a v4 transaction, hex.
+ *
+ * Written out rather than pattern-matched on the hex: scanning for a byte run
+ * cannot tell the identity body from the CryptoCondition wrapper that repeats
+ * parts of it, and that difference is exactly what the erase invariant is
+ * about. The layout is fixed — version(4) versionGroupId(4), varint inputs,
+ * varint outputs of value(8) + varint script.
+ */
+function outputScripts(hex) {
+  const raw = Buffer.from(hex, "hex");
+  let at = 8;
+  const varint = () => {
+    const first = raw[at];
+    at += 1;
+    if (first < 0xfd) return first;
+    if (first === 0xfd) { const v = raw.readUInt16LE(at); at += 2; return v; }
+    if (first === 0xfe) { const v = raw.readUInt32LE(at); at += 4; return v; }
+    const v = Number(raw.readBigUInt64LE(at)); at += 8; return v;
+  };
+  const inputs = varint();
+  for (let i = 0; i < inputs; i += 1) {
+    at += 36;                          // outpoint
+    // NOT `at += varint()`: JavaScript reads the left operand before calling
+    // the right, so the varint's own byte advance would be thrown away.
+    const scriptSig = varint();
+    at += scriptSig;
+    at += 4;                           // sequence
+  }
+  const outputs = varint();
+  const scripts = [];
+  for (let i = 0; i < outputs; i += 1) {
+    at += 8;                           // value
+    const len = varint();
+    scripts.push(raw.subarray(at, at + len).toString("hex"));
+    at += len;
+  }
+  return scripts;
+}
+
 /** VRSCTEST's own currency id, and an identity this repo registered on it. */
 const VRSCTEST = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
 const IDENTITY = "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm";
@@ -1239,35 +1279,52 @@ console.log("\nflows, driven with no network");
 
     assert.equal(update.key, OUR_KEY);
     assert.equal(update.values, 1);
-    // No fee or change field: an identity update does not report them, and a
-    // plausible-looking "0" would be a number a caller could act on.
-    assert.equal(update.fee, undefined);
-    assert.equal(update.change, undefined);
+    // Storing data costs a miner fee, and a wallet asking a user to approve
+    // the update has to be able to say how much. A string, like all money.
+    assert.equal(typeof update.fee, "string");
+    assert.ok(BigInt(update.fee) > 0n);
+    assert.equal(typeof update.change, "string");
     ok("storing data on a VerusID is planned and signed");
 
-    // The invariant, read out of the transaction the page would actually post.
+    // The invariant, read out of the transaction the page would actually post
+    // — **structurally**, by locating the identity output and decoding it.
     //
-    // An update republishes the identity in full, so the other application's
-    // key and its value have to still be in these bytes. If the update had
-    // rebuilt the identity from anything less than its own output script, they
-    // would be gone — permanently, on chain.
-    const THEIR_KEY_BYTES = "aa".repeat(20);
-    const THEIR_VALUE = Buffer.from("not mine").toString("hex");
-    assert.ok(
-      update.hex.includes(THEIR_KEY_BYTES),
-      "another application's key must survive the update",
-    );
-    assert.ok(
-      update.hex.includes(THEIR_VALUE),
-      "and so must its value",
-    );
-    // The authorities, which are the fields that cannot be recovered if they
-    // are dropped.
-    assert.ok(update.hex.includes("33".repeat(20)), "revocation authority");
-    assert.ok(update.hex.includes("44".repeat(20)), "recovery authority");
-    // And ours went in.
-    assert.ok(update.hex.includes(Buffer.from("mine").toString("hex")));
-    ok("and the republished identity keeps every key and authority it had");
+    // A first version of this asserted that certain byte runs appeared in the
+    // hex. That was unsound: the two authorities appear three times each, once
+    // in the identity body and twice in the CryptoCondition wrapper, which the
+    // builder fills in separately. Dropping an authority from the body — the
+    // copy consensus republishes — would have left the wrapper's copies and the
+    // assertion would have stayed green while the invariant it exists for was
+    // broken.
+    const scripts = outputScripts(update.hex);
+    const identityScript = scripts.find((script) => {
+      try { return decodeOutput(script).kind === "identityPrimary"; } catch { return false; }
+    });
+    assert.ok(identityScript, "the update must carry an identity output");
+
+    const identityOutput = decodeOutput(identityScript);
+    assert.equal(identityOutput.name, "app");
+    assert.equal(identityOutput.minimumSignatures, 1);
+    assert.deepEqual(identityOutput.primaryAddresses, [address]);
+    assert.equal(identityOutput.address, ID_ADDRESS);
+
+    // `decodeOutput` does not surface the authorities or the content multimap,
+    // so those are checked against the identity output's own script — and by
+    // COUNT, not presence. Each authority appears three times in it: once in
+    // the identity body, which is the copy consensus republishes, and twice in
+    // the CryptoCondition wrapper, which the builder fills in separately.
+    // Asserting mere presence would survive the body's copy being dropped,
+    // which is the erase this whole test exists to catch.
+    const occurrences = (needle) => identityScript.split(needle).length - 1;
+    assert.equal(occurrences("33".repeat(20)), 3, "revocation authority");
+    assert.equal(occurrences("44".repeat(20)), 3, "recovery authority");
+
+    // The other application's key and value live only in the body, so presence
+    // is the right assertion for them.
+    assert.equal(occurrences("aa".repeat(20)), 1, "another application's key");
+    assert.equal(occurrences(Buffer.from("not mine").toString("hex")), 1, "and its value");
+    assert.equal(occurrences(Buffer.from("mine").toString("hex")), 2, "ours went in");
+    ok("and the republished identity keeps every key, value and authority");
   }
 
   // -- the request sanitizer applies here too ------------------------------

@@ -413,11 +413,22 @@ impl JsUtxo {
 
 /// Convert a whole list, reporting which entry failed.
 pub fn utxos(list: &[JsUtxo]) -> WasmResult<Vec<Utxo>> {
+    utxos_named("utxos", list)
+}
+
+/// The same, naming the field the caller actually passed.
+///
+/// `tokenUtxos` reporting an error about `utxos[1]` sends a caller looking at
+/// a field they never wrote.
+pub fn utxos_named(field: &str, list: &[JsUtxo]) -> WasmResult<Vec<Utxo>> {
     list.iter()
         .enumerate()
         .map(|(index, utxo)| {
             utxo.to_utxo().map_err(|error| {
-                WasmError::new(error.code(), format!("utxos[{index}]: {}", error.message()))
+                WasmError::new(
+                    error.code(),
+                    format!("{field}[{index}]: {}", error.message()),
+                )
             })
         })
         .collect()

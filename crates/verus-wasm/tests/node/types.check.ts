@@ -364,11 +364,11 @@ const publishPlan: PlanPublishRequest = {
 };
 const update: PlannedUpdate | undefined = key.planPublish(publishPlan, answers).value;
 
-// An update reports no fee, and the types have to say so — a caller reading a
-// `fee` off it would be reading a number that does not exist.
+// An update reports its fee, as a decimal string like every other amount.
 const publishStep: UpdateStep = key.planPublish(publishPlan, answers);
-// @ts-expect-error an identity update does not report a miner fee
-const noFee = publishStep.value?.fee;
+const updateFee: string | undefined = publishStep.value?.fee;
+// @ts-expect-error the fee is a decimal string, never a number
+const numericFee: number | undefined = publishStep.value?.fee;
 
 // @ts-expect-error a token amount is a decimal string, never a number
 const numericToken: PlanSendTokenRequest = { currency: "i", to: "R", amount: 1, tokenUtxos: [] };
@@ -377,5 +377,5 @@ const numericToken: PlanSendTokenRequest = { currency: "i", to: "R", amount: 1, 
 const rawValues: PlanPublishRequest = { identity: "a@", key: "i", values: [new Uint8Array()] };
 
 void [numericAmount, misspelled, stringHeight];
-void [tokenStep, idStep, update, publishStep, noFee, numericToken, rawValues];
+void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

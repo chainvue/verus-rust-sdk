@@ -260,12 +260,42 @@ pub fn prepare_send_token(
 ) -> Result<Unsent<Sent>, FlowError> {
     let to: Address = to.parse()?;
     let from = key.address();
+
+    // The same outpoint twice builds and signs cleanly, then dies at the daemon
+    // as `bad-txns-inputs-duplicate` — an error naming nothing, after the
+    // caller has been shown a transaction. Refused here instead, which is what
+    // this crate does everywhere else it can.
+    //
+    // It is a plausible mistake rather than a contrived one: a wallet
+    // concatenating two views of its own token outputs, or one that lists an
+    // output `spendable` will also find.
+    let mut seen: Vec<(verus_tx::Txid, u32)> = Vec::new();
+    for utxo in token_utxos {
+        let outpoint = (utxo.txid, utxo.vout);
+        if seen.contains(&outpoint) {
+            return Err(FlowError::NotReady(format!(
+                "token output {}:{} is listed twice; an outpoint can only be spent once",
+                utxo.txid.to_display_hex(),
+                utxo.vout
+            )));
+        }
+        seen.push(outpoint);
+    }
+
     let funding = funding::spendable(reader, &from.to_string())?;
 
     // One list: the transaction spends the token outputs and the native ones
     // together, and the builder sorts out which is which.
     let mut utxos = token_utxos.to_vec();
-    utxos.extend(funding.utxos.iter().cloned());
+    // And a native output the caller listed as a token output would collide
+    // with the same output found by `spendable`.
+    utxos.extend(
+        funding
+            .utxos
+            .iter()
+            .filter(|found| !seen.contains(&(found.txid, found.vout)))
+            .cloned(),
+    );
 
     let recipients = [TokenRecipient {
         address: to,

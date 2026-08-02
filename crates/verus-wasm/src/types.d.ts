@@ -636,7 +636,12 @@ export interface PlanSendFromIdentityRequest {
 
 /** What to store on a VerusID, and under which key. */
 export interface PlanPublishRequest {
-    /** The identity to write to — a name or an `i…` address. */
+    /**
+     * The identity to write to. **Prefer an `i…` address**: it *is* the
+     * identity's id, so the binding can check the identity it is about to
+     * rewrite against your own input without trusting the node. A `name@` has
+     * to be resolved by the node, which a hostile endpoint can redirect.
+     */
     identity: string;
     /** The VDXF key, as a `contentmultimap` spells it: an `i…` address. */
     key: string;
@@ -651,15 +656,19 @@ export interface PlanPublishRequest {
 /**
  * An identity update a flow built and signed. **Not broadcast.**
  *
- * Deliberately not a `PlannedTransaction`: that reports the miner fee and the
- * change, and an identity update does not carry them back. Absent beats a
- * plausible-looking zero.
+ * A `PlannedTransaction` plus what the update will change. Storing data on an
+ * identity costs a miner fee like any other transaction, and a wallet asking a
+ * user to approve it should be able to say how much.
  */
 export interface PlannedUpdate {
     /** The raw transaction, hex — what `sendrawtransaction` takes. */
     hex: string;
     /** Its txid in display order, computed from `hex` before anything is sent. */
     txid: string;
+    /** The miner fee, in satoshis, paid from the funding address. */
+    fee: string;
+    /** Change returned, in satoshis; `"0"` if it would have been dust. */
+    change: string;
     /** The key that will be written, as it appears in `contentmultimap`. */
     key: string;
     /** How many values will stand under it. Zero means the key is removed. */

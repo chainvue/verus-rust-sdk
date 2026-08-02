@@ -264,10 +264,9 @@ impl From<verus_flows::Sent> for JsPlannedTransaction {
 
 /// An identity update a flow built and signed, ready to post.
 ///
-/// Deliberately **not** a [`JsPlannedTransaction`]: that one reports the miner
-/// fee and the change, and an identity update does not carry them back. A `fee`
-/// of `""` or `"0"` would be a number a caller could read and act on, and it
-/// would be wrong — so the fields are absent rather than filled in.
+/// A [`JsPlannedTransaction`] plus what the update will change. Storing data on
+/// an identity costs a miner fee like any other transaction, and a wallet
+/// asking a user to approve it should be able to say how much.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsPlannedUpdate {
@@ -275,6 +274,11 @@ pub struct JsPlannedUpdate {
     pub hex: String,
     /// Its txid in display order, computed from `hex` before anything is sent.
     pub txid: String,
+    /// The miner fee, in satoshis, paid from the funding address.
+    pub fee: String,
+    /// Change returned to the funding address, in satoshis; `"0"` if it would
+    /// have been dust.
+    pub change: String,
     /// The key that will be written, as it appears in `contentmultimap`.
     pub key: String,
     /// How many values will stand under it. Zero means the key is removed.
@@ -918,7 +922,7 @@ impl Key {
             dto::from_js(request.into(), &PlanSendTokenRequest::SHAPE)?;
         let currency = dto::currency("currency", &request.currency)?;
         let amount = dto::sats(&request.amount)?;
-        let token_utxos = dto::utxos(&request.token_utxos)?;
+        let token_utxos = dto::utxos_named("tokenUtxos", &request.token_utxos)?;
         let to = request.to;
 
         let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
@@ -1004,10 +1008,18 @@ impl Key {
     /// everything else byte for byte. It never sets `allow_authority_change`:
     /// publishing content cannot cost you the identity.
     ///
-    /// It also refuses an update to an identity the node did not name — both
-    /// the outpoint and the transaction come from the node, and a node that
-    /// answers both with some *other* identity this key controls produces an
-    /// internally consistent lie that only an offline name check catches.
+    /// # Pass an `i` address, not a name
+    ///
+    /// Both the outpoint and the transaction come from the node, so a hostile
+    /// endpoint can try to redirect the write to some *other* identity this key
+    /// controls — and with an empty `values`, that is a deletion of somebody
+    /// else's content.
+    ///
+    /// An `i` address **is** the identity's id, so naming one lets this compare
+    /// the decoded identity against your own input and refuse, without asking
+    /// the node anything. Give it a `name@` instead and the node resolves the
+    /// name: it will still catch an endpoint that contradicts itself, but not
+    /// one that lies consistently about both answers.
     ///
     /// The miner fee comes from this key's own coins, so the key must be one of
     /// the identity's primary addresses.
@@ -1054,6 +1066,8 @@ impl Key {
             |unsent: verus_flows::Unsent<verus_flows::Published>| JsPlannedUpdate {
                 hex: unsent.hex,
                 txid: unsent.txid,
+                fee: dto::sats_string(unsent.outcome.fee),
+                change: dto::sats_string(unsent.outcome.change),
                 key: unsent.outcome.key,
                 values: unsent.outcome.values,
             },
