@@ -289,6 +289,19 @@ const notAReason: boolean = validateMnemonic("…").reason === "valid";
 
 declare const answers: Answers;
 
+/**
+ * The payload of a finished plan, for the assertions below that are about what
+ * a payload contains rather than about narrowing.
+ *
+ * Written out rather than reaching for `!`: `PlanStep` is a discriminated union
+ * precisely so a caller cannot read `value` without saying which round they
+ * think they are on.
+ */
+function ready<T>(step: PlanStep<T>): T | undefined {
+  return step.kind === "ready" ? step.value : undefined;
+}
+
+
 const plan: PlanSendRequest = { to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX", satoshis: "150000000" };
 const step: TransactionStep = key.planSend(plan, answers);
 
@@ -300,17 +313,17 @@ const bodies: string[] = step.ask;
 // The payload is optional, because an asking round has none. A `.d.ts` that
 // declared it required would let a caller read `step.transaction.hex` on an
 // "ask" round and get a runtime `TypeError`.
-const built: PlannedTransaction | undefined = step.value;
+const built: PlannedTransaction | undefined = ready(step);
 
 // And a planned transaction is NOT a SignedTransaction: it carries no
 // inputsUsed, because a flow does not report them and an empty list would be a
 // lie about which coins are committed.
 // @ts-expect-error a planned transaction does not list its inputs
-const inputs = step.value?.inputsUsed;
+const inputs = ready(step)?.inputsUsed;
 
 const read: HistoryRequest = { addresses: ["RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX"] };
 const reading: HistoryStep = planHistory(read, answers);
-const entries: HistoryEntry[] | undefined = reading.value;
+const entries: HistoryEntry[] | undefined = ready(reading);
 
 // Money is a string here too, and the per-currency map is strings all the way
 // down — this is exactly where a `Record<string, number>` would quietly round.
@@ -331,20 +344,20 @@ void [bodies, built, inputs, entries, moved, perCurrency];
 // Every plan returns the same shape with a different payload, and the payload
 // has to be typed — `PlanStep<unknown>` everywhere would mean casting at every
 // call site, which is where the type would stop being checked at all.
-const session: VerifyLoginStepPayload = planVerifyLogin(
+const session: VerifyLoginStepPayload = ready(planVerifyLogin(
   { identity: "alice@", signature: "…", audience: "https://example.com", challenge: "abc" },
   answers,
-).value;
+));
 type VerifyLoginStepPayload = LoggedIn | undefined;
 
-const spendable: Funding | undefined = planSpendable({ address: "R…" }, answers).value;
-const stored: Content | undefined = planContent({ identity: "alice@" }, answers).value;
+const spendable: Funding | undefined = ready(planSpendable({ address: "R…" }, answers));
+const stored: Content | undefined = ready(planContent({ identity: "alice@" }, answers));
 
 // Narrowing on `kind` is the intended ergonomics, and it has to actually work.
 const narrowedPlan = planSpendable({ address: "R…" }, answers);
 if (narrowedPlan.kind === "ready") {
   // @ts-expect-error a Funding has no `entries`
-  const wrong = narrowedPlan.value?.entries;
+  const wrong = narrowedPlan.value.entries;
   void wrong;
 }
 
@@ -382,13 +395,13 @@ const idStep: TransactionStep = key.planSendFromIdentity(idPlan, answers);
 const publishPlan: PlanPublishRequest = {
   identity: "app@", key: "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv", values: ["6d696e65"],
 };
-const update: PlannedUpdate | undefined = key.planPublish(publishPlan, answers).value;
+const update: PlannedUpdate | undefined = ready(key.planPublish(publishPlan, answers));
 
 // An update reports its fee, as a decimal string like every other amount.
 const publishStep: UpdateStep = key.planPublish(publishPlan, answers);
-const updateFee: string | undefined = publishStep.value?.fee;
+const updateFee: string | undefined = ready(publishStep)?.fee;
 // @ts-expect-error the fee is a decimal string, never a number
-const numericFee: number | undefined = publishStep.value?.fee;
+const numericFee: number | undefined = ready(publishStep)?.fee;
 
 // @ts-expect-error a token amount is a decimal string, never a number
 const numericToken: PlanSendTokenRequest = { currency: "i", to: "R", amount: 1, tokenUtxos: [] };
@@ -400,7 +413,7 @@ const rawValues: PlanPublishRequest = { identity: "a@", key: "i", values: [new U
 // union has to narrow — a caller reading `identityId` off a currencies side
 // would get `undefined` at runtime with no signal.
 const browse: OffersRequest = { target: "iJhCez…", isCurrency: true };
-const listings: Listing[] | undefined = planOffers(browse, answers).value;
+const listings: Listing[] | undefined = ready(planOffers(browse, answers));
 const side: OfferSide | undefined = listings?.[0].offering;
 if (side && side.kind === "identity") {
   const who: string = side.identityId;
@@ -412,7 +425,7 @@ if (side && side.kind === "currencies") {
   void notHere;
 }
 
-const terms: OfferTerms | undefined = planOfferTerms({ offer: "00" }, answers).value;
+const terms: OfferTerms | undefined = ready(planOfferTerms({ offer: "00" }, answers));
 const demand: Demand | undefined = terms?.demand;
 if (demand && demand.kind === "token") {
   const which: string = demand.currency;
@@ -432,7 +445,7 @@ const numericPrice: number | undefined = listings?.[0].price;
 const take: TakeOfferRequest = {
   offer: "00", utxos: [utxo], recipient: "R…", changeAddress: "R…", fee: "20000",
 };
-const taken: Taken | undefined = key.planTakeOffer(take, answers).value;
+const taken: Taken | undefined = ready(key.planTakeOffer(take, answers));
 
 // @ts-expect-error a miner fee is a decimal string, never a number
 const numericTakeFee: TakeOfferRequest = { offer: "00", utxos: [], recipient: "R", changeAddress: "R", fee: 20000 };
@@ -466,7 +479,7 @@ const numericFloor: PlanConvertRequest = { ...convert, minExpected: 1000 };
 // Registration. The pending value is opaque and round-trips through storage,
 // so it has to survive `JSON.parse(JSON.stringify(...))` as the same type.
 const nameClaim: PlanRegistrationRequest = { name: "alice" };
-const pending: Pending | undefined = key.planRegistration(nameClaim, answers).value;
+const pending: Pending | undefined = ready(key.planRegistration(nameClaim, answers));
 const restored: Pending = JSON.parse(JSON.stringify(pending));
 
 // The blob is a string, not an object: a page stores it, it does not read it.
@@ -484,7 +497,7 @@ const badState: boolean = restored.state === "confirmed";
 // The status union has to narrow — a caller reading `confirmations` off a
 // "ready" status would get `undefined` at runtime with no signal.
 const status: CommitmentStatus | undefined =
-  planCommitmentStatus({ pending: restored }, answers).value;
+  ready(planCommitmentStatus({ pending: restored }, answers));
 if (status && status.kind === "waiting") {
   const seen: number = status.confirmations;
   void seen;
@@ -500,7 +513,7 @@ if (status && status.kind === "reorged") {
 }
 
 const registered: Registered | undefined =
-  key.planRegistrationComplete({ pending: restored }, answers).value;
+  ready(key.planRegistrationComplete({ pending: restored }, answers));
 // Money is a string here too.
 const paid: string | undefined = registered?.feePaid;
 
@@ -514,7 +527,7 @@ const definition: CurrencyDefinition = {
   currencies: ["iJhCez…"], weights: ["100000000"],
 };
 const launched: Launched | undefined =
-  key.planLaunch({ identity: "basket@", definition }, answers).value;
+  ready(key.planLaunch({ identity: "basket@", definition }, answers));
 const burned: string | undefined = launched?.launchFee;
 
 // @ts-expect-error a weight is a decimal string, never a number
@@ -536,6 +549,19 @@ const handSet: CurrencyDefinition = { ...definition, initialContributions: ["1"]
 // statement — a multi-line literal puts the error out of its reach.
 // @ts-expect-error a pinned launch fee is a decimal string
 const numericPinnedLaunch: PlanLaunchRequest = { identity: "b@", definition, pinLaunchFee: 1 };
+
+// The narrowing the docs promise, which one interface with an optional `value`
+// could not deliver: inside a `"ready"` branch the payload is `T`, not
+// `T | undefined`, and on an asking round it does not exist at all.
+const narrowing = key.planSend(plan, answers);
+if (narrowing.kind === "ready") {
+  const built: PlannedTransaction = narrowing.value;
+  void built;
+} else {
+  // @ts-expect-error an asking round has produced nothing to read
+  const nothing = narrowing.value;
+  void nothing;
+}
 
 void [numericAmount, misspelled, stringHeight];
 void [launched, burned, numericWeight, oddKind, stringStart, setPrices, handSet, numericPinnedLaunch];

@@ -100,6 +100,22 @@ pub fn plan_conversion(
     let chain_currency = currency_of(&info.chain_id)?;
     let source_id = currency_of(source)?;
     let recipient: Address = recipient.parse()?;
+    // The transfer destination is written as a key hash, unconditionally, by
+    // `build_conversion`. So an `i` address here does not pay that identity —
+    // it pays the **R-form of the same twenty bytes**, which is a name hash
+    // nobody holds a key for, and the value is gone.
+    //
+    // That is a live mistake rather than a theoretical one: funds on Verus
+    // routinely live under identities and `send` accepts an `i` address
+    // happily, so converting into a token and pasting your identity's address
+    // is the natural thing to try. `mint` has refused this since it was
+    // written; conversions did not, and had no reason not to.
+    if recipient.kind() != verus_keys::AddressKind::PubKeyHash {
+        return Err(FlowError::NotReady(format!(
+            "a conversion pays an R-address recipient, and {recipient} is not one — an \
+             identity address here would pay the R-form of the same bytes, which nobody controls"
+        )));
+    }
 
     let (to, via) = match &kind {
         ConversionKind::IntoFractional { fractional }
@@ -496,6 +512,53 @@ mod tests {
         .unwrap();
         assert_eq!(node.broadcasts().len(), 1);
         assert_eq!(node.broadcasts()[0], sent.hex);
+    }
+
+    /// **An identity address is not a conversion recipient.**
+    ///
+    /// `build_conversion` writes the destination as a key hash, always. So an
+    /// `i` address here does not pay that identity — it pays the R-form of the
+    /// same twenty bytes, which is a name hash nobody holds a key for, and the
+    /// value is gone.
+    ///
+    /// It is a live mistake rather than a theoretical one: funds on Verus
+    /// routinely live under identities and `send` takes an `i` address happily,
+    /// so converting and pasting your identity's address is the natural thing
+    /// to try. `mint` has refused it since it was written; conversions did not.
+    #[test]
+    fn an_identity_address_cannot_receive_a_conversion() {
+        let node = chain(1_000, 1_49165329);
+        let identity =
+            verus_keys::Address::new(verus_keys::AddressKind::Identity, key().address().hash());
+
+        let error = prepare_conversion(
+            &node,
+            &key(),
+            VRSCTEST,
+            Amount::from_sat(1_50000000),
+            shylock(),
+            &identity.to_string(),
+            Amount::from_sat(20_010),
+            None,
+            &[],
+        )
+        .expect_err("an identity address would pay the R-form of its own bytes");
+        assert!(format!("{error}").contains("R-address"), "{error}");
+
+        // The same bytes under the R prefix are fine, and are what the caller
+        // meant if they own that key.
+        assert!(prepare_conversion(
+            &node,
+            &key(),
+            VRSCTEST,
+            Amount::from_sat(1_50000000),
+            shylock(),
+            &key().address().to_string(),
+            Amount::from_sat(20_010),
+            None,
+            &[],
+        )
+        .is_ok());
     }
 
     /// **Converting for somebody else must not refund to them.**

@@ -93,6 +93,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use verus_flows::drive::{advance, Step};
 use verus_rpc::{Cassette, ChainReader, RpcClient};
@@ -162,6 +163,19 @@ impl Answers {
     /// real answer to some questions: a flow asking whether a name is taken
     /// needs the daemon's `-5` in order to conclude that it is not.
     pub fn record(&mut self, body: JsText, reply: JsText) -> WasmResult<()> {
+        // **Measured before it is copied.** `dto::text` allocates the whole
+        // string into linear memory, and the ceiling exists precisely because
+        // that copy is what kills the module: a browser that cannot grow memory
+        // for a 300 MB reply does not get an error, it gets a dead instance
+        // with any imported key inside it. Checking afterwards enforced the
+        // limit only for callers who had already survived the thing it guards
+        // against — and linear memory never shrinks, so every refused reply
+        // left the module permanently larger.
+        //
+        // A JavaScript string is UTF-16, and UTF-8 is at most three bytes per
+        // unit, so `length * 3` bounds the allocation from above without
+        // touching the string.
+        reject_oversized_reply(reply.as_ref())?;
         let body = dto::text("body", body.as_ref())?;
         let reply = dto::text("reply", reply.as_ref())?;
         self.inner.record(body, reply).map_err(WasmError::from)
@@ -180,6 +194,33 @@ impl Answers {
     pub fn known(&self) -> usize {
         self.inner.known()
     }
+}
+
+/// Refuse a reply too large to copy, without copying it.
+///
+/// Returns `Ok` for anything that is not a string: `dto::text` reports that
+/// better, and this is only about size.
+fn reject_oversized_reply(reply: &JsValue) -> WasmResult<()> {
+    let Some(units) = reply
+        .dyn_ref::<js_sys::JsString>()
+        .map(js_sys::JsString::length)
+    else {
+        return Ok(());
+    };
+    // Three UTF-8 bytes per UTF-16 unit is the worst case, and `u64` cannot
+    // overflow from a `u32` times three.
+    let upper_bound = u64::from(units) * 3;
+    if upper_bound > verus_flows::drive::MAX_REPLY_BYTES as u64 {
+        return Err(WasmError::new(
+            "ReplyTooLarge",
+            format!(
+                "a reply of up to {upper_bound} bytes exceeds the {}-byte ceiling; it is \
+                 refused before being copied into the module",
+                verus_flows::drive::MAX_REPLY_BYTES
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// What to pay, and to whom.
@@ -975,6 +1016,9 @@ pub struct JsPending {
     /// The flow's own state, including the salt. **Opaque** — a JSON string to
     /// store and hand back unchanged, not an object to look inside.
     ///
+    /// (The field, not the wrapper: [`JsPending`] itself is rebuilt like every
+    /// other request object — see its `SHAPE`.)
+    ///
     /// A string rather than a nested object deliberately. The request sanitizer
     /// does not recurse into a leaf, so an object here would reach
     /// `serde_json::Value` with its nesting bounded only by the stack — the
@@ -983,6 +1027,28 @@ pub struct JsPending {
     /// recursion limit refuses a hostile blob cleanly, and "hand it back
     /// unchanged" becomes literally true rather than a request.
     pub pending: String,
+}
+
+impl JsPending {
+    /// The keys a stored registration may carry.
+    ///
+    /// Declared, and reached through [`PendingRequest`]'s nested pointer, so
+    /// this object is **rebuilt** like every other request rather than trusted.
+    /// It was a leaf first, and that was the one place in the crate where
+    /// `from_js`'s promise — that nested objects get the same treatment — did
+    /// not hold: a page with a polluted `Object.prototype` could supply `state`
+    /// from the prototype chain and walk past the step check that replaces
+    /// Rust's type-level ordering.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("state", None),
+            ("name", None),
+            ("registrationFee", None),
+            ("commitmentHex", None),
+            ("commitmentTxid", None),
+            ("pending", None),
+        ],
+    };
 }
 
 /// What to claim, and under what terms.
@@ -1053,11 +1119,11 @@ pub struct PendingRequest {
 impl PendingRequest {
     /// The keys a `PendingRequest` object may carry.
     ///
-    /// `pending` is declared as a leaf: its contents are this crate's own
-    /// serialization handed back verbatim, not a shape a caller composes, so
-    /// sanitising inside it would refuse fields the SDK itself wrote.
+    /// The nested shape is followed, so the stored value is rebuilt rather
+    /// than trusted — every field of it comes from the object's own
+    /// properties, never from its prototype.
     pub(crate) const SHAPE: Shape = Shape {
-        fields: &[("pending", None)],
+        fields: &[("pending", Some(&JsPending::SHAPE))],
     };
 }
 
@@ -1116,8 +1182,8 @@ pub struct JsRegistered {
 ///
 /// **`conversions`** is absent because the daemon ignores it. Its own captures
 /// settle it: a definition created by passing `conversions: [4.0]` comes back
-/// carrying `[0.0]`, and all nine fractional vectors in this repo's daemon
-/// fixtures have an all-zero conversions vector. Launch prices are derived at
+/// carrying `[0.0]`, and every one of the fourteen fractional vectors in this
+/// repo's daemon fixtures has an all-zero conversions vector. Launch prices are derived at
 /// launch from what was actually contributed. Accepting the field would let a
 /// caller build a definition in a byte shape no daemon has ever emitted.
 ///
@@ -1438,7 +1504,7 @@ impl JsCurrencyDefinition {
             definition.id_registration_fees = dto::sats(fee)?.to_sat();
         }
         if let Some(levels) = self.id_referral_levels {
-            let levels = height("idReferralLevels", levels)?;
+            let levels = whole_number("idReferralLevels", levels)?;
             if levels > MAX_ID_REFERRAL_LEVELS {
                 return Err(WasmError::new(
                     "InvalidArgument",
@@ -1460,6 +1526,22 @@ impl JsCurrencyDefinition {
 
 /// The most referral levels a currency may pay out.
 const MAX_ID_REFERRAL_LEVELS: u64 = 5;
+
+/// A whole, non-negative count from a JavaScript number.
+///
+/// Separate from [`height`] because the message matters: a fractional referral
+/// level reported as "must be a whole, non-negative block height" sends a
+/// caller looking at the wrong field entirely.
+fn whole_number(field: &str, value: f64) -> WasmResult<u64> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > f64::from(u32::MAX) {
+        return Err(WasmError::new(
+            "InvalidArgument",
+            format!("{field} must be a whole, non-negative count, not {value}"),
+        ));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(value as u64)
+}
 
 /// A launch height on its way back to JavaScript.
 ///
