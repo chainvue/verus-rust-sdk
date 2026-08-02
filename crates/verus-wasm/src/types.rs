@@ -64,6 +64,15 @@ extern "C" {
     /// TypeScript `PlanPublishRequest`.
     #[wasm_bindgen(typescript_type = "PlanPublishRequest")]
     pub type PlanPublishRequestValue;
+    /// TypeScript `OffersRequest`.
+    #[wasm_bindgen(typescript_type = "OffersRequest")]
+    pub type OffersRequestValue;
+    /// TypeScript `OfferTermsRequest`.
+    #[wasm_bindgen(typescript_type = "OfferTermsRequest")]
+    pub type OfferTermsRequestValue;
+    /// TypeScript `TakeOfferRequest`.
+    #[wasm_bindgen(typescript_type = "TakeOfferRequest")]
+    pub type TakeOfferRequestValue;
     /// TypeScript `HistoryRequest`.
     #[wasm_bindgen(typescript_type = "HistoryRequest")]
     pub type HistoryRequestValue;
@@ -89,6 +98,15 @@ extern "C" {
     /// TypeScript `UpdateStep`.
     #[wasm_bindgen(typescript_type = "UpdateStep")]
     pub type UpdateStepValue;
+    /// TypeScript `OffersStep`.
+    #[wasm_bindgen(typescript_type = "OffersStep")]
+    pub type OffersStepValue;
+    /// TypeScript `OfferTermsStep`.
+    #[wasm_bindgen(typescript_type = "OfferTermsStep")]
+    pub type OfferTermsStepValue;
+    /// TypeScript `TakeOfferStep`.
+    #[wasm_bindgen(typescript_type = "TakeOfferStep")]
+    pub type TakeOfferStepValue;
     /// TypeScript `HistoryStep`.
     #[wasm_bindgen(typescript_type = "HistoryStep")]
     pub type HistoryStepValue;
@@ -243,10 +261,11 @@ mod tests {
         use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::flows::{
-            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsLoggedIn,
-            JsPlannedTransaction, JsPlannedUpdate, LoginRequest, PlanPublishRequest,
-            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, PlanStep,
-            SpendableRequest, VerifyLoginRequest,
+            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsListing,
+            JsLoggedIn, JsOfferTerms, JsPlannedTransaction, JsPlannedUpdate, JsTaken, LoginRequest,
+            OfferTermsRequest, OffersRequest, PlanPublishRequest, PlanSendFromIdentityRequest,
+            PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
+            VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -323,11 +342,96 @@ mod tests {
         assert_declared("Funding", &JsFunding::default());
         assert_declared("ContentRequest", &ContentRequest::default());
         assert_declared(
+            "OffersRequest",
+            &OffersRequest {
+                with_offer_bytes: true,
+                ..OffersRequest::default()
+            },
+        );
+        assert_declared(
+            "Listing",
+            &JsListing {
+                raw_offer: Some(String::new()),
+                ..JsListing::default()
+            },
+        );
+        assert_declared("OfferTermsRequest", &OfferTermsRequest::default());
+        assert_declared("OfferTerms", &JsOfferTerms::default());
+        assert_declared("TakeOfferRequest", &TakeOfferRequest::default());
+        assert_declared("Taken", &JsTaken::default());
+        assert_declared(
             "ContentValue",
             &JsContentValue {
                 hex: Some(String::new()),
                 structured: Some(serde_json::Value::Null),
             },
+        );
+    }
+
+    /// The offer unions, whose variants nothing checked until now.
+    ///
+    /// `DecodedOutput` has had this since it was added; `OfferSide` and
+    /// `Demand` arrived later and slipped past, because the per-field check
+    /// only ever sees the types it is handed by name.
+    #[test]
+    fn every_offer_union_variant_is_declared_and_reachable() {
+        use crate::flows::{JsDemand, JsOfferSide};
+        use std::collections::BTreeMap;
+
+        fn side_interface(side: &JsOfferSide) -> &'static str {
+            match side {
+                JsOfferSide::Currencies { .. } => "OfferSideCurrencies",
+                JsOfferSide::Identity { .. } => "OfferSideIdentity",
+            }
+        }
+        fn demand_interface(demand: &JsDemand) -> &'static str {
+            match demand {
+                JsDemand::Native { .. } => "DemandNative",
+                JsDemand::Token { .. } => "DemandToken",
+            }
+        }
+
+        let sides = [
+            JsOfferSide::Currencies {
+                amounts: BTreeMap::new(),
+            },
+            JsOfferSide::Identity {
+                identity_id: String::new(),
+                name: String::new(),
+                system_id: String::new(),
+            },
+        ];
+        for side in &sides {
+            assert_declared(side_interface(side), side);
+        }
+        assert_eq!(
+            sides
+                .iter()
+                .map(|s| side_interface(s).to_string())
+                .collect::<BTreeSet<_>>(),
+            union_members("OfferSide")
+        );
+
+        let demands = [
+            JsDemand::Native {
+                amount: String::new(),
+                recipient: String::new(),
+            },
+            JsDemand::Token {
+                currency: String::new(),
+                amount: String::new(),
+                recipient: String::new(),
+            },
+        ];
+        for demand in &demands {
+            assert_declared(demand_interface(demand), demand);
+        }
+        assert_eq!(
+            demands
+                .iter()
+                .map(|d| demand_interface(d).to_string())
+                .collect::<BTreeSet<_>>(),
+            union_members("Demand")
         );
     }
 
@@ -439,9 +543,9 @@ mod tests {
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
-            ContentRequest, HistoryRequest, LoginRequest, PlanPublishRequest,
-            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
-            VerifyLoginRequest,
+            ContentRequest, HistoryRequest, LoginRequest, OfferTermsRequest, OffersRequest,
+            PlanPublishRequest, PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest,
+            SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -497,6 +601,13 @@ mod tests {
             &PlanSendFromIdentityRequest::SHAPE,
         );
         check::<PlanPublishRequest>("PlanPublishRequest", &PlanPublishRequest::SHAPE);
+        check::<OffersRequest>("OffersRequest", &OffersRequest::SHAPE);
+        check::<OfferTermsRequest>("OfferTermsRequest", &OfferTermsRequest::SHAPE);
+        check::<TakeOfferRequest>("TakeOfferRequest", &TakeOfferRequest::SHAPE);
+        check::<crate::dto::JsUtxo>(
+            "TakeOfferRequest.utxos",
+            nested(&TakeOfferRequest::SHAPE, "utxos"),
+        );
         // The one nested object among the new requests: a stray key inside a
         // token UTXO must be refused like any other.
         check::<crate::dto::JsUtxo>(

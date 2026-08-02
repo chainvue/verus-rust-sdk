@@ -358,6 +358,16 @@ pub fn currency(field: &str, text: &str) -> WasmResult<CurrencyId> {
     Ok(CurrencyId::from_bytes(identity_id(field, text)?))
 }
 
+/// Render 20 bytes as the `R…` address that names a key hash.
+///
+/// The sibling of [`identity_address`], and the distinction matters: the same
+/// twenty bytes spell a different address under each prefix, and paying the
+/// wrong one pays somebody nobody controls.
+#[must_use]
+pub fn key_hash_address(hash: [u8; 20]) -> String {
+    Address::new(verus_keys::AddressKind::PubKeyHash, hash).to_string()
+}
+
 /// Render 20 bytes as the i-address that names an identity or a currency.
 pub fn identity_address(id: [u8; 20]) -> String {
     Address::new(verus_keys::AddressKind::Identity, id).to_string()

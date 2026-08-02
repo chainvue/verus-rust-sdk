@@ -102,9 +102,11 @@ use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{
     ContentRequestValue, ContentStepValue, HistoryRequestValue, HistoryStepValue, JsText,
-    LoginRequestValue, LoginStepValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
+    LoginRequestValue, LoginStepValue, OfferTermsRequestValue, OfferTermsStepValue,
+    OffersRequestValue, OffersStepValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
     PlanSendRequestValue, PlanSendTokenRequestValue, SpendableRequestValue, SpendableStepValue,
-    TransactionStepValue, UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
+    TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue, UpdateStepValue,
+    VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -701,6 +703,321 @@ impl PlanPublishRequest {
     };
 }
 
+/// The largest miner fee a plan will accept where the caller names one outright.
+///
+/// One coin, which is orders of magnitude above any real fee on this chain. Not
+/// a consensus rule and not advice — a bar below which a number cannot be a
+/// mistake and above which it almost certainly is.
+const MAX_ABSOLUTE_FEE: u64 = verus_tx::SATS_PER_COIN;
+
+/// What is standing on the marketplace against a currency or an identity.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OffersRequest {
+    /// What to look for offers against.
+    pub target: String,
+    /// How to read `target`.
+    ///
+    /// Getting this wrong fails **quietly**: a currency asked about as an
+    /// identity comes back empty, which is indistinguishable from a currency
+    /// nobody is trading. A plain name is only ever an identity — pass an `i`
+    /// address for a currency.
+    pub is_currency: bool,
+    /// Ask for each maker's signed half-transaction as well.
+    ///
+    /// Without it a listing is something to display; with it, it is something
+    /// `planOfferTerms` can check against the chain and `planTakeOffer` can
+    /// complete. It makes the reply substantially larger, so it is a choice.
+    #[serde(default)]
+    pub with_offer_bytes: bool,
+}
+
+impl OffersRequest {
+    /// The keys an `OffersRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("target", None),
+            ("isCurrency", None),
+            ("withOfferBytes", None),
+        ],
+    };
+}
+
+/// One side of an offer — what is given, or what is wanted for it.
+///
+/// The two sides have the same shape and either can be either kind, which is
+/// what makes an identity sale and a token trade the same mechanism.
+// `rename_all` on an enum renames the **variants**; the fields inside them need
+// `rename_all_fields`. Without it `identity_id` reaches JavaScript in snake
+// case while every other field in the API is camel — and nothing but the union
+// drift test would have said so.
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum JsOfferSide {
+    /// Currency, possibly several at once. More than one is ordinary: an offer
+    /// of a token usually carries a little native currency alongside it,
+    /// because the output has to pay its own way.
+    Currencies {
+        /// Keyed by currency `i` address; amounts in satoshis, decimal strings.
+        amounts: BTreeMap<String, String>,
+    },
+    /// A VerusID itself, changing hands.
+    Identity {
+        /// The identity's `i` address.
+        identity_id: String,
+        /// Its name, without the parent.
+        name: String,
+        /// The system it lives on.
+        system_id: String,
+    },
+}
+
+impl Default for JsOfferSide {
+    fn default() -> Self {
+        Self::Currencies {
+            amounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl From<verus_rpc::OfferSide> for JsOfferSide {
+    fn from(side: verus_rpc::OfferSide) -> Self {
+        match side {
+            verus_rpc::OfferSide::Currencies(amounts) => Self::Currencies {
+                amounts: amounts
+                    .into_iter()
+                    .map(|(currency, amount)| (currency, dto::sats_string(amount)))
+                    .collect(),
+            },
+            verus_rpc::OfferSide::Identity {
+                identity_id,
+                name,
+                system_id,
+            } => Self::Identity {
+                identity_id,
+                name,
+                system_id,
+            },
+        }
+    }
+}
+
+/// One offer standing on the marketplace, read against a particular tip.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsListing {
+    /// What the maker is giving.
+    pub offering: JsOfferSide,
+    /// What the maker wants for it.
+    pub accepting: JsOfferSide,
+    /// Height after which the offer can no longer be completed. Zero means it
+    /// never expires.
+    pub block_expiry: u32,
+    /// The transaction holding the output the maker signed away — **not** the
+    /// id of the offer transaction itself.
+    ///
+    /// The daemon calls this `txid`, which reads as "this offer's transaction"
+    /// and is the wrong thing to fetch. Renamed here so the mistake is harder
+    /// to make.
+    pub funding_txid: String,
+    /// The maker's signed half-transaction, when `withOfferBytes` was set.
+    /// This is what `planOfferTerms` and `planTakeOffer` take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_offer: Option<String>,
+    /// The daemon's own price, **verbatim text**.
+    ///
+    /// Not a number, and not an amount. A price is a *ratio* between the two
+    /// sides, so it is not denominated in anything; and the daemon divides in
+    /// `double` and prints the result, so it arrives already rounded. Reading
+    /// it into an exact type would dress a rounded figure as a precise one.
+    pub price: String,
+    /// Which of the daemon's price buckets this was listed in.
+    pub bucket: String,
+    /// Whether it could still be completed at the tip this was read against.
+    ///
+    /// Usually true, and that is a measurement rather than an assumption: every
+    /// offer the two public nodes returned was live when checked. The flag
+    /// earns its place for the other reason — this records the offer against
+    /// *a* tip, and the chain moves.
+    pub live: bool,
+}
+
+impl From<verus_flows::Listing> for JsListing {
+    fn from(found: verus_flows::Listing) -> Self {
+        let live = found.live;
+        let listing = found.listing;
+        Self {
+            offering: listing.offering.into(),
+            accepting: listing.accepting.into(),
+            block_expiry: listing.block_expiry,
+            funding_txid: listing.funding_txid.to_display_hex(),
+            raw_offer: listing.raw_offer,
+            price: listing.price,
+            bucket: listing.bucket,
+            live,
+        }
+    }
+}
+
+/// An offer to read against the chain.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OfferTermsRequest {
+    /// The maker's signed half-transaction, hex — a listing's `rawOffer`.
+    pub offer: String,
+}
+
+impl OfferTermsRequest {
+    /// The keys an `OfferTermsRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("offer", None)],
+    };
+}
+
+/// What a maker is asking to be paid.
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum JsDemand {
+    /// Native coins.
+    Native {
+        /// How much, in satoshis, as a decimal string.
+        amount: String,
+        /// The address the maker wants paying.
+        recipient: String,
+    },
+    /// A token, as a reserve output.
+    Token {
+        /// Which token, by its `i` address.
+        currency: String,
+        /// How much, in the token's smallest unit, as a decimal string.
+        amount: String,
+        /// The address the maker wants paying.
+        recipient: String,
+    },
+}
+
+impl Default for JsDemand {
+    fn default() -> Self {
+        Self::Native {
+            amount: String::new(),
+            recipient: String::new(),
+        }
+    }
+}
+
+impl From<verus_flows::Demand> for JsDemand {
+    fn from(demand: verus_flows::Demand) -> Self {
+        match demand {
+            verus_flows::Demand::Native { amount, recipient } => Self::Native {
+                amount: dto::sats_string(amount),
+                recipient: dto::key_hash_address(recipient),
+            },
+            verus_flows::Demand::Token {
+                currency,
+                amount,
+                recipient,
+            } => Self::Token {
+                currency: dto::identity_address(currency.to_bytes()),
+                amount: dto::sats_string(amount),
+                recipient: dto::key_hash_address(recipient),
+            },
+        }
+    }
+}
+
+/// An offer, checked against the chain rather than against the maker's word.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsOfferTerms {
+    /// The transaction holding the output the offer spends.
+    pub funding_txid: String,
+    /// Which output of it.
+    pub funding_vout: u32,
+    /// What that output really holds, in satoshis, **read from the chain** and
+    /// not from the maker's message.
+    pub offered: String,
+    /// The address that controls the funding output: the maker.
+    pub control: String,
+    /// What the maker wants in return.
+    pub demand: JsDemand,
+    /// Height after which this can no longer be completed. Zero means never.
+    pub expiry_height: u32,
+    /// Confirmations on the funding **transaction**.
+    ///
+    /// Not proof the output is still unspent — the public node cannot answer
+    /// that, because it runs without `spentindex` and returns the same `-5` for
+    /// spent and unspent outpoints alike. Zero means it is in the mempool,
+    /// which is a reason to wait.
+    pub confirmations: u32,
+}
+
+impl From<verus_flows::OfferTerms> for JsOfferTerms {
+    fn from(terms: verus_flows::OfferTerms) -> Self {
+        Self {
+            funding_txid: terms.funding_txid.to_display_hex(),
+            funding_vout: terms.funding_vout,
+            offered: dto::sats_string(terms.offered),
+            control: dto::key_hash_address(terms.control),
+            demand: terms.demand.into(),
+            expiry_height: terms.expiry_height,
+            confirmations: terms.confirmations,
+        }
+    }
+}
+
+/// What a taker supplies to complete an offer.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TakeOfferRequest {
+    /// The maker's signed half-transaction, hex.
+    pub offer: String,
+    /// The outputs paying what the maker demands, plus the miner fee.
+    ///
+    /// Named rather than discovered, for the same reason a token send names
+    /// them: paying a token demand means spending reserve outputs, and
+    /// `getaddressutxos` does not say which token an output carries.
+    pub utxos: Vec<crate::dto::JsUtxo>,
+    /// Where what the maker is giving should land — an `R…` address.
+    pub recipient: String,
+    /// Where change returns.
+    pub change_address: String,
+    /// The miner fee, in satoshis, as a decimal string.
+    pub fee: String,
+}
+
+impl TakeOfferRequest {
+    /// The keys a `TakeOfferRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("offer", None),
+            ("utxos", Some(&crate::dto::JsUtxo::SHAPE)),
+            ("recipient", None),
+            ("changeAddress", None),
+            ("fee", None),
+        ],
+    };
+}
+
+/// A completed offer, built and signed.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsTaken {
+    /// The raw transaction, hex — what `sendrawtransaction` takes.
+    pub hex: String,
+    /// Its txid in display order, computed from `hex` before anything is sent.
+    pub txid: String,
+    /// The terms this was completed against, as they were read from the chain.
+    pub terms: JsOfferTerms,
+}
+
 /// Verify a VerusID login, against the identity **as it stood when the
 /// signature was made**.
 ///
@@ -849,6 +1166,97 @@ pub fn plan_content_history(
             })
             .collect::<BTreeMap<_, _>>()
     });
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Plan a read of every offer standing against a currency or an identity.
+///
+/// The half of the marketplace that used to be missing: making and taking an
+/// offer both worked, and there was no way to *discover* one.
+///
+/// Costs **two** rounds, and deliberately so: the offers are read first and the
+/// tip only after. That order is the whole safety argument — the tip is then
+/// never older than the listings, so an offer expiring in the gap is judged
+/// dead rather than alive.
+///
+/// Reading them together would save a round trip and flip that the unsafe way.
+/// It is not an optimisation waiting to be made, and a test pins the count to
+/// say so.
+///
+/// # Errors
+///
+/// Throws if `target` cannot be read. An empty result is **not** an error, and
+/// is also what asking about a currency as an identity produces — see
+/// `isCurrency`.
+#[wasm_bindgen(js_name = planOffers)]
+pub fn plan_offers(
+    request: OffersRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<OffersStepValue> {
+    let request: OffersRequest = dto::from_js(request.into(), &OffersRequest::SHAPE)?;
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        verus_flows::browse(
+            client,
+            &request.target,
+            request.is_currency,
+            request.with_offer_bytes,
+        )
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(step, |found: Vec<verus_flows::Listing>| {
+        found.into_iter().map(JsListing::from).collect::<Vec<_>>()
+    });
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Plan a read of what an offer really holds and really demands.
+///
+/// **The value a maker is giving lives in an outpoint, not in the offer**, so
+/// without this a taker has to take the maker's word for it. This reads the
+/// funding output from the chain.
+///
+/// It is not anti-fraud machinery, and it is worth being precise about that:
+/// consensus already prevents the theft case, because an offer whose funding
+/// outpoint is gone or holds less than claimed is simply rejected. What this
+/// buys is that the taker sees the trade before signing it, that the offered
+/// value stops being a number they could mistype, and that a failure arrives
+/// with a reason instead of as a broadcast rejection.
+///
+/// Refuses anything that is not a well-formed offer over a genuine funding
+/// output — including one spending an ordinary coin, which would mean the
+/// maker's signature covers something other than what the offer claims.
+///
+/// # What it can read, which is narrower than what the marketplace lists
+///
+/// Worth stating plainly, because a refusal here reads like "this offer is
+/// broken" and usually means "this SDK does not model that shape yet":
+///
+/// * the funding output must be a **native** offer funding output;
+/// * the demand must be native coins, or a single token, paid to an `R…`
+///   address.
+///
+/// So a demand paid to an `i` address is refused even though the transaction
+/// builder underneath supports it, and an **identity sale** — which
+/// [`planOffers`](plan_offers) will happily list, and which
+/// `OfferSide::Identity` exists to display — cannot be read or completed at
+/// all, because its funding output is not an offer funding output.
+///
+/// Of the four offers in this repo's own recorded VRSCTEST capture, one is
+/// completable through here. Listing and completing are not the same surface,
+/// and a browser wallet should expect to display more than it can take.
+#[wasm_bindgen(js_name = planOfferTerms)]
+pub fn plan_offer_terms(
+    request: OfferTermsRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<OfferTermsStepValue> {
+    let request: OfferTermsRequest = dto::from_js(request.into(), &OfferTermsRequest::SHAPE)?;
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        verus_flows::inspect(client, &request.offer)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(step, JsOfferTerms::from);
     Ok(crate::to_js(&step)?.unchecked_into())
 }
 
@@ -1072,6 +1480,67 @@ impl Key {
                 values: unsent.outcome.values,
             },
         );
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan completing an offer, paying what the chain says it demands.
+    ///
+    /// The offered value is the one read from the funding outpoint, not a
+    /// number the caller supplies — so a mistyped digit cannot hand the
+    /// difference to a miner. That one is a real fund-loss bug and it is the
+    /// caller's own to make, which is why it is taken away from them.
+    ///
+    /// Refuses an offer that has already expired at the current tip, which
+    /// would otherwise be built, signed and rejected.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planTakeOffer)]
+    pub fn plan_take_offer(
+        &self,
+        request: TakeOfferRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TakeOfferStepValue> {
+        let request: TakeOfferRequest = dto::from_js(request.into(), &TakeOfferRequest::SHAPE)?;
+        let utxos = dto::utxos_named("utxos", &request.utxos)?;
+        let recipient = dto::pubkey_hash_address("recipient", &request.recipient)?;
+        let change: verus_keys::Address =
+            dto::pubkey_hash_address("changeAddress", &request.change_address)?;
+        let fee = dto::sats(&request.fee)?.to_sat();
+        // The one absolute-satoshi fee in this API, and therefore the one place
+        // a transposed digit goes straight to a miner. `2900000000` reads as a
+        // plausible number and is twenty-nine coins.
+        //
+        // This binding takes the *offered* value away from the caller for
+        // exactly that reason; leaving the fee unbounded next to that would be
+        // inconsistent. Not a policy about what a fee should be — a bar for
+        // what cannot be meant, matching `MAX_FEE_PER_KB` in
+        // [`send`](crate::send).
+        if fee > MAX_ABSOLUTE_FEE {
+            return Err(WasmError::new(
+                "FeeTooLarge",
+                format!(
+                    "a miner fee of {} coins is almost certainly a unit mistake; the ceiling \
+                     here is {}",
+                    verus_tx::Amount::from_sat(fee).to_coins_string(),
+                    verus_tx::Amount::from_sat(MAX_ABSOLUTE_FEE).to_coins_string()
+                ),
+            ));
+        }
+        let offer = request.offer;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            let params = verus_flows::Taking::new(&offer, &utxos, recipient.hash(), change, fee);
+            verus_flows::prepare_take(client, self.private(), &params)
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Taken>| {
+            JsTaken {
+                hex: unsent.hex,
+                txid: unsent.txid,
+                terms: unsent.outcome.terms.into(),
+            }
+        });
         Ok(crate::to_js(&step)?.unchecked_into())
     }
 
