@@ -419,7 +419,18 @@ impl Pending<AwaitingCommitment> {
     /// holds, not four per output. Worth knowing before polling a public
     /// endpoint in a loop; `WaitPolicy::MINIMUM_INTERVAL` is the other half of
     /// that.
-    pub fn poll(self, reader: &impl ChainReader) -> Result<CommitmentStatus, FlowError> {
+    ///
+    /// # Borrows rather than consumes
+    ///
+    /// Polling is the step most likely to hit a transient failure — it is the
+    /// one a caller runs in a loop against infrastructure it does not own. If
+    /// it took `self`, a single timeout would drop the `Pending`, and with it
+    /// the salt that cannot be recovered from the chain and a commitment fee
+    /// that is already spent.
+    ///
+    /// The same reasoning made [`Pending::broadcast_commitment`] take
+    /// `&mut self`. This one only reads, so a shared borrow is enough.
+    pub fn poll(&self, reader: &impl ChainReader) -> Result<CommitmentStatus, FlowError> {
         let confirmations = match reader.confirmations(&self.commitment_txid)? {
             Some(confirmations) => confirmations,
             None => return Ok(CommitmentStatus::CommitmentGone),
@@ -436,7 +447,7 @@ impl Pending<AwaitingCommitment> {
         // The vout was assumed at build time; confirm it against the chain
         // rather than carrying the assumption into a transaction that spends it.
         let vout = self.locate_commitment(reader)?;
-        let mut ready = self.transition::<ReadyToRegister>();
+        let mut ready = self.clone().transition::<ReadyToRegister>();
         ready.commitment_vout = vout;
         Ok(CommitmentStatus::Ready(Box::new(ready)))
     }
@@ -501,16 +512,18 @@ impl Pending<AwaitingCommitment> {
     ///
     /// The interval is floored at [`WaitPolicy::MINIMUM_INTERVAL`]: this polls
     /// infrastructure nobody here pays for.
+    /// Borrows for the same reason [`Pending::poll`] does, and the loop is
+    /// where it matters most: a timeout on attempt three of ten must not cost
+    /// the caller the salt.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn wait_blocking(
-        self,
+        &self,
         reader: &impl ChainReader,
         policy: &WaitPolicy,
     ) -> Result<CommitmentStatus, FlowError> {
         let interval = policy.interval.max(WaitPolicy::MINIMUM_INTERVAL);
-        let mut pending = self;
         for attempt in 0..policy.max_polls {
-            match pending.clone().poll(reader)? {
+            match self.poll(reader)? {
                 CommitmentStatus::Waiting { confirmations } => {
                     (policy.progress)(attempt, confirmations);
                     if attempt + 1 < policy.max_polls {
@@ -519,7 +532,6 @@ impl Pending<AwaitingCommitment> {
                 }
                 settled => return Ok(settled),
             }
-            pending = pending.clone();
         }
         Ok(CommitmentStatus::Waiting { confirmations: 0 })
     }

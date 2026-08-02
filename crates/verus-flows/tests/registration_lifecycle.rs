@@ -112,6 +112,42 @@ fn an_uncertain_broadcast_leaves_the_caller_holding_the_commitment() {
     );
 }
 
+/// A **failed poll** must not cost the caller their commitment.
+///
+/// Polling is the step run in a loop against infrastructure nobody here owns,
+/// so it is the one most likely to hit a timeout. When it took `self`, a single
+/// transient failure dropped the `Pending` — and with it the salt that cannot
+/// be recovered from the chain and a commitment fee already spent.
+///
+/// The unreachable node here is a `Cassette` with nothing recorded: every read
+/// fails, which is the shape of a timeout without needing one.
+///
+/// The guard is stronger than this test: against the old `poll(self)` this
+/// would not compile at all, because reading the salt afterwards is a use after
+/// move. Written as a test anyway, so the *reason* is recorded next to it.
+#[test]
+fn a_poll_that_fails_leaves_the_commitment_in_hand() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "kept", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let salt = pending.reservation.salt;
+
+    let unreachable = verus_rpc::RpcClient::new(verus_rpc::Cassette::default());
+    assert!(
+        pending.poll(&unreachable).is_err(),
+        "a node that answers nothing cannot report a status"
+    );
+
+    // Still ours, still complete, and still able to finish once the chain is
+    // reachable again.
+    assert_eq!(pending.reservation.salt, salt);
+    assert!(matches!(
+        pending.poll(&chain).unwrap(),
+        CommitmentStatus::Ready(_)
+    ));
+}
+
 /// `Pending::prepare` borrows rather than consumes, for the same reason.
 ///
 /// It is also the read-only half a driver runs: it takes no `Broadcaster`, so
