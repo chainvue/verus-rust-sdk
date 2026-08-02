@@ -20,6 +20,9 @@ import {
   Key,
   Answers,
   planHistory,
+  planVerifyLogin,
+  planSpendable,
+  planContent,
   parseCoins,
   formatCoins,
   verifyMessage,
@@ -46,6 +49,13 @@ import {
   type HistoryStep,
   type HistoryEntry,
   type PlannedTransaction,
+  type PlanStep,
+  type VerifyLoginRequest,
+  type LoggedIn,
+  type SpendableRequest,
+  type Funding,
+  type ContentRequest,
+  type Content,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -265,17 +275,17 @@ const bodies: string[] = step.ask;
 // The payload is optional, because an asking round has none. A `.d.ts` that
 // declared it required would let a caller read `step.transaction.hex` on an
 // "ask" round and get a runtime `TypeError`.
-const built: PlannedTransaction | undefined = step.transaction;
+const built: PlannedTransaction | undefined = step.value;
 
 // And a planned transaction is NOT a SignedTransaction: it carries no
 // inputsUsed, because a flow does not report them and an empty list would be a
 // lie about which coins are committed.
 // @ts-expect-error a planned transaction does not list its inputs
-const inputs = step.transaction?.inputsUsed;
+const inputs = step.value?.inputsUsed;
 
 const read: HistoryRequest = { addresses: ["RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX"] };
 const reading: HistoryStep = planHistory(read, answers);
-const entries: HistoryEntry[] | undefined = reading.entries;
+const entries: HistoryEntry[] | undefined = reading.value;
 
 // Money is a string here too, and the per-currency map is strings all the way
 // down — this is exactly where a `Record<string, number>` would quietly round.
@@ -293,4 +303,41 @@ const stringHeight: HistoryRequest = { addresses: [], startHeight: "1" };
 
 void [floatMoney, typo, unbounded, confused, wrongShape, notAReason];
 void [bodies, built, inputs, entries, moved, perCurrency];
+// Every plan returns the same shape with a different payload, and the payload
+// has to be typed — `PlanStep<unknown>` everywhere would mean casting at every
+// call site, which is where the type would stop being checked at all.
+const session: VerifyLoginStepPayload = planVerifyLogin(
+  { identity: "alice@", signature: "…", audience: "https://example.com", challenge: "abc" },
+  answers,
+).value;
+type VerifyLoginStepPayload = LoggedIn | undefined;
+
+const spendable: Funding | undefined = planSpendable({ address: "R…" }, answers).value;
+const stored: Content | undefined = planContent({ identity: "alice@" }, answers).value;
+
+// Narrowing on `kind` is the intended ergonomics, and it has to actually work.
+const narrowedPlan = planSpendable({ address: "R…" }, answers);
+if (narrowedPlan.kind === "ready") {
+  // @ts-expect-error a Funding has no `entries`
+  const wrong = narrowedPlan.value?.entries;
+  void wrong;
+}
+
+// The generic is real, not a name: a step's payload is not interchangeable.
+// @ts-expect-error a spendable step does not carry a LoggedIn
+const mismatched: PlanStep<LoggedIn> = planSpendable({ address: "R…" }, answers);
+
+// On one line deliberately: `@ts-expect-error` covers the next *line*, not the
+// next statement, so a multi-line literal puts the error out of its reach and
+// the directive reads as unused.
+// @ts-expect-error a login policy bound is a number of blocks, not a string
+const badPolicy: VerifyLoginRequest = { identity: "a@", signature: "s", audience: "a", challenge: "b", maxAgeBlocks: "60" };
+
+// @ts-expect-error an address is required
+const noAddress: SpendableRequest = {};
+
+// @ts-expect-error a mistyped optional field is refused here too
+const strayKey: ContentRequest = { identity: "alice@", identityy: "x" };
+
 void [numericAmount, misspelled, stringHeight];
+void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

@@ -31,7 +31,7 @@
 //! for (;;) {
 //!   const step = key.planSend({ to: "RQr2…", satoshis: parseCoins("1.5") }, answers);
 //!   if (step.kind === "ready") {
-//!     await post(JSON.stringify({ method: "sendrawtransaction", params: [step.transaction.hex] }));
+//!     await post(JSON.stringify({ method: "sendrawtransaction", params: [step.value.hex] }));
 //!     break;
 //!   }
 //!   await Promise.all(step.ask.map(async (body) => answers.record(body, await post(body))));
@@ -45,7 +45,7 @@
 //! **Broadcast.** Not "does not currently"; cannot. The flows were split so
 //! that the re-runnable half takes no broadcaster, and re-running is exactly
 //! what happens here — a send that went out once per round would send a
-//! different transaction each time. So `step.transaction.hex` comes back and
+//! different transaction each time. So `step.value.hex` comes back and
 //! the page posts it, once, deliberately, outside the loop.
 //!
 //! # If that post fails, do not plan again
@@ -65,12 +65,12 @@
 //!
 //! ```js
 //! try {
-//!   await post(sendRawTransaction(step.transaction.hex));
+//!   await post(sendRawTransaction(step.value.hex));
 //! } catch (networkFailure) {
-//!   const seen = await post(getRawTransaction(step.transaction.txid));
+//!   const seen = await post(getRawTransaction(step.value.txid));
 //!   // Absent? It never arrived, and re-posting the identical hex is safe.
 //!   // Present? It is already on the network. Nothing to do.
-//!   if (!JSON.parse(seen).result) await post(sendRawTransaction(step.transaction.hex));
+//!   if (!JSON.parse(seen).result) await post(sendRawTransaction(step.value.hex));
 //! }
 //! ```
 //!
@@ -95,13 +95,15 @@ use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
 use verus_flows::drive::{advance, Step};
-use verus_rpc::{Cassette, RpcClient};
+use verus_rpc::{Cassette, ChainReader, RpcClient};
 
 use crate::dto::{self, Shape};
 use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{
-    HistoryRequestValue, HistoryStepValue, JsText, PlanSendRequestValue, SendStepValue,
+    ContentRequestValue, ContentStepValue, HistoryRequestValue, HistoryStepValue, JsText,
+    LoginRequestValue, LoginStepValue, PlanSendRequestValue, SendStepValue, SpendableRequestValue,
+    SpendableStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -190,18 +192,43 @@ impl PlanSendRequest {
     };
 }
 
-/// One round of a payment plan.
+/// One round of any plan: what it still needs, or what it produced.
+///
+/// One shape for every `plan…` call rather than one per flow. The alternative
+/// was a `SendStep`, a `HistoryStep`, a `LoginStep` and so on — identical but
+/// for the payload's name, which is a lot of surface for a page to learn and a
+/// lot of declarations to keep in step with the Rust.
+///
+/// `value` is present exactly when `kind` is `"ready"`, and `ask` is empty
+/// exactly then. TypeScript sees it generically as `PlanStep<T>`.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SendStep {
+pub struct PlanStep<T> {
     /// `"ask"` or `"ready"`.
     pub kind: String,
     /// JSON-RPC bodies to post verbatim. Empty when `kind` is `"ready"`.
     pub ask: Vec<String>,
-    /// The signed transaction. Present only when `kind` is `"ready"`, and
-    /// **not broadcast** — see the module docs.
+    /// What the operation produced. Present only when `kind` is `"ready"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transaction: Option<JsPlannedTransaction>,
+    pub value: Option<T>,
+}
+
+impl<T> PlanStep<T> {
+    /// Convert a driver step, mapping the finished value on the way.
+    fn of<U>(step: Step<U>, ready: impl FnOnce(U) -> T) -> Self {
+        match step {
+            Step::Ask(ask) => Self {
+                kind: "ask".into(),
+                ask,
+                value: None,
+            },
+            Step::Ready(value) => Self {
+                kind: "ready".into(),
+                ask: Vec::new(),
+                value: Some(ready(value)),
+            },
+        }
+    }
 }
 
 /// A transaction a flow built and signed, ready to post.
@@ -264,19 +291,6 @@ impl HistoryRequest {
     };
 }
 
-/// One round of a history read.
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryStep {
-    /// `"ask"` or `"ready"`.
-    pub kind: String,
-    /// JSON-RPC bodies to post verbatim. Empty when `kind` is `"ready"`.
-    pub ask: Vec<String>,
-    /// The transactions, oldest first. Present only when `kind` is `"ready"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entries: Option<Vec<JsHistoryEntry>>,
-}
-
 /// One transaction that touched the addresses asked about.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,6 +347,216 @@ impl From<verus_flows::history::HistoryEntry> for JsHistoryEntry {
     }
 }
 
+/// What a login challenge commits to.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoginRequest {
+    /// Who is asking. Included in the signed text so a signature made for one
+    /// site cannot be replayed at another.
+    pub audience: String,
+    /// Random and single-use. 32 bytes of entropy, hex or base64, is ample.
+    pub challenge: String,
+}
+
+impl LoginRequest {
+    /// The keys a `LoginRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("audience", None), ("challenge", None)],
+    };
+
+    fn to_flow(&self) -> verus_flows::LoginRequest {
+        verus_flows::LoginRequest {
+            audience: self.audience.clone(),
+            challenge: self.challenge.clone(),
+        }
+    }
+}
+
+/// What to verify, and how strict to be about its age.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifyLoginRequest {
+    /// The identity that supposedly signed — a name or an `i…` address.
+    pub identity: String,
+    /// The signature it presented, base64.
+    pub signature: String,
+    /// The challenge it was given. Must be the one this server issued.
+    pub audience: String,
+    /// The challenge nonce.
+    pub challenge: String,
+    /// How old the signature's height may be, in blocks. Roughly a block a
+    /// minute on Verus, so 60 is an hour. Omit for that default.
+    #[serde(default)]
+    pub max_age_blocks: Option<u32>,
+    /// How far ahead of the tip a signature may be stamped. Omit for 2.
+    #[serde(default)]
+    pub max_future_blocks: Option<u32>,
+}
+
+impl VerifyLoginRequest {
+    /// The keys a `VerifyLoginRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("signature", None),
+            ("audience", None),
+            ("challenge", None),
+            ("maxAgeBlocks", None),
+            ("maxFutureBlocks", None),
+        ],
+    };
+}
+
+/// Who signed in, and under what authority.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsLoggedIn {
+    /// The fully qualified name, e.g. `alice.VRSCTEST@`.
+    pub name: String,
+    /// The identity's `i…` address. **This is the identifier to key a session
+    /// on** — a name can be transferred, an `i` address cannot.
+    pub identity_address: String,
+    /// The height the signature was stamped with.
+    pub signed_at: u32,
+    /// The addresses that actually signed, and were authorised to at that
+    /// height rather than at the tip.
+    pub signers: Vec<String>,
+}
+
+impl From<verus_flows::LoggedIn> for JsLoggedIn {
+    fn from(logged_in: verus_flows::LoggedIn) -> Self {
+        Self {
+            name: logged_in.name,
+            identity_address: logged_in.identity_address,
+            signed_at: logged_in.signed_at,
+            signers: logged_in.signers.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+/// Whose coins to look at.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpendableRequest {
+    /// The address to assess. A node sees it.
+    pub address: String,
+}
+
+impl SpendableRequest {
+    /// The keys a `SpendableRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("address", None)],
+    };
+}
+
+/// What an address can actually spend right now.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsFunding {
+    /// The chain tip this was decided against. Everything below is a statement
+    /// about that height, not about now.
+    pub tip: u32,
+    /// Total spendable, in satoshis, as a decimal string.
+    pub total: String,
+    /// The outputs a builder can use.
+    pub utxos: Vec<crate::dto::JsUtxo>,
+    /// Native value that exists but cannot be spent **yet** — mostly immature
+    /// coinbases.
+    ///
+    /// Part of the gap between a balance and what a payment can use, **not all
+    /// of it**: the outputs counted in `other` carry native value too, and it
+    /// is in neither this figure nor `total`. So `total + notYetSpendable` can
+    /// still fall short of what `getaddressbalance` reports, and by design —
+    /// the remainder is locked in outputs a native send must not touch.
+    pub not_yet_spendable: String,
+    /// How many outputs are not plain P2PKH: reserve outputs holding tokens,
+    /// identity outputs, anything CryptoCondition. Excluded from `utxos`
+    /// because the native builders refuse them — a reserve output's value is in
+    /// its payload, so spending one as ordinary funding destroys what it
+    /// carries.
+    ///
+    /// A **count**, not the outputs. Spending a token means naming the outputs
+    /// that hold it, and this flow cannot identify them: `getaddressutxos`
+    /// reports a reserve output's native value, not which token it carries or
+    /// how much, so recognising them means decoding each script. A wallet that
+    /// tracks its own token outputs already knows them and passes them to the
+    /// token send; this number is here so a balance screen can say "and 3
+    /// outputs this cannot spend" rather than silently omitting them.
+    pub other: usize,
+}
+
+impl From<verus_flows::Funding> for JsFunding {
+    fn from(funding: verus_flows::Funding) -> Self {
+        Self {
+            tip: funding.tip,
+            total: dto::sats_string(funding.total),
+            not_yet_spendable: dto::sats_string(funding.immature_total()),
+            other: funding.other.len(),
+            utxos: funding
+                .utxos
+                .into_iter()
+                .map(|utxo| crate::dto::JsUtxo {
+                    txid: utxo.txid.to_display_hex(),
+                    vout: utxo.vout,
+                    satoshis: dto::sats_string(utxo.satoshis),
+                    script_pubkey: hex::encode(&utxo.script_pubkey),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Which identity's stored data to read.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContentRequest {
+    /// The identity holding it — a name or an `i…` address.
+    pub identity: String,
+}
+
+impl ContentRequest {
+    /// The keys a `ContentRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("identity", None)],
+    };
+}
+
+/// One value stored under a VDXF key.
+///
+/// A multimap value is VDXF-typed data whose encoding depends on its key, and
+/// **a VDXF key is a one-way hash of a name**: for a key you did not create
+/// there is no way to recover the name, and so no way to know how to read the
+/// bytes. So this hands them over and stops. For your own keys that costs
+/// nothing — you chose the encoding.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsContentValue {
+    /// The raw bytes as hex, for a key the daemon does not recognise — which
+    /// is every key an application defines for itself. Absent when the daemon
+    /// recognised the key and decoded it, because the original bytes are then
+    /// not in the reply at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hex: Option<String>,
+    /// The daemon's decoded rendering, when it had one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured: Option<serde_json::Value>,
+}
+
+impl From<verus_rpc::ContentValue> for JsContentValue {
+    fn from(value: verus_rpc::ContentValue) -> Self {
+        match value {
+            verus_rpc::ContentValue::Bytes(bytes) => Self {
+                hex: Some(hex::encode(bytes)),
+                structured: None,
+            },
+            verus_rpc::ContentValue::Structured(json) => Self {
+                hex: None,
+                structured: Some(json),
+            },
+        }
+    }
+}
+
 /// Plan a transaction history read.
 ///
 /// Costs one round: the chain's own currency id and the address deltas are
@@ -365,18 +589,163 @@ pub fn plan_history(
     })
     .map_err(WasmError::from)?;
 
-    let step = match step {
-        Step::Ask(ask) => HistoryStep {
-            kind: "ask".into(),
-            ask,
-            entries: None,
-        },
-        Step::Ready(entries) => HistoryStep {
-            kind: "ready".into(),
-            ask: Vec::new(),
-            entries: Some(entries.into_iter().map(JsHistoryEntry::from).collect()),
-        },
+    let step = PlanStep::of(step, |entries: Vec<verus_flows::HistoryEntry>| {
+        entries
+            .into_iter()
+            .map(JsHistoryEntry::from)
+            .collect::<Vec<_>>()
+    });
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Verify a VerusID login, against the identity **as it stood when the
+/// signature was made**.
+///
+/// Rotation and revocation are treated differently, deliberately:
+///
+/// * a key **rotated** after signing does not invalidate the signature — the
+///   identity is resolved at the signature's own height, and a routine key
+///   change should not log everyone out;
+/// * an identity **revoked** after signing is refused anyway. Revocation is a
+///   break-glass action, so it takes effect now rather than when the signature
+///   ages out — otherwise an attacker holding a signature stamped minutes
+///   before the revocation keeps logging in for another `maxAgeBlocks`.
+///
+/// That costs one extra read, in the same round as the others.
+///
+/// Key a session on `identityAddress`, not on `name` — a name can be
+/// transferred to someone else, an `i` address cannot.
+///
+/// # Errors
+///
+/// Throws if the signature is stale or stamped ahead of the chain, if the
+/// identity did not exist or was revoked at that height, or if the signature
+/// does not meet the identity's threshold.
+#[wasm_bindgen(js_name = planVerifyLogin)]
+pub fn plan_verify_login(
+    request: VerifyLoginRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<VerifyLoginStepValue> {
+    let request: VerifyLoginRequest = dto::from_js(request.into(), &VerifyLoginRequest::SHAPE)?;
+    let signature = verus_tx::signature::IdentitySignature::from_base64(&request.signature)
+        .map_err(WasmError::from)?;
+    let challenge = verus_flows::LoginRequest {
+        audience: request.audience.clone(),
+        challenge: request.challenge.clone(),
     };
+    let policy = verus_flows::LoginPolicy {
+        max_age_blocks: request
+            .max_age_blocks
+            .unwrap_or(verus_flows::LoginPolicy::default().max_age_blocks),
+        max_future_blocks: request
+            .max_future_blocks
+            .unwrap_or(verus_flows::LoginPolicy::default().max_future_blocks),
+    };
+
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        verus_flows::verify_login(client, &request.identity, &signature, &challenge, &policy)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(step, JsLoggedIn::from);
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Plan a read of what an address can actually spend.
+///
+/// Not a balance. A balance counts what exists; this counts what a transaction
+/// can use *now* — which differs whenever the address holds an immature
+/// coinbase or a token. `notYetSpendable` is the gap, so a wallet can explain
+/// it instead of showing a number a payment then fails to reach.
+///
+/// Costs one round, plus one more if any output is young enough that its
+/// maturity has to be checked.
+#[wasm_bindgen(js_name = planSpendable)]
+pub fn plan_spendable(
+    request: SpendableRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<SpendableStepValue> {
+    let request: SpendableRequest = dto::from_js(request.into(), &SpendableRequest::SHAPE)?;
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        verus_flows::spendable(client, &request.address)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(step, JsFunding::from);
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Plan a read of everything an identity stores **now**.
+///
+/// Keyed by the VDXF key as a `contentmultimap` prints it — an `i` address, not
+/// hex. The same identity object spells its older `contentmap` keys as hex, so
+/// comparing a derived key against the wrong rendering silently finds nothing.
+///
+/// This is current state. For every value ever published under a key, including
+/// superseded ones, use [`plan_content_history`].
+#[wasm_bindgen(js_name = planContent)]
+pub fn plan_content(
+    request: ContentRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<ContentStepValue> {
+    let request: ContentRequest = dto::from_js(request.into(), &ContentRequest::SHAPE)?;
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        verus_flows::read_all(client, &request.identity)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(
+        step,
+        |content: BTreeMap<String, Vec<verus_rpc::ContentValue>>| {
+            content
+                .into_iter()
+                .map(|(key, values)| {
+                    (
+                        key,
+                        values
+                            .into_iter()
+                            .map(JsContentValue::from)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        },
+    );
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Plan a read of every value an identity has **ever** published under its
+/// keys, oldest first.
+///
+/// The audit view, and not what an application reading back its own data wants:
+/// a key rewritten three times appears three times, with no marker saying which
+/// is current. [`plan_content`] answers that.
+#[wasm_bindgen(js_name = planContentHistory)]
+pub fn plan_content_history(
+    request: ContentRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<ContentStepValue> {
+    let request: ContentRequest = dto::from_js(request.into(), &ContentRequest::SHAPE)?;
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        Ok(client.identity_content(&request.identity)?)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = PlanStep::of(step, |content: verus_rpc::IdentityContent| {
+        content
+            .content_multimap
+            .into_iter()
+            .map(|(key, values)| {
+                (
+                    key,
+                    values
+                        .into_iter()
+                        .map(JsContentValue::from)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    });
     Ok(crate::to_js(&step)?.unchecked_into())
 }
 
@@ -420,21 +789,49 @@ impl Key {
         })
         .map_err(WasmError::from)?;
 
-        let step = match step {
-            Step::Ask(ask) => SendStep {
-                kind: "ask".into(),
-                ask,
-                transaction: None,
-            },
-            // The `Unsent` is taken apart here and only the bytes survive,
-            // which is the point: nothing this module hands back can be sent by
-            // anything in this crate.
-            Step::Ready(unsent) => SendStep {
-                kind: "ready".into(),
-                ask: Vec::new(),
-                transaction: Some(JsPlannedTransaction::from(unsent.outcome)),
-            },
-        };
+        // The `Unsent` is taken apart here and only the bytes survive, which is
+        // the point: nothing this module hands back can be sent by anything in
+        // this crate.
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Sign a login challenge as an identity, stamped with the current tip.
+    ///
+    /// The tip is what a verifier checks freshness against, which is why this
+    /// reads the chain rather than being an offline signature. `Key.signMessage`
+    /// is the offline form, for a caller who already knows the height and the
+    /// identity's `i` address.
+    ///
+    /// The value is the signature, base64 — hand it to the verifier alongside
+    /// the audience and challenge it was issued with.
+    ///
+    /// # Errors
+    ///
+    /// Throws if the identity does not exist. It does **not** check that this
+    /// key is one of the identity's primary addresses: that is the verifier's
+    /// job, and doing it here would be a check the signer could skip.
+    #[wasm_bindgen(js_name = planLogin)]
+    pub fn plan_login(
+        &self,
+        identity: JsText,
+        request: LoginRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<LoginStepValue> {
+        let identity = dto::text("identity", identity.as_ref())?;
+        let request: LoginRequest = dto::from_js(request.into(), &LoginRequest::SHAPE)?;
+        let challenge = request.to_flow();
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::sign_login(client, self.private(), &identity, &challenge)
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |signature: verus_tx::signature::IdentitySignature| {
+            signature.to_base64()
+        });
         Ok(crate::to_js(&step)?.unchecked_into())
     }
 }

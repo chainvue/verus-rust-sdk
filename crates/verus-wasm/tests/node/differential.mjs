@@ -22,10 +22,10 @@ import assert from "node:assert/strict";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
-const { Key, Answers, planHistory, parseCoins, formatCoins, satsPerCoin,
-        decodeOutput, tokenBalances, verifyMessage, signatureBlockHeight,
-        vdxfKey, rootNamespace, identityId, validateMnemonic,
-        mnemonicToSeed } = wasm;
+const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
+        planContentHistory, parseCoins, formatCoins, satsPerCoin, decodeOutput,
+        tokenBalances, verifyMessage, signatureBlockHeight, vdxfKey,
+        rootNamespace, identityId, validateMnemonic, mnemonicToSeed } = wasm;
 
 const vectors = JSON.parse(
   readFileSync(resolve(here, "../../../../fixtures/transparent/vectors.json"), "utf8"),
@@ -795,9 +795,9 @@ console.log("\nflows, driven with no network");
     changeAddress: address,
     expiryHeight: TIP + EXPIRY_BLOCKS,
   });
-  assert.equal(step.transaction.hex, direct.hex);
-  assert.equal(step.transaction.txid, direct.txid);
-  assert.equal(step.transaction.fee, direct.fee);
+  assert.equal(step.value.hex, direct.hex);
+  assert.equal(step.value.txid, direct.txid);
+  assert.equal(step.value.fee, direct.fee);
   ok("a planned payment is byte-identical to a directly built one");
 
   // A plan reads. It cannot ask the page to write, and that is what makes it
@@ -843,7 +843,7 @@ console.log("\nflows, driven with no network");
         { addresses: [address], startHeight: 1166000, endHeight: TIP },
         reading,
       );
-      if (s.kind === "ready") { entries = s.entries; break; }
+      if (s.kind === "ready") { entries = s.value; break; }
       readRounds += 1;
       for (const body of s.ask) reading.record(body, post(body));
     }
@@ -978,9 +978,156 @@ console.log("\nflows, driven with no network");
     const again = key.planSend({ to: PAYEE, satoshis: "250000000" }, shared);
     assert.equal(again.kind, "ready");
     assert.ok(shared.rounds > before, "rounds accumulate across operations");
-    assert.notEqual(again.transaction.hex, step.transaction.hex);
+    assert.notEqual(again.value.hex, step.value.hex);
     shared.free();
     ok("a reused Answers replans from the cache without asking again");
+  }
+
+  // -- a login, signed and verified through the driver ----------------------
+  //
+  // The whole round trip: the module reads the tip and the identity to stamp a
+  // signature, then a verifier reads the identity *as it stood at that height*
+  // and decides. Both halves driven, no network.
+  {
+    const identityKey = Key.fromWif(vector.wif);
+    const IDENTITY_ADDRESS = "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm";
+    const signerAddress = identityKey.address();
+
+    const identityReply = (height) => JSON.stringify({
+      result: {
+        blockheight: height,
+        fullyqualifiedname: "someone.VRSCTEST@",
+        status: "active",
+        txid: TXID,
+        vout: 0,
+        identity: {
+          identityaddress: IDENTITY_ADDRESS,
+          minimumsignatures: 1,
+          name: "someone",
+          primaryaddresses: [signerAddress],
+          version: 3,
+        },
+      },
+    });
+
+    const loginReplies = {
+      ...replies,
+      getidentity: identityReply(HEIGHT),
+    };
+    const loginPost = (body) => {
+      const { method } = JSON.parse(body);
+      assert.ok(loginReplies[method], `nothing recorded for ${method}`);
+      return loginReplies[method];
+    };
+
+    const drive = (call) => {
+      const a = new Answers();
+      for (;;) {
+        const s = call(a);
+        if (s.kind === "ready") { a.free(); return s.value; }
+        for (const body of s.ask) a.record(body, loginPost(body));
+      }
+    };
+
+    const challenge = { audience: "https://example.com", challenge: "9f2c4e7a1b" };
+    const signature = drive((a) => identityKey.planLogin("someone.VRSCTEST@", challenge, a));
+    assert.equal(typeof signature, "string");
+    ok("a login is signed against the chain's own tip");
+
+    const session = drive((a) =>
+      planVerifyLogin({ identity: "someone.VRSCTEST@", signature, ...challenge }, a));
+    assert.equal(session.identityAddress, IDENTITY_ADDRESS);
+    assert.equal(session.signedAt, TIP);
+    assert.deepEqual(session.signers, [signerAddress]);
+    ok("and verified against the identity as it stood when it was signed");
+
+    // A challenge the verifier did not issue must not verify, or the whole
+    // thing is a signature over nothing in particular.
+    assert.throws(
+      () => drive((a) => planVerifyLogin(
+        { identity: "someone.VRSCTEST@", signature, audience: "https://evil.example", challenge: challenge.challenge },
+        a)),
+      (e) => e.name !== undefined,
+    );
+    ok("a signature made for one audience does not verify at another");
+
+    identityKey.free();
+  }
+
+  // -- what an address can actually spend -----------------------------------
+  {
+    const funding = (() => {
+      const a = new Answers();
+      for (;;) {
+        const s = planSpendable({ address }, a);
+        if (s.kind === "ready") { a.free(); return s.value; }
+        for (const body of s.ask) a.record(body, post(body));
+      }
+    })();
+
+    assert.equal(funding.tip, TIP);
+    // Money is a string here as everywhere.
+    assert.equal(typeof funding.total, "string");
+    assert.equal(funding.total, String(SATS));
+    assert.equal(funding.notYetSpendable, "0");
+    assert.equal(funding.utxos.length, 1);
+    assert.equal(funding.utxos[0].scriptPubKey, SCRIPT);
+    ok("spendable coins are reported with the tip they were judged against");
+  }
+
+  // -- stored data, current versus accumulated ------------------------------
+  {
+    const KEY = "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv";
+    const contentReplies = {
+      ...replies,
+      // `getidentity` is current state: one value under the key.
+      getidentity: JSON.stringify({
+        result: {
+          blockheight: HEIGHT, fullyqualifiedname: "app.VRSCTEST@", status: "active",
+          txid: TXID, vout: 0,
+          identity: {
+            identityaddress: "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm",
+            minimumsignatures: 1, name: "app", primaryaddresses: [address], version: 3,
+            contentmultimap: { [KEY]: [Buffer.from("now").toString("hex")] },
+          },
+        },
+      }),
+      // `getidentitycontent` accumulates: every value ever published.
+      getidentitycontent: JSON.stringify({
+        result: {
+          blockheight: HEIGHT, fullyqualifiedname: "app.VRSCTEST@", status: "active",
+          txid: TXID, vout: 0,
+          identity: {
+            identityaddress: "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm",
+            minimumsignatures: 1, name: "app", primaryaddresses: [address], version: 3,
+            contentmultimap: {
+              [KEY]: [
+                Buffer.from("before").toString("hex"),
+                Buffer.from("now").toString("hex"),
+              ],
+            },
+          },
+        },
+      }),
+    };
+    const contentPost = (body) => contentReplies[JSON.parse(body).method];
+
+    const drive = (call) => {
+      const a = new Answers();
+      for (;;) {
+        const s = call(a);
+        if (s.kind === "ready") { a.free(); return s.value; }
+        for (const body of s.ask) a.record(body, contentPost(body));
+      }
+    };
+
+    const now = drive((a) => planContent({ identity: "app.VRSCTEST@" }, a));
+    const ever = drive((a) => planContentHistory({ identity: "app.VRSCTEST@" }, a));
+
+    assert.equal(now[KEY].length, 1, "planContent is current state");
+    assert.equal(Buffer.from(now[KEY][0].hex, "hex").toString(), "now");
+    assert.equal(ever[KEY].length, 2, "planContentHistory accumulates");
+    ok("stored data reads as current state, with the audit view kept separate");
   }
 
   // -- the request sanitizer applies here too ------------------------------
