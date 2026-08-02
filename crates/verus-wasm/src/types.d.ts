@@ -357,3 +357,104 @@ export interface DecodedUnsupportedCryptoCondition {
 export interface DecodedUnknown {
     kind: "unknown";
 }
+
+/**
+ * What to pay, and to whom. The rest — which coins to spend, what the
+ * transaction should expire at, where change returns — is the SDK's.
+ */
+export interface PlanSendRequest {
+    /** Where the value is going. An `R…` address, or an `i…` VerusID. */
+    to: string;
+    /** How much, in satoshis, as a decimal string. */
+    satoshis: string;
+}
+
+/**
+ * A transaction a flow built and signed. **Not broadcast** — posting it is the
+ * page's, deliberately, and exactly once.
+ */
+export interface PlannedTransaction {
+    /** The raw transaction, hex — what `sendrawtransaction` takes. */
+    hex: string;
+    /** Its txid in display order, computed from `hex` before anything is sent. */
+    txid: string;
+    /** The miner fee paid, in satoshis, including any dust folded into it. */
+    fee: string;
+    /** Change returned, in satoshis; `"0"` if it would have been dust. */
+    change: string;
+}
+
+/** One round of a payment plan. */
+export interface SendStep {
+    /** `"ask"` while the plan still needs answers, `"ready"` when it is done. */
+    kind: "ask" | "ready";
+    /**
+     * Complete JSON-RPC bodies to POST **verbatim**, then hand back through
+     * `answers.record(body, reply)` with the body unchanged. Empty when ready.
+     *
+     * Independent of one another within a round, so fetch them concurrently.
+     */
+    ask: string[];
+    /** Present only when `kind` is `"ready"`. */
+    transaction?: PlannedTransaction;
+}
+
+/** Which addresses to report on, and over what stretch of chain. */
+export interface HistoryRequest {
+    /** The addresses. A node sees every one of them. */
+    addresses: string[];
+    /**
+     * First block to search, inclusive. Pass both bounds or neither; omitting
+     * both asks for the whole chain, which on a busy address is a large reply.
+     */
+    startHeight?: number;
+    /** Last block to search, inclusive. */
+    endHeight?: number;
+}
+
+/** One transaction that touched the addresses asked about. */
+export interface HistoryEntry {
+    /** The transaction, in display order. */
+    txid: string;
+    /** Block it was mined in. */
+    height: number;
+    /** Position within that block. */
+    blockIndex: number;
+    /**
+     * The block's timestamp, in seconds. A plain number, unlike the amounts
+     * here: a Unix timestamp is far inside what a float64 holds exactly.
+     * Miner-chosen and only loosely monotonic — fine to display, not a source
+     * of ordering.
+     */
+    blockTime: number;
+    /**
+     * Net native value in satoshis, as a decimal string, negative when more
+     * left than arrived.
+     *
+     * `"0"` does not mean nothing happened: a token-only transfer moves no
+     * native value at all. Read `netCurrencies` too.
+     */
+    netNative: string;
+    /**
+     * Net movement per currency, keyed by `i…` address, excluding the chain's
+     * own currency. Currencies that net to exactly zero are absent rather than
+     * `"0"`.
+     */
+    netCurrencies: Record<string, string>;
+    /**
+     * Whether any output belonging to these addresses was spent here. Distinct
+     * from a negative net: a self-transfer spends an output and returns the
+     * value, netting to just the fee.
+     */
+    spentSomething: boolean;
+}
+
+/** One round of a history read. */
+export interface HistoryStep {
+    /** `"ask"` while the read still needs answers, `"ready"` when it is done. */
+    kind: "ask" | "ready";
+    /** Complete JSON-RPC bodies to POST verbatim. Empty when ready. */
+    ask: string[];
+    /** The transactions, oldest first. Present only when `kind` is `"ready"`. */
+    entries?: HistoryEntry[];
+}

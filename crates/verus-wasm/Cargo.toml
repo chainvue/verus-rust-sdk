@@ -41,6 +41,15 @@ verus-keys = { path = "../verus-keys" }
 verus-tx = { path = "../verus-tx" }
 verus-wire = { path = "../verus-wire" }
 
+# The flows, and the client they read through — both with `default-features =
+# false`, which is what keeps `ureq` out of the module. `verus-rpc`'s `http`
+# feature is the only thing in either crate that opens a socket, and a browser
+# has none to open: the page fetches and hands the replies back. That this
+# holds is not left to care — `offline_crates_stay_offline` walks this crate's
+# dependency tree and fails on any HTTP stack it finds.
+verus-flows = { path = "../verus-flows", default-features = false }
+verus-rpc = { path = "../verus-rpc", default-features = false }
+
 # Two transitive dependencies reach for the operating system's entropy, and on
 # `wasm32-unknown-unknown` there is no operating system to reach for — the crate
 # does not compile at all without being told to use the Web Crypto API instead.

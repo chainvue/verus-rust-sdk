@@ -95,6 +95,36 @@ impl From<verus_tx::TxError> for WasmError {
     }
 }
 
+/// A flow failure, coded by the *inner* error where there is one.
+///
+/// `FlowError` carries three `#[error(transparent)]` wrappers — `Tx`, `Rpc` and
+/// `Key` — and taking the `Debug` prefix of the wrapper would code every one of
+/// them as `"Tx"`, `"Rpc"` or `"Key"`. That is not merely vague, it is
+/// **inconsistent**: the same underlying failure would surface as
+/// `InsufficientFunds` from `key.send(..)` and as `Tx` from `key.planSend(..)`,
+/// so a caller's `e.name === "InsufficientFunds"` would work on one path and
+/// silently not on the other. Unwrapping keeps the two paths speaking the same
+/// language.
+///
+/// `FlowError` is `#[non_exhaustive]`, so this cannot be an exhaustive match
+/// that would break the build when a fourth wrapper appears. The test below
+/// stands in for that: it asserts each wrapper reports its inner variant, and a
+/// new one added upstream without a case here would be caught by adding a line
+/// to it. Every non-wrapper variant names itself correctly through the
+/// catch-all — `Stalled`, `InsufficientFunds`, `BroadcastUncertain`.
+impl From<verus_flows::FlowError> for WasmError {
+    fn from(error: verus_flows::FlowError) -> Self {
+        use verus_flows::FlowError as Flow;
+        match error {
+            // The three `#[error(transparent)]` wrappers: code what they carry.
+            Flow::Tx(inner) => Self::from_source(&inner),
+            Flow::Rpc(inner) => Self::from_source(&inner),
+            Flow::Key(inner) => Self::from_source(&inner),
+            other => Self::from_source(&other),
+        }
+    }
+}
+
 impl From<verus_keys::KeyError> for WasmError {
     fn from(error: verus_keys::KeyError) -> Self {
         Self::from_source(&error)
@@ -196,6 +226,58 @@ mod tests {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "a code must be usable as a JavaScript identifier comparison: {error}"
+        );
+    }
+
+    /// A flow failure must be named by the error it carries, not by the
+    /// wrapper — the same failure has to have the same `e.name` whether it
+    /// came from `key.send(..)` or from `key.planSend(..)`.
+    ///
+    /// All three transparent wrappers, because leaving one out is exactly the
+    /// mistake this guards: `Key` was missed the first time, so a mistyped
+    /// payee address would have been reported as `"Key"` from a plan and as
+    /// `"InvalidAddress"`-or-whatever from a direct build.
+    #[test]
+    fn a_flow_error_is_named_by_the_error_it_wraps() {
+        use verus_flows::FlowError;
+
+        let tx = WasmError::from(FlowError::Tx(verus_tx::TxError::NoOutputs));
+        assert_eq!(tx.code(), "NoOutputs");
+
+        let rpc = WasmError::from(FlowError::Rpc(verus_rpc::RpcError::Node {
+            code: -5,
+            message: "Identity not found".into(),
+        }));
+        assert_eq!(rpc.code(), "Node");
+
+        let key = WasmError::from(FlowError::Key(
+            verus_keys::PrivateKey::from_wif("not a wif").unwrap_err(),
+        ));
+        assert_ne!(key.code(), "Key", "the wrapper must not be the name");
+        assert_eq!(
+            key.code(),
+            WasmError::from(verus_keys::PrivateKey::from_wif("not a wif").unwrap_err()).code(),
+            "the planned path and the direct path must agree"
+        );
+    }
+
+    /// A variant that is not a wrapper names itself, through the catch-all.
+    #[test]
+    fn a_flow_error_that_wraps_nothing_names_itself() {
+        use verus_flows::FlowError;
+
+        assert_eq!(
+            WasmError::from(FlowError::Stalled("no progress".into())).code(),
+            "Stalled"
+        );
+        assert_eq!(
+            WasmError::from(FlowError::BroadcastUncertain {
+                txid: String::new(),
+                hex: String::new(),
+                reason: String::new(),
+            })
+            .code(),
+            "BroadcastUncertain"
         );
     }
 
