@@ -590,7 +590,9 @@ export type Content = Record<string, ContentValue[]>;
  * disagree on one field name is how the payload field ends up called
  * `transaction` in one place and `entries` in another for no reason.
  */
-export type SendStep = PlanStep<PlannedTransaction>;
+export type TransactionStep = PlanStep<PlannedTransaction>;
+/** @see Key.planPublish */
+export type UpdateStep = PlanStep<PlannedUpdate>;
 /** @see planHistory */
 export type HistoryStep = PlanStep<HistoryEntry[]>;
 /** The signature, base64. @see Key.planLogin */
@@ -601,3 +603,65 @@ export type VerifyLoginStep = PlanStep<LoggedIn>;
 export type SpendableStep = PlanStep<Funding>;
 /** @see planContent */
 export type ContentStep = PlanStep<Content>;
+
+/** What token to move, and which outputs hold it. */
+export interface PlanSendTokenRequest {
+    /**
+     * The token's currency id — an `i…` address. For a tokenised identity that
+     * is the identity's own `i` address.
+     */
+    currency: string;
+    /** Where the tokens are going. */
+    to: string;
+    /** How much, in the token's smallest unit, as a decimal string. */
+    amount: string;
+    /**
+     * The outputs holding the token. **Not discovered for you**:
+     * `getaddressutxos` reports a reserve output's native value, not which
+     * token it carries, so recognising them means decoding each script. The
+     * native coins for the miner fee *are* found automatically.
+     */
+    tokenUtxos: Utxo[];
+}
+
+/** A payment out of funds a VerusID holds. */
+export interface PlanSendFromIdentityRequest {
+    /** The identity paying — a name or an `i…` address. */
+    identity: string;
+    /** Where the value is going. */
+    to: string;
+    /** How much, in satoshis, as a decimal string. */
+    satoshis: string;
+}
+
+/** What to store on a VerusID, and under which key. */
+export interface PlanPublishRequest {
+    /** The identity to write to — a name or an `i…` address. */
+    identity: string;
+    /** The VDXF key, as a `contentmultimap` spells it: an `i…` address. */
+    key: string;
+    /**
+     * The values to store, each as hex. **Replaces whatever stood under the
+     * key** — there is no append, because an update restates the whole
+     * identity. Read first if you mean to add; an empty list removes the key.
+     */
+    values: string[];
+}
+
+/**
+ * An identity update a flow built and signed. **Not broadcast.**
+ *
+ * Deliberately not a `PlannedTransaction`: that reports the miner fee and the
+ * change, and an identity update does not carry them back. Absent beats a
+ * plausible-looking zero.
+ */
+export interface PlannedUpdate {
+    /** The raw transaction, hex — what `sendrawtransaction` takes. */
+    hex: string;
+    /** Its txid in display order, computed from `hex` before anything is sent. */
+    txid: string;
+    /** The key that will be written, as it appears in `contentmultimap`. */
+    key: string;
+    /** How many values will stand under it. Zero means the key is removed. */
+    values: number;
+}

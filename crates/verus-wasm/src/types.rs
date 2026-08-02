@@ -55,6 +55,15 @@ extern "C" {
     /// TypeScript `PlanSendRequest`.
     #[wasm_bindgen(typescript_type = "PlanSendRequest")]
     pub type PlanSendRequestValue;
+    /// TypeScript `PlanSendTokenRequest`.
+    #[wasm_bindgen(typescript_type = "PlanSendTokenRequest")]
+    pub type PlanSendTokenRequestValue;
+    /// TypeScript `PlanSendFromIdentityRequest`.
+    #[wasm_bindgen(typescript_type = "PlanSendFromIdentityRequest")]
+    pub type PlanSendFromIdentityRequestValue;
+    /// TypeScript `PlanPublishRequest`.
+    #[wasm_bindgen(typescript_type = "PlanPublishRequest")]
+    pub type PlanPublishRequestValue;
     /// TypeScript `HistoryRequest`.
     #[wasm_bindgen(typescript_type = "HistoryRequest")]
     pub type HistoryRequestValue;
@@ -74,9 +83,12 @@ extern "C" {
     // Every `plan…` call returns a `PlanStep<T>`; these name the `T`. One Rust
     // struct, one TypeScript interface, and an alias per flow so a caller gets
     // the payload typed instead of `unknown`.
-    /// TypeScript `SendStep`.
-    #[wasm_bindgen(typescript_type = "SendStep")]
-    pub type SendStepValue;
+    /// TypeScript `TransactionStep` — every plan that produces a transaction.
+    #[wasm_bindgen(typescript_type = "TransactionStep")]
+    pub type TransactionStepValue;
+    /// TypeScript `UpdateStep`.
+    #[wasm_bindgen(typescript_type = "UpdateStep")]
+    pub type UpdateStepValue;
     /// TypeScript `HistoryStep`.
     #[wasm_bindgen(typescript_type = "HistoryStep")]
     pub type HistoryStepValue;
@@ -232,8 +244,9 @@ mod tests {
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::flows::{
             ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsLoggedIn,
-            JsPlannedTransaction, LoginRequest, PlanSendRequest, PlanStep, SpendableRequest,
-            VerifyLoginRequest,
+            JsPlannedTransaction, JsPlannedUpdate, LoginRequest, PlanPublishRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, PlanStep,
+            SpendableRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -279,7 +292,14 @@ mod tests {
             },
         );
         assert_declared("PlanSendRequest", &PlanSendRequest::default());
+        assert_declared("PlanSendTokenRequest", &PlanSendTokenRequest::default());
+        assert_declared(
+            "PlanSendFromIdentityRequest",
+            &PlanSendFromIdentityRequest::default(),
+        );
+        assert_declared("PlanPublishRequest", &PlanPublishRequest::default());
         assert_declared("PlannedTransaction", &JsPlannedTransaction::default());
+        assert_declared("PlannedUpdate", &JsPlannedUpdate::default());
         assert_declared(
             "HistoryRequest",
             &HistoryRequest {
@@ -419,7 +439,8 @@ mod tests {
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
-            ContentRequest, HistoryRequest, LoginRequest, PlanSendRequest, SpendableRequest,
+            ContentRequest, HistoryRequest, LoginRequest, PlanPublishRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
             VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
@@ -470,6 +491,18 @@ mod tests {
         check::<VerifyLoginRequest>("VerifyLoginRequest", &VerifyLoginRequest::SHAPE);
         check::<SpendableRequest>("SpendableRequest", &SpendableRequest::SHAPE);
         check::<ContentRequest>("ContentRequest", &ContentRequest::SHAPE);
+        check::<PlanSendTokenRequest>("PlanSendTokenRequest", &PlanSendTokenRequest::SHAPE);
+        check::<PlanSendFromIdentityRequest>(
+            "PlanSendFromIdentityRequest",
+            &PlanSendFromIdentityRequest::SHAPE,
+        );
+        check::<PlanPublishRequest>("PlanPublishRequest", &PlanPublishRequest::SHAPE);
+        // The one nested object among the new requests: a stray key inside a
+        // token UTXO must be refused like any other.
+        check::<crate::dto::JsUtxo>(
+            "PlanSendTokenRequest.tokenUtxos",
+            nested(&PlanSendTokenRequest::SHAPE, "tokenUtxos"),
+        );
 
         // Every field that carries objects, reached through the pointer the
         // guard actually follows rather than through the type it ought to be.

@@ -1130,6 +1130,146 @@ console.log("\nflows, driven with no network");
     ok("stored data reads as current state, with the audit view kept separate");
   }
 
+  // -- a key this identity does not list ------------------------------------
+  //
+  // Signing with a key the identity no longer lists builds cleanly and then
+  // fails script verification at the daemon with a message that names nothing.
+  // Caught here instead, by name.
+  {
+    const strangerReplies = {
+      ...replies,
+      getidentity: JSON.stringify({
+        result: {
+          blockheight: HEIGHT, fullyqualifiedname: "holder.VRSCTEST@", status: "active",
+          txid: TXID, vout: 0,
+          identity: {
+            identityaddress: "iL9bcBmaR6YF37UfrPdkAxVwXwAG72xebm",
+            minimumsignatures: 1, name: "holder",
+            // Deliberately not this key: PAYEE is a different address.
+            primaryaddresses: [PAYEE], version: 3,
+          },
+        },
+      }),
+    };
+    const a = new Answers();
+    let thrown;
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const s = key.planSendFromIdentity(
+          { identity: "holder.VRSCTEST@", to: PAYEE, satoshis: "1" }, a);
+        if (s.kind === "ready") break;
+        for (const body of s.ask) {
+          a.record(body, strangerReplies[JSON.parse(body).method] ?? post(body));
+        }
+      }
+    } catch (e) { thrown = e; }
+    a.free();
+    assert.ok(thrown, "a key the identity does not list must be refused");
+    assert.equal(thrown.name, "NotAPrimaryAddress");
+    ok("a key the identity does not list is refused by name, not by the daemon");
+  }
+
+  // -- a token send needs its token outputs named ---------------------------
+  {
+    const a = new Answers();
+    let thrown;
+    try {
+      key.planSendToken(
+        { currency: VRSCTEST, to: PAYEE, amount: "1", tokenUtxos: [{ txid: TXID, vout: 0, satoshis: 1000000000, scriptPubKey: SCRIPT }] },
+        a,
+      );
+    } catch (e) { thrown = e; }
+    a.free();
+    // `satoshis` as a number, inside a nested object — the sanitizer has to
+    // reach in there too, and money must not cross as a float.
+    assert.ok(thrown);
+    assert.equal(thrown.name, "InvalidArgument");
+    ok("money inside a nested token UTXO is a string like everywhere else");
+  }
+
+  // -- storing data on a VerusID, and the invariant it must not break -------
+  //
+  // An identity update republishes the identity IN FULL: anything not carried
+  // over is erased permanently. So this checks the bytes the page would post,
+  // not the binding's own report — another application's key must survive.
+  //
+  // The identity output script is generated from the same builders the Rust
+  // tests use; it decodes to an identity whose sole primary address is this
+  // key, holding one key that belongs to somebody else.
+  {
+    const ID_ADDRESS = "iHiamgHF3VdUXq3A6s5Mu61uhJM398MoRb";
+    const THEIR_KEY = "iK2vkpGaZXExJAeZWjs47scSHTTBJcvHNb";
+    const OUR_KEY = "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv";
+    const ID_SCRIPT =
+      "47040300010315049c3a5eee28817dbe3012929998e6ba7a04c41fde1504333333333333333333333333333333333333333315044444444444444444444444444444444444444444cc4cf004030e010115049c3a5eee28817dbe3012929998e6ba7a04c41fde4c9b03000000000000000114aabfb6281561808fe200ab7e186f0e3e0e82b38101000000a6ef9ea235635e328124ff3429db9f9e91b64e2d0361707001aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01086e6f74206d696e65003333333333333333333333333333333333333333444444444444444444444444444444444444444400a6ef9ea235635e328124ff3429db9f9e91b64e2d000000001b04030f0101150433333333333333333333333333333333333333331b04031001011504444444444444444444444444444444444444444475";
+
+    const pubReplies = {
+      ...replies,
+      getidentity: JSON.stringify({
+        result: {
+          blockheight: HEIGHT, fullyqualifiedname: "app.VRSCTEST@", status: "active",
+          txid: TXID, vout: 0,
+          identity: {
+            identityaddress: ID_ADDRESS, minimumsignatures: 1, name: "app",
+            primaryaddresses: [address], version: 3,
+          },
+        },
+      }),
+      getrawtransaction: JSON.stringify({
+        result: { vout: [{ valueSat: 0, scriptPubKey: { hex: ID_SCRIPT } }] },
+      }),
+    };
+    const pubPost = (b) => {
+      const reply = pubReplies[JSON.parse(b).method];
+      assert.ok(reply, `nothing recorded for ${JSON.parse(b).method}`);
+      return reply;
+    };
+
+    const a = new Answers();
+    let update;
+    for (;;) {
+      const s = key.planPublish(
+        { identity: "app.VRSCTEST@", key: OUR_KEY, values: [Buffer.from("mine").toString("hex")] },
+        a,
+      );
+      if (s.kind === "ready") { update = s.value; break; }
+      for (const body of s.ask) a.record(body, pubPost(body));
+    }
+    a.free();
+
+    assert.equal(update.key, OUR_KEY);
+    assert.equal(update.values, 1);
+    // No fee or change field: an identity update does not report them, and a
+    // plausible-looking "0" would be a number a caller could act on.
+    assert.equal(update.fee, undefined);
+    assert.equal(update.change, undefined);
+    ok("storing data on a VerusID is planned and signed");
+
+    // The invariant, read out of the transaction the page would actually post.
+    //
+    // An update republishes the identity in full, so the other application's
+    // key and its value have to still be in these bytes. If the update had
+    // rebuilt the identity from anything less than its own output script, they
+    // would be gone — permanently, on chain.
+    const THEIR_KEY_BYTES = "aa".repeat(20);
+    const THEIR_VALUE = Buffer.from("not mine").toString("hex");
+    assert.ok(
+      update.hex.includes(THEIR_KEY_BYTES),
+      "another application's key must survive the update",
+    );
+    assert.ok(
+      update.hex.includes(THEIR_VALUE),
+      "and so must its value",
+    );
+    // The authorities, which are the fields that cannot be recovered if they
+    // are dropped.
+    assert.ok(update.hex.includes("33".repeat(20)), "revocation authority");
+    assert.ok(update.hex.includes("44".repeat(20)), "recovery authority");
+    // And ours went in.
+    assert.ok(update.hex.includes(Buffer.from("mine").toString("hex")));
+    ok("and the republished identity keeps every key and authority it had");
+  }
+
   // -- the request sanitizer applies here too ------------------------------
   {
     const spare = new Answers();
