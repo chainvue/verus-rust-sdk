@@ -335,8 +335,14 @@ mod tests {
         // The flow bindings. Every optional field is populated, because a
         // `skip_serializing_if` field is exactly the one a drift check would
         // otherwise never see.
+        // `PlanStep` is a discriminated union in TypeScript so that narrowing on
+        // `kind` works, which one interface with an optional `value` could not
+        // do. The Rust side stays a single struct, so each arm is checked
+        // against the serialization that produces it: no `value` when asking,
+        // a `value` when ready.
+        assert_declared("PlanStepAsk", &PlanStep::<String>::default());
         assert_declared(
-            "PlanStep",
+            "PlanStepReady",
             &PlanStep {
                 value: Some(String::new()),
                 ..PlanStep::<String>::default()
@@ -736,6 +742,12 @@ mod tests {
             "PendingRequest",
             &crate::flows::PendingRequest::SHAPE,
         );
+        // The stored registration is an object like any other request object,
+        // and the pointer has to be followed or it is not guarded at all.
+        check::<crate::flows::JsPending>(
+            "PendingRequest.pending",
+            nested(&crate::flows::PendingRequest::SHAPE, "pending"),
+        );
         check::<PlanLaunchRequest>("PlanLaunchRequest", &PlanLaunchRequest::SHAPE);
         check::<JsCurrencyDefinition>(
             "PlanLaunchRequest.definition",
@@ -806,7 +818,10 @@ mod tests {
         assert!(declared_by("DecodedPubKey").contains("address"));
         assert_eq!(declared_by("DecodedPubKey").len(), 2);
         // And a generic header is found at all.
-        assert!(declared_by("PlanStep").contains("value"));
+        assert!(declared_by("PlanStepReady").contains("value"));
+        // The asking arm must NOT declare one, or narrowing gives a caller a
+        // `value` on a round that has none.
+        assert!(!declared_by("PlanStepAsk").contains("value"));
         // And the union parse must find members rather than silently nothing,
         // which would make the equality above pass against an empty set.
         assert!(union_members("DecodedOutput").contains("DecodedPubKeyHash"));

@@ -397,19 +397,34 @@ export interface PlannedTransaction {
  * `"ready"`, and `ask` is empty exactly then — so `if (step.kind === "ready")`
  * narrows `value` for you.
  */
-export interface PlanStep<T> {
-    /** `"ask"` while the plan still needs answers, `"ready"` when it is done. */
-    kind: "ask" | "ready";
+export interface PlanStepAsk {
+    kind: "ask";
     /**
      * Complete JSON-RPC bodies to POST **verbatim**, then hand back through
-     * `answers.record(body, reply)` with the body unchanged. Empty when ready.
+     * `answers.record(body, reply)` with the body unchanged.
      *
      * Independent of one another within a round, so fetch them concurrently.
      */
     ask: string[];
-    /** What the plan produced. Present only when `kind` is `"ready"`. */
-    value?: T;
 }
+
+export interface PlanStepReady<T> {
+    kind: "ready";
+    /** Empty: a finished plan needs nothing more. */
+    ask: string[];
+    /** What the plan produced. */
+    value: T;
+}
+
+/**
+ * One round of any plan: what it still needs, or what it produced.
+ *
+ * A **discriminated union**, so `if (step.kind === "ready")` really does narrow
+ * `value` to `T` — and reading `value` on an asking round is a compile error
+ * rather than an `undefined` at runtime. It was one interface with an optional
+ * `value` first, which documented that narrowing without providing it.
+ */
+export type PlanStep<T> = PlanStepAsk | PlanStepReady<T>;
 
 /** Which addresses to report on, and over what stretch of chain. */
 export interface HistoryRequest {
@@ -817,10 +832,10 @@ export interface TakeOfferRequest {
     /**
      * The miner fee, in satoshis, as a decimal string.
      *
-     * Capped at one coin. This is the only place in the API where a caller
-     * names an absolute fee, and therefore the only place a transposed digit
-     * goes straight to a miner — `"2900000000"` reads as a plausible number
-     * and is twenty-nine coins.
+     * Capped at one coin. Fees a caller names outright — this one and the three
+     * conversion plans' — are where a transposed digit is paid rather than
+     * caught: `"2900000000"` reads as a plausible number and is twenty-nine
+     * coins.
      */
     fee: string;
 }

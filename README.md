@@ -118,7 +118,12 @@ const key = Key.fromWif(wif);
 const answers = new Answers();
 for (;;) {
   const step = key.planSend({ to, satoshis: parseCoins("1.5") }, answers);
-  if (step.kind === "ready") { await post(step.value.hex); break; }
+  if (step.kind === "ready") {
+    // `post` takes complete JSON-RPC bodies, which is what `ask` holds — so a
+    // broadcast has to be wrapped, not passed as bare hex.
+    await post(JSON.stringify({ method: "sendrawtransaction", params: [step.value.hex] }));
+    break;
+  }
   // `ask` holds complete JSON-RPC bodies; post them verbatim, concurrently.
   await Promise.all(step.ask.map(async (b) => answers.record(b, await post(b))));
 }
