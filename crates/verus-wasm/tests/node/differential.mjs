@@ -1756,6 +1756,77 @@ console.log("\nflows, driven with no network");
     ok("the registration itself is built and signed, salt intact through storage");
   }
 
+  // -- defining and launching a currency ------------------------------------
+  //
+  // The launch fee is burned and an identity defines exactly one currency,
+  // ever. So the checks that happen before signing are the whole value here.
+  {
+    const base = {
+      name: "browsertest",
+      parent: VRSCTEST,
+      kind: "fractional",
+      startBlock: TIP + 1000,
+      currencies: [VRSCTEST, "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"],
+      weights: ["50000000", "50000000"],
+      minPreconversion: ["0", "0"],
+      maxPreconversion: ["0", "0"],
+    };
+    const a = new Answers();
+
+    // **The reserve arrays are read positionally.** Nothing on chain notices
+    // when they are not the same length: the launch pays its fee and creates a
+    // currency whose reserves are not what its author meant. So each is
+    // checked against `currencies`, by name.
+    for (const field of ["weights", "minPreconversion", "maxPreconversion"]) {
+      const broken = { ...base, [field]: base[field].slice(0, 1) };
+      assert.throws(
+        () => key.planLaunch({ identity: "browsertest@", definition: broken }, a),
+        (e) => e.name === "InvalidArgument" && e.message.includes(field),
+        `${field} misaligned with currencies must be refused by name`,
+      );
+    }
+    ok("a misaligned reserve array is refused, by the name of the array");
+
+    // A basket with no reserves is not a basket, and a token with reserves is
+    // not a token. Both build cleanly and mean something else.
+    assert.throws(
+      () => key.planLaunch({ identity: "browsertest@", definition: {
+        ...base, currencies: [], weights: [], minPreconversion: [], maxPreconversion: [] } }, a),
+      (e) => e.name === "InvalidArgument" && /at least one/.test(e.message),
+    );
+    assert.throws(
+      () => key.planLaunch({ identity: "browsertest@", definition: { ...base, kind: "token" } }, a),
+      (e) => e.name === "InvalidArgument" && /holds no reserves/.test(e.message),
+    );
+    ok("and a basket without reserves, or a token with them, is refused");
+
+    // A height is a JavaScript number, so it can arrive fractional or negative.
+    // Truncating either picks a block nobody asked for, and `startBlock` is
+    // when the currency launches.
+    for (const bad of [TIP + 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => key.planLaunch(
+          { identity: "browsertest@", definition: { ...base, startBlock: bad } }, a),
+        (e) => e.name === "InvalidArgument" && /block height/.test(e.message),
+      );
+    }
+    ok("a start height that is not a whole block is refused, not truncated");
+
+    // The daemon ignores an explicit conversions vector and derives launch
+    // prices at launch; contributions need a funding output this SDK does not
+    // build. Neither field exists here, so passing one is an unknown key.
+    for (const field of ["conversions", "initialContributions", "preconverted"]) {
+      assert.throws(
+        () => key.planLaunch(
+          { identity: "browsertest@", definition: { ...base, [field]: ["1"] } }, a),
+        (e) => e.name === "UnknownField",
+      );
+    }
+    ok("fields the daemon derives or this SDK cannot fund are not accepted");
+
+    a.free();
+  }
+
   // -- the request sanitizer applies here too ------------------------------
   {
     const spare = new Answers();
