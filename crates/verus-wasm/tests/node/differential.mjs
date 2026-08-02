@@ -859,6 +859,11 @@ console.log("\nflows, driven with no network");
     assert.equal(typeof entries[0].netNative, "string");
     assert.equal(entries[0].netNative, String(SATS));
     assert.equal(entries[0].spentSomething, false);
+    // A timestamp is the one number here that IS a number, and it has to
+    // survive the boundary as one rather than as a BigInt a caller cannot
+    // arithmetic on.
+    assert.equal(typeof entries[0].blockTime, "number");
+    assert.equal(entries[0].blockTime, 1785262420);
     reading.free();
     ok("a history read plans in one round trip and reports string amounts");
   }
@@ -882,7 +887,100 @@ console.log("\nflows, driven with no network");
     // works on one and silently not on the other.
     assert.equal(thrown.name, "InsufficientFunds");
     broke.free();
+
+    // `FlowError` has three transparent wrappers, and missing any one of them
+    // reintroduces the problem for a whole class of failure. A bad payee
+    // address arrives as `FlowError::Key`, and must not be named "Key".
+    const bad = new Answers();
+    let addressError;
+    try {
+      key.planSend({ to: "not an address", satoshis: "1" }, bad);
+    } catch (e) {
+      addressError = e;
+    }
+    assert.ok(addressError, "an unparseable address must be refused");
+    assert.notEqual(addressError.name, "Key");
+    assert.notEqual(addressError.name, "Tx");
+    assert.notEqual(addressError.name, "Rpc");
+    bad.free();
     ok("a flow error is named by its own variant, not by its wrapper");
+  }
+
+  // -- the reason planSend exists at all ------------------------------------
+  //
+  // A coinbase output is unspendable for a hundred blocks, and
+  // `getaddressutxos` does not say which outputs are coinbases. An application
+  // holding the raw list cannot tell, builds a transaction spending one, and is
+  // rejected by the daemon with a message that names nothing. The flow asks —
+  // and only about outputs young enough for it to matter, which is why this
+  // takes a second round where the mature case took one.
+  {
+    const YOUNG = TIP - 10;            // inside the 100-block maturity window
+    const probing = {
+      ...replies,
+      getaddressutxos: JSON.stringify({
+        result: [{
+          address, blocktime: 1785262420, height: YOUNG, isspendable: 1,
+          outputIndex: 0, satoshis: SATS, script: SCRIPT, txid: TXID,
+        }],
+      }),
+      // The daemon's shape for a coinbase: one input, carrying `coinbase`
+      // instead of an outpoint.
+      getrawtransaction: JSON.stringify({
+        result: { vin: [{ coinbase: "03c1cd11", sequence: 4294967295 }] },
+      }),
+    };
+
+    posted = [];
+    const probe = (body) => {
+      posted.push(body);
+      const { method } = JSON.parse(body);
+      assert.ok(probing[method], `nothing recorded for ${method}`);
+      return probing[method];
+    };
+
+    const immature = new Answers();
+    let thrown;
+    try {
+      for (let i = 0; i < 8; i += 1) {
+        const s = key.planSend({ to: PAYEE, satoshis: "150000000" }, immature);
+        if (s.kind === "ready") break;
+        for (const body of s.ask) immature.record(body, probe(body));
+      }
+    } catch (e) {
+      thrown = e;
+    }
+
+    assert.ok(
+      posted.some((body) => JSON.parse(body).method === "getrawtransaction"),
+      "a young output must be probed, or its maturity is a guess",
+    );
+    assert.ok(thrown, "an immature coinbase is not spendable");
+    assert.equal(thrown.name, "InsufficientFunds");
+    immature.free();
+    ok("an immature coinbase is probed for and refused, not silently spent");
+  }
+
+  // -- one Answers, one operation ------------------------------------------
+  //
+  // A cached answer is indistinguishable from a fresh one, so a reused handle
+  // plans against a tip that may be hours old. Nothing can detect that from
+  // inside; what CAN be shown is that reuse is real caching rather than a
+  // coincidence — a second operation on the same handle asks for nothing.
+  {
+    const shared = new Answers();
+    for (;;) {
+      const s = key.planSend({ to: PAYEE, satoshis: "150000000" }, shared);
+      if (s.kind === "ready") break;
+      for (const body of s.ask) shared.record(body, post(body));
+    }
+    const before = shared.rounds;
+    const again = key.planSend({ to: PAYEE, satoshis: "250000000" }, shared);
+    assert.equal(again.kind, "ready");
+    assert.ok(shared.rounds > before, "rounds accumulate across operations");
+    assert.notEqual(again.transaction.hex, step.transaction.hex);
+    shared.free();
+    ok("a reused Answers replans from the cache without asking again");
   }
 
   // -- the request sanitizer applies here too ------------------------------
