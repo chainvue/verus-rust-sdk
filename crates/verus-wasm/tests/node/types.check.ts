@@ -70,6 +70,9 @@ import {
   type Demand,
   type TakeOfferRequest,
   type Taken,
+  type PlanConvertRequest,
+  type PlanBurnRequest,
+  type PlanMintRequest,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -426,7 +429,34 @@ const taken: Taken | undefined = key.planTakeOffer(take, answers).value;
 // @ts-expect-error a miner fee is a decimal string, never a number
 const numericTakeFee: TakeOfferRequest = { offer: "00", utxos: [], recipient: "R", changeAddress: "R", fee: 20000 };
 
+// Conversions. The kind is a closed set, so a typo is a compile error rather
+// than a runtime one — and `"burn"` is deliberately not in it.
+const convert: PlanConvertRequest = {
+  from: "iJhCez…", amount: "150000000", kind: "intoFractional",
+  into: "iQihX…", recipient: "R…", fee: "20010",
+};
+const converted: TransactionStep = key.planConvert(convert, answers);
+
+// @ts-expect-error a burn is not a conversion kind; planBurn exists separately
+const burnAsKind: PlanConvertRequest = { ...convert, kind: "burn" };
+
+// @ts-expect-error a mint is not a conversion kind either
+const mintAsKind: PlanConvertRequest = { ...convert, kind: "mint" };
+
+// @ts-expect-error and a misspelled kind does not silently become something
+const typoKind: PlanConvertRequest = { ...convert, kind: "intoFractionall" };
+
+const burn: PlanBurnRequest = { currency: "iQihX…", amount: "1", fee: "20010" };
+const mint: PlanMintRequest = {
+  currency: "iQihX…", amount: "1", recipient: "R…", fee: "20010",
+};
+void [key.planBurn(burn, answers), key.planMint(mint, answers)];
+
+// @ts-expect-error minExpected is a decimal string, never a number
+const numericFloor: PlanConvertRequest = { ...convert, minExpected: 1000 };
+
 void [numericAmount, misspelled, stringHeight];
+void [converted, burnAsKind, mintAsKind, typoKind, numericFloor];
 void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];
 void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];
