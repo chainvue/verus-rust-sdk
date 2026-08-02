@@ -511,8 +511,7 @@ const numericPin: PlanRegistrationRequest = { name: "alice", pinFee: 10000000000
 // strings, because they are money.
 const definition: CurrencyDefinition = {
   name: "basket", parent: "iJhCez…", kind: "fractional", startBlock: 1200000,
-  currencies: ["iJhCez…"], weights: ["100000000"], conversions: ["100000000"],
-  initialContributions: ["100000000"],
+  currencies: ["iJhCez…"], weights: ["100000000"],
 };
 const launched: Launched | undefined =
   key.planLaunch({ identity: "basket@", definition }, answers).value;
@@ -527,8 +526,11 @@ const oddKind: CurrencyDefinition = { ...definition, kind: "nft" };
 // @ts-expect-error a start height is a block number, not a decimal string
 const stringStart: CurrencyDefinition = { ...definition, startBlock: "1200000" };
 
-// @ts-expect-error `preconverted` is set from initialContributions, not by hand
-const handSet: CurrencyDefinition = { ...definition, preconverted: ["1"] };
+// @ts-expect-error the daemon derives launch prices; conversions is not settable
+const setPrices: CurrencyDefinition = { ...definition, conversions: ["1"] };
+
+// @ts-expect-error a contribution needs a funding output this SDK does not build
+const handSet: CurrencyDefinition = { ...definition, initialContributions: ["1"] };
 
 // One line, because `@ts-expect-error` covers the next line and not the next
 // statement — a multi-line literal puts the error out of its reach.
@@ -536,7 +538,7 @@ const handSet: CurrencyDefinition = { ...definition, preconverted: ["1"] };
 const numericPinnedLaunch: PlanLaunchRequest = { identity: "b@", definition, pinLaunchFee: 1 };
 
 void [numericAmount, misspelled, stringHeight];
-void [launched, burned, numericWeight, oddKind, stringStart, handSet, numericPinnedLaunch];
+void [launched, burned, numericWeight, oddKind, stringStart, setPrices, handSet, numericPinnedLaunch];
 void [pending, restored, blob, peeked, badState, status, registered, paid, numericPin];
 void [converted, burnAsKind, mintAsKind, typoKind, numericFloor];
 void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];

@@ -1768,10 +1768,8 @@ console.log("\nflows, driven with no network");
       startBlock: TIP + 1000,
       currencies: [VRSCTEST, "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR"],
       weights: ["50000000", "50000000"],
-      conversions: ["100000000", "100000000"],
       minPreconversion: ["0", "0"],
       maxPreconversion: ["0", "0"],
-      initialContributions: ["100000000", "100000000"],
     };
     const a = new Answers();
 
@@ -1779,9 +1777,7 @@ console.log("\nflows, driven with no network");
     // when they are not the same length: the launch pays its fee and creates a
     // currency whose reserves are not what its author meant. So each is
     // checked against `currencies`, by name.
-    for (const field of [
-      "weights", "conversions", "minPreconversion", "maxPreconversion", "initialContributions",
-    ]) {
+    for (const field of ["weights", "minPreconversion", "maxPreconversion"]) {
       const broken = { ...base, [field]: base[field].slice(0, 1) };
       assert.throws(
         () => key.planLaunch({ identity: "browsertest@", definition: broken }, a),
@@ -1794,8 +1790,8 @@ console.log("\nflows, driven with no network");
     // A basket with no reserves is not a basket, and a token with reserves is
     // not a token. Both build cleanly and mean something else.
     assert.throws(
-      () => key.planLaunch(
-        { identity: "browsertest@", definition: { ...base, currencies: [], weights: [], conversions: [], minPreconversion: [], maxPreconversion: [], initialContributions: [] } }, a),
+      () => key.planLaunch({ identity: "browsertest@", definition: {
+        ...base, currencies: [], weights: [], minPreconversion: [], maxPreconversion: [] } }, a),
       (e) => e.name === "InvalidArgument" && /at least one/.test(e.message),
     );
     assert.throws(
@@ -1815,6 +1811,18 @@ console.log("\nflows, driven with no network");
       );
     }
     ok("a start height that is not a whole block is refused, not truncated");
+
+    // The daemon ignores an explicit conversions vector and derives launch
+    // prices at launch; contributions need a funding output this SDK does not
+    // build. Neither field exists here, so passing one is an unknown key.
+    for (const field of ["conversions", "initialContributions", "preconverted"]) {
+      assert.throws(
+        () => key.planLaunch(
+          { identity: "browsertest@", definition: { ...base, [field]: ["1"] } }, a),
+        (e) => e.name === "UnknownField",
+      );
+    }
+    ok("fields the daemon derives or this SDK cannot fund are not accepted");
 
     a.free();
   }

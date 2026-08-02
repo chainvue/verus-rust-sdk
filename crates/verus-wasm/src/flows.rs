@@ -1112,6 +1112,22 @@ pub struct JsRegistered {
 
 /// A currency to define and launch.
 ///
+/// # Two fields the daemon has and this does not
+///
+/// **`conversions`** is absent because the daemon ignores it. Its own captures
+/// settle it: a definition created by passing `conversions: [4.0]` comes back
+/// carrying `[0.0]`, and all nine fractional vectors in this repo's daemon
+/// fixtures have an all-zero conversions vector. Launch prices are derived at
+/// launch from what was actually contributed. Accepting the field would let a
+/// caller build a definition in a byte shape no daemon has ever emitted.
+///
+/// **`initialContributions`** is absent because nothing here can honour it. A
+/// contribution is not just a number in the definition: the daemon's own
+/// contribution launch carries an **extra value-bearing output** funding it,
+/// and this SDK's launch builder makes seven outputs and never that one.
+/// Declaring reserves no output funds is a currency claiming backing it does
+/// not have. The sibling TypeScript SDK refuses the field for the same reason.
+///
 /// # The parallel arrays
 ///
 /// A fractional basket is described by several arrays that are read
@@ -1133,8 +1149,7 @@ pub struct JsCurrencyDefinition {
     /// a top-level identity, or the parent identity's id for a sub-identity.
     ///
     /// Named rather than derived, and then **checked against the identity the
-    /// chain holds**: a definition whose parent disagrees with its identity
-    /// builds cleanly and dies at consensus, after the fee is burned.
+    /// chain holds** — refused before signing rather than left to consensus.
     pub parent: String,
     /// `"token"` for a simple token, `"fractional"` for a reserve basket.
     pub kind: String,
@@ -1158,9 +1173,6 @@ pub struct JsCurrencyDefinition {
     /// `currencies`.
     #[serde(default)]
     pub weights: Vec<String>,
-    /// Each reserve's launch price, in satoshis. Same length and order.
-    #[serde(default)]
-    pub conversions: Vec<String>,
     /// The least that must be preconverted per reserve for the launch to go
     /// ahead. Below it, **every** contribution is refunded.
     #[serde(default)]
@@ -1168,13 +1180,6 @@ pub struct JsCurrencyDefinition {
     /// The most that may be preconverted per reserve.
     #[serde(default)]
     pub max_preconversion: Vec<String>,
-    /// What the definer contributes per reserve at launch.
-    ///
-    /// The daemon initialises `preconverted` equal to this and nothing in its
-    /// RPC output reveals the second field, so this binding sets both together.
-    /// Setting them apart is possible in Rust and is almost always a mistake.
-    #[serde(default)]
-    pub initial_contributions: Vec<String>,
     /// Supply handed to named identities at launch.
     #[serde(default)]
     pub preallocations: Vec<JsPreallocation>,
@@ -1219,10 +1224,8 @@ impl JsCurrencyDefinition {
             ("proofProtocol", None),
             ("currencies", None),
             ("weights", None),
-            ("conversions", None),
             ("minPreconversion", None),
             ("maxPreconversion", None),
-            ("initialContributions", None),
             ("preallocations", Some(&JsPreallocation::SHAPE)),
             ("idRegistrationFees", None),
             ("idReferralLevels", None),
@@ -1284,12 +1287,11 @@ impl JsCurrencyDefinition {
         // catches it.
         let reserves = self.currencies.len();
         for (field, list) in [
-            ("weights", &self.weights),
-            ("conversions", &self.conversions),
             ("minPreconversion", &self.min_preconversion),
             ("maxPreconversion", &self.max_preconversion),
-            ("initialContributions", &self.initial_contributions),
         ] {
+            // These two the daemon does emit empty, so an empty one is a
+            // caller declining to set bounds rather than a misalignment.
             if !list.is_empty() && list.len() != reserves {
                 return Err(WasmError::new(
                     "InvalidArgument",
@@ -1340,6 +1342,12 @@ impl JsCurrencyDefinition {
             definition.initial_supply = dto::sats(supply)?;
         }
         if let Some(protocol) = self.proof_protocol {
+            if protocol != 1 && protocol != 2 {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!("proofProtocol is 1 or 2, not {protocol}"),
+                ));
+            }
             definition.proof_protocol = protocol;
         }
 
@@ -1348,21 +1356,72 @@ impl JsCurrencyDefinition {
             .iter()
             .map(|id| dto::currency("currencies", id))
             .collect::<WasmResult<_>>()?;
-        definition.weights = amounts("weights", &self.weights)?
-            .into_iter()
-            .map(|amount| i32::try_from(amount.to_sat()).unwrap_or(i32::MAX))
-            .collect();
-        definition.conversions = amounts("conversions", &self.conversions)?;
+        // Weights carry the reserve ratios, so they are the field where being
+        // wrong is least visible and least recoverable.
+        if fractional && self.weights.len() != reserves {
+            return Err(WasmError::new(
+                "InvalidArgument",
+                format!(
+                    "a fractional currency needs one weight per reserve: {} currencies, {} \
+                     weights",
+                    reserves,
+                    self.weights.len()
+                ),
+            ));
+        }
+        let weights = amounts("weights", &self.weights)?;
+        definition.weights = weights
+            .iter()
+            .map(|amount| {
+                // Clamping was the previous answer and it is the wrong one:
+                // it rewrites a weight rather than refusing it, and a rewritten
+                // weight is a reserve ratio nobody chose.
+                i32::try_from(amount.to_sat()).map_err(|_| {
+                    WasmError::new(
+                        "InvalidArgument",
+                        format!("weight {} is larger than a weight can be", amount.to_sat()),
+                    )
+                })
+            })
+            .collect::<WasmResult<_>>()?;
+        // Weights are fractions of one, and every definition the daemon has
+        // ever produced sums to exactly one coin. A set that does not is a
+        // basket whose reserves do not add up.
+        if fractional {
+            let total: u64 = weights.iter().map(|w| w.to_sat()).sum();
+            if total != verus_tx::SATS_PER_COIN {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!(
+                        "weights are fractions of one and must sum to {} satoshis; these sum \
+                         to {total}",
+                        verus_tx::SATS_PER_COIN
+                    ),
+                ));
+            }
+        }
+        // Every positional vector is present at reserve length, zero-filled
+        // where the caller said nothing — because that is what the daemon
+        // emits, and a byte comparison against its own captures is what
+        // established it. Leaving them empty produced a definition shorter than
+        // any the daemon has ever written.
+        //
+        // `conversions`, `initialContributions` and `preconverted` are zero
+        // and not settable: see this type's docs for why.
+        // Three of the five are zero-filled at reserve length and two are left
+        // empty when unset. That asymmetry is the daemon's, read out of its own
+        // captures byte by byte rather than guessed: `fractional_two_reserves`
+        // carries `conversions`, `initialContributions` and `preconverted` as
+        // two zeros each, and both preconversion bounds as nothing at all.
+        //
+        // Zero-filling all five, which was the first attempt, produced a
+        // definition the daemon has never written.
+        let zeros = || vec![verus_tx::Amount::ZERO; reserves];
+        definition.conversions = zeros();
         definition.min_preconversion = amounts("minPreconversion", &self.min_preconversion)?;
         definition.max_preconversion = amounts("maxPreconversion", &self.max_preconversion)?;
-
-        // `preconverted` is set equal to the contributions rather than exposed:
-        // the daemon initialises the two together, nothing in its RPC output
-        // reveals the second, and setting them apart is almost always a
-        // mistake — one a browser caller has no way to notice.
-        let contributions = amounts("initialContributions", &self.initial_contributions)?;
-        definition.preconverted = contributions.clone();
-        definition.initial_contributions = contributions;
+        definition.initial_contributions = zeros();
+        definition.preconverted = zeros();
 
         definition.preallocations = self
             .preallocations
@@ -1379,7 +1438,18 @@ impl JsCurrencyDefinition {
             definition.id_registration_fees = dto::sats(fee)?.to_sat();
         }
         if let Some(levels) = self.id_referral_levels {
-            definition.id_referral_levels = height("idReferralLevels", levels)?;
+            let levels = height("idReferralLevels", levels)?;
+            if levels > MAX_ID_REFERRAL_LEVELS {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!("idReferralLevels is at most {MAX_ID_REFERRAL_LEVELS}, not {levels}"),
+                ));
+            }
+            definition.id_referral_levels = levels;
+            // Levels without the option bit is a number the chain never reads.
+            if levels > 0 {
+                definition.options |= verus_tx::currency_definition::option::ID_REFERRALS;
+            }
         }
         if let Some(fee) = &self.id_import_fees {
             definition.id_import_fees = dto::sats(fee)?.to_sat();
@@ -1387,6 +1457,9 @@ impl JsCurrencyDefinition {
         Ok(definition)
     }
 }
+
+/// The most referral levels a currency may pay out.
+const MAX_ID_REFERRAL_LEVELS: u64 = 5;
 
 /// A launch height on its way back to JavaScript.
 ///
@@ -1417,8 +1490,10 @@ fn amounts(field: &str, list: &[String]) -> WasmResult<Vec<verus_tx::Amount>> {
 /// what a height can hold. Silently truncating any of those picks a block
 /// nobody asked for — and `startBlock` decides when a currency launches.
 fn height(field: &str, value: f64) -> WasmResult<u64> {
-    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_992.0
-    {
+    // `i32::MAX`, not what a float64 can hold: `startBlock` and `endBlock` go
+    // on the wire as int32, so a larger value serializes into bytes the daemon
+    // cannot read back — a signed transaction rejected unparsed.
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > f64::from(i32::MAX) {
         return Err(WasmError::new(
             "InvalidArgument",
             format!("{field} must be a whole, non-negative block height, not {value}"),
@@ -2663,7 +2738,8 @@ impl Key {
     /// * the identity exists, is not revoked, and this key is a primary address
     ///   on it;
     /// * it does not already define a currency;
-    /// * the definition's name and parent match the identity the chain holds;
+    /// * the definition's name and parent match the identity the chain holds —
+    ///   a mismatch is refused here, before signing, not left to consensus;
     /// * `startBlock` is after the tip, because the chain refuses a launch in
     ///   the past;
     /// * the reserve arrays are the same length, because they are read position
@@ -2742,5 +2818,171 @@ impl Key {
             signature.to_base64()
         });
         Ok(crate::to_js(&step)?.unchecked_into())
+    }
+}
+
+#[cfg(test)]
+mod launch_definition_tests {
+    use super::*;
+
+    /// The daemon's own captures, and what a `JsCurrencyDefinition` naming the
+    /// same thing must serialize to.
+    ///
+    /// This is the test the launch binding most needed and did not have. Every
+    /// other assertion about `planLaunch` is a refusal, so the field-by-field
+    /// mapping — the highest-risk copy in the crate, and the one that decides
+    /// what a burned launch fee buys — had no coverage at all. Swapping two
+    /// fields in `to_definition` left the whole gate green.
+    ///
+    /// The oracle is `fixtures/daemon/currency_definitions.json`: definitions
+    /// the daemon itself produced, with the script bytes it emitted.
+    fn vector(name: &str) -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/daemon/currency_definitions.json"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("fixtures")).expect("json");
+        file["vectors"][name].clone()
+    }
+
+    /// Build the script the SDK would put on chain for `spec`.
+    fn script_of(spec: &JsCurrencyDefinition) -> String {
+        let definition = spec.to_definition().expect("the definition converts");
+        hex::encode(
+            verus_tx::currency_definition::currency_definition_script(&definition)
+                .expect("the definition serializes"),
+        )
+    }
+
+    const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+    const NAME: &str = "verusrpc-test-mrhu3gpo3wws";
+    const START: f64 = 1_167_853.0;
+
+    fn base(kind: &str) -> JsCurrencyDefinition {
+        JsCurrencyDefinition {
+            name: NAME.into(),
+            parent: VRSCTEST.into(),
+            kind: kind.into(),
+            start_block: START,
+            // Every one of these vectors carries a 1-coin sub-identity fee and
+            // a 0.02-coin import fee.
+            id_registration_fees: Some("100000000".into()),
+            id_import_fees: Some("2000000".into()),
+            ..JsCurrencyDefinition::default()
+        }
+    }
+
+    #[test]
+    fn a_plain_token_matches_the_daemons_own_bytes() {
+        let expected = vector("token_simple");
+        assert_eq!(
+            script_of(&base("token")),
+            expected["definition_script"].as_str().expect("script")
+        );
+    }
+
+    /// `proofProtocol: 2` is what makes a currency mintable by its identity, so
+    /// getting this bit wrong decides whether supply can ever be created.
+    #[test]
+    fn a_centralized_token_matches_the_daemons_own_bytes() {
+        let expected = vector("token_centralized");
+        let spec = JsCurrencyDefinition {
+            proof_protocol: Some(2),
+            ..base("token")
+        };
+        assert_eq!(
+            script_of(&spec),
+            expected["definition_script"].as_str().expect("script")
+        );
+    }
+
+    /// Referral levels only mean anything with the option bit set, and the
+    /// daemon sets it: this vector's options are 40, which is `TOKEN | 0x8`.
+    #[test]
+    fn referral_levels_carry_their_option_bit() {
+        let expected = vector("token_idreferrals");
+        let spec = JsCurrencyDefinition {
+            id_referral_levels: Some(3.0),
+            ..base("token")
+        };
+        assert_eq!(
+            script_of(&spec),
+            expected["definition_script"].as_str().expect("script"),
+            "levels without ID_REFERRALS is a number the chain never reads"
+        );
+    }
+
+    /// The shape where the positional arrays matter.
+    #[test]
+    fn a_fractional_basket_matches_the_daemons_own_bytes() {
+        let expected = vector("fractional_two_reserves");
+        let spec = JsCurrencyDefinition {
+            initial_supply: Some("100000000000".into()),
+            currencies: vec![VRSCTEST.into(), "i713y8RkyAhfWZrreBgUq8tG9J5SxqCbRX".into()],
+            weights: vec!["50000000".into(), "50000000".into()],
+            ..base("fractional")
+        };
+        assert_eq!(
+            script_of(&spec),
+            expected["definition_script"].as_str().expect("script")
+        );
+    }
+
+    /// Weights are fractions of one. A set that does not sum to one is a basket
+    /// whose reserves do not add up, and no daemon vector has ever been one.
+    #[test]
+    fn weights_that_do_not_sum_to_one_are_refused() {
+        let spec = JsCurrencyDefinition {
+            currencies: vec![VRSCTEST.into(), "i713y8RkyAhfWZrreBgUq8tG9J5SxqCbRX".into()],
+            weights: vec!["50000000".into(), "40000000".into()],
+            ..base("fractional")
+        };
+        let error = spec.to_definition().expect_err("weights must sum to one");
+        assert!(error.message().contains("sum to"), "{}", error.message());
+    }
+
+    /// A weight larger than the field can hold used to be clamped to
+    /// `i32::MAX`, which rewrites a reserve ratio rather than refusing it.
+    #[test]
+    fn an_oversized_weight_is_refused_rather_than_clamped() {
+        let spec = JsCurrencyDefinition {
+            currencies: vec![VRSCTEST.into()],
+            weights: vec!["3000000000".into()],
+            ..base("fractional")
+        };
+        let error = spec.to_definition().expect_err("a weight has a ceiling");
+        assert!(
+            error.message().contains("larger than"),
+            "{}",
+            error.message()
+        );
+    }
+
+    /// A basket needs one weight per reserve, and an empty list used to pass:
+    /// the length check exempted it, and a fractional currency with no weights
+    /// is not a currency anybody meant to define.
+    #[test]
+    fn a_fractional_currency_needs_a_weight_for_every_reserve() {
+        let spec = JsCurrencyDefinition {
+            currencies: vec![VRSCTEST.into(), "i713y8RkyAhfWZrreBgUq8tG9J5SxqCbRX".into()],
+            weights: Vec::new(),
+            ..base("fractional")
+        };
+        let error = spec
+            .to_definition()
+            .expect_err("weights are not optional here");
+        assert!(error.message().contains("one weight per reserve"));
+    }
+
+    /// `startBlock` and `endBlock` go on the wire as int32, so a larger height
+    /// serializes into bytes the daemon cannot read back.
+    #[test]
+    fn a_height_beyond_int32_is_refused() {
+        let spec = JsCurrencyDefinition {
+            start_block: 2f64.powi(40),
+            ..base("token")
+        };
+        assert!(spec.to_definition().is_err());
     }
 }

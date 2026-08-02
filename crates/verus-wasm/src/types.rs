@@ -662,8 +662,8 @@ mod tests {
     fn every_shape_matches_the_type_it_guards() {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
-            ContentRequest, HistoryRequest, JsCurrencyDefinition, JsPreallocation,
-            LoginRequest, OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest,
+            ContentRequest, HistoryRequest, JsCurrencyDefinition, JsPreallocation, LoginRequest,
+            OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest,
             PlanLaunchRequest, PlanMintRequest, PlanPublishRequest, PlanRegistrationRequest,
             PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
             TakeOfferRequest, VerifyLoginRequest,

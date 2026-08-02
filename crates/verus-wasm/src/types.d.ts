@@ -1049,12 +1049,21 @@ export interface Preallocation {
 /**
  * A currency to define and launch.
  *
- * **The reserve arrays are read positionally.** `currencies[i]`, `weights[i]`,
- * `conversions[i]` and the preconversion bounds all describe the same reserve,
- * so they must be the same length and in the same order. Nothing on chain
- * checks that — a launch defined with them misaligned pays its fee and creates
- * a currency whose reserves are not what its author meant — so it is checked
- * here, by name, before anything is built.
+ * **The reserve arrays are read positionally.** `currencies[i]`, `weights[i]`
+ * and the preconversion bounds all describe the same reserve, so they must be
+ * the same length and in the same order. Nothing on chain checks that — a
+ * launch defined with them misaligned pays its fee and creates a currency whose
+ * reserves are not what its author meant — so it is checked here, by name,
+ * before anything is built.
+ *
+ * **Two fields the daemon has and this does not.** `conversions` is absent
+ * because the daemon ignores it: a definition created by passing
+ * `conversions: [4.0]` comes back carrying `[0.0]`, and launch prices are
+ * derived at launch from what was actually contributed.
+ * `initialContributions` is absent because nothing here can honour it — a
+ * contribution needs an extra value-bearing output that this SDK's launch
+ * builder does not make, so declaring one would claim backing the transaction
+ * does not fund.
  */
 export interface CurrencyDefinition {
     /** The name, without the parent. Must match the defining identity's. */
@@ -1078,15 +1087,17 @@ export interface CurrencyDefinition {
     initialSupply?: string;
     /**
      * `2` makes the currency **centralized**: its controlling identity may mint
-     * new supply with `planMint`. Omit for `1`, which cannot.
+     * new supply with `planMint`. Omit for `1`, which cannot. Nothing else.
      */
     proofProtocol?: number;
     /** The reserve currencies, as `i…` addresses. Fractional only. */
     currencies?: string[];
-    /** Each reserve's weight, in satoshis. Same length and order. */
+    /**
+     * Each reserve's weight, in satoshis — one per entry in `currencies`, in
+     * the same order. Weights are fractions of one and must sum to
+     * `100000000`; every definition the daemon has produced does.
+     */
     weights?: string[];
-    /** Each reserve's launch price, in satoshis. Same length and order. */
-    conversions?: string[];
     /**
      * The least that must be preconverted per reserve for the launch to go
      * ahead. Below it, **every** contribution is refunded.
@@ -1094,17 +1105,15 @@ export interface CurrencyDefinition {
     minPreconversion?: string[];
     /** The most that may be preconverted per reserve. */
     maxPreconversion?: string[];
-    /**
-     * What the definer contributes per reserve at launch. The daemon
-     * initialises `preconverted` equal to this, and this binding does the same
-     * — setting them apart is possible in Rust and almost always a mistake.
-     */
-    initialContributions?: string[];
     /** Supply handed to named identities at launch. */
     preallocations?: Preallocation[];
     /** What registering a sub-identity costs, in satoshis. */
     idRegistrationFees?: string;
-    /** How many referral levels pay out. */
+    /**
+     * How many referral levels pay out, at most 5. A nonzero value also sets
+     * the currency's referral option bit, without which the number is one the
+     * chain never reads.
+     */
     idReferralLevels?: number;
     /** What importing an identity costs, in satoshis. */
     idImportFees?: string;
