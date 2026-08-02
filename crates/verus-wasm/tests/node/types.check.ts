@@ -44,7 +44,12 @@ import {
   type Utxo,
   type TokenAmount,
   type PlanSendRequest,
-  type SendStep,
+  type PlanSendTokenRequest,
+  type PlanSendFromIdentityRequest,
+  type PlanPublishRequest,
+  type TransactionStep,
+  type UpdateStep,
+  type PlannedUpdate,
   type HistoryRequest,
   type HistoryStep,
   type HistoryEntry,
@@ -265,7 +270,7 @@ const notAReason: boolean = validateMnemonic("…").reason === "valid";
 declare const answers: Answers;
 
 const plan: PlanSendRequest = { to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX", satoshis: "150000000" };
-const step: SendStep = key.planSend(plan, answers);
+const step: TransactionStep = key.planSend(plan, answers);
 
 // `ask` is a list of complete request bodies, so it has to be strings — a
 // declaration that let them be objects would invite a caller to re-encode
@@ -339,5 +344,38 @@ const noAddress: SpendableRequest = {};
 // @ts-expect-error a mistyped optional field is refused here too
 const strayKey: ContentRequest = { identity: "alice@", identityy: "x" };
 
+// The write plans. A token send needs its token outputs named; money inside
+// them is a string like everywhere else.
+const tokenPlan: PlanSendTokenRequest = {
+  currency: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+  amount: "150000000",
+  tokenUtxos: [utxo],
+};
+const tokenStep: TransactionStep = key.planSendToken(tokenPlan, answers);
+
+const idPlan: PlanSendFromIdentityRequest = {
+  identity: "holder@", to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX", satoshis: "1",
+};
+const idStep: TransactionStep = key.planSendFromIdentity(idPlan, answers);
+
+const publishPlan: PlanPublishRequest = {
+  identity: "app@", key: "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv", values: ["6d696e65"],
+};
+const update: PlannedUpdate | undefined = key.planPublish(publishPlan, answers).value;
+
+// An update reports its fee, as a decimal string like every other amount.
+const publishStep: UpdateStep = key.planPublish(publishPlan, answers);
+const updateFee: string | undefined = publishStep.value?.fee;
+// @ts-expect-error the fee is a decimal string, never a number
+const numericFee: number | undefined = publishStep.value?.fee;
+
+// @ts-expect-error a token amount is a decimal string, never a number
+const numericToken: PlanSendTokenRequest = { currency: "i", to: "R", amount: 1, tokenUtxos: [] };
+
+// @ts-expect-error values are hex strings, not bytes
+const rawValues: PlanPublishRequest = { identity: "a@", key: "i", values: [new Uint8Array()] };
+
 void [numericAmount, misspelled, stringHeight];
+void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

@@ -102,8 +102,9 @@ use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{
     ContentRequestValue, ContentStepValue, HistoryRequestValue, HistoryStepValue, JsText,
-    LoginRequestValue, LoginStepValue, PlanSendRequestValue, SendStepValue, SpendableRequestValue,
-    SpendableStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
+    LoginRequestValue, LoginStepValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
+    PlanSendRequestValue, PlanSendTokenRequestValue, SpendableRequestValue, SpendableStepValue,
+    TransactionStepValue, UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -259,6 +260,29 @@ impl From<verus_flows::Sent> for JsPlannedTransaction {
             change: dto::sats_string(sent.change),
         }
     }
+}
+
+/// An identity update a flow built and signed, ready to post.
+///
+/// A [`JsPlannedTransaction`] plus what the update will change. Storing data on
+/// an identity costs a miner fee like any other transaction, and a wallet
+/// asking a user to approve it should be able to say how much.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsPlannedUpdate {
+    /// The raw transaction, hex — what `sendrawtransaction` takes.
+    pub hex: String,
+    /// Its txid in display order, computed from `hex` before anything is sent.
+    pub txid: String,
+    /// The miner fee, in satoshis, paid from the funding address.
+    pub fee: String,
+    /// Change returned to the funding address, in satoshis; `"0"` if it would
+    /// have been dust.
+    pub change: String,
+    /// The key that will be written, as it appears in `contentmultimap`.
+    pub key: String,
+    /// How many values will stand under it. Zero means the key is removed.
+    pub values: usize,
 }
 
 /// Which addresses to read, and over what stretch of chain.
@@ -598,6 +622,85 @@ pub fn plan_history(
     Ok(crate::to_js(&step)?.unchecked_into())
 }
 
+/// What token to move, and which outputs hold it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanSendTokenRequest {
+    /// The token's currency id — an `i…` address. For a tokenised identity,
+    /// that is the identity's own `i` address.
+    pub currency: String,
+    /// Where the tokens are going.
+    pub to: String,
+    /// How much, in the token's smallest unit, as a decimal string.
+    pub amount: String,
+    /// The outputs holding the token.
+    ///
+    /// **Not discovered for you**, and that is honest rather than lazy:
+    /// `getaddressutxos` reports a reserve output's native value, not which
+    /// token it carries or how much, so recognising them means decoding each
+    /// script. A wallet that tracks its own token outputs already knows them.
+    /// The native coins for the miner fee *are* found automatically.
+    pub token_utxos: Vec<crate::dto::JsUtxo>,
+}
+
+impl PlanSendTokenRequest {
+    /// The keys a `PlanSendTokenRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("currency", None),
+            ("to", None),
+            ("amount", None),
+            ("tokenUtxos", Some(&crate::dto::JsUtxo::SHAPE)),
+        ],
+    };
+}
+
+/// A payment out of funds a VerusID holds.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanSendFromIdentityRequest {
+    /// The identity paying — a name or an `i…` address.
+    pub identity: String,
+    /// Where the value is going.
+    pub to: String,
+    /// How much, in satoshis, as a decimal string.
+    pub satoshis: String,
+}
+
+impl PlanSendFromIdentityRequest {
+    /// The keys a `PlanSendFromIdentityRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("identity", None), ("to", None), ("satoshis", None)],
+    };
+}
+
+/// What to store on a VerusID, and under which key.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanPublishRequest {
+    /// The identity to write to — a name or an `i…` address.
+    pub identity: String,
+    /// The VDXF key, as a `contentmultimap` spells it: an `i…` address.
+    /// Derive it with `vdxfKey`.
+    pub key: String,
+    /// The values to store, each as hex.
+    ///
+    /// **Replaces whatever stood under the key** — there is no append, because
+    /// an update restates the whole identity. Read first if you mean to add.
+    /// An empty list removes the key.
+    pub values: Vec<String>,
+}
+
+impl PlanPublishRequest {
+    /// The keys a `PlanPublishRequest` object may carry.
+    ///
+    /// `values` is a leaf: an array of strings, with no object inside for a
+    /// stray key to hide in.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("identity", None), ("key", None), ("values", None)],
+    };
+}
+
 /// Verify a VerusID login, against the identity **as it stood when the
 /// signature was made**.
 ///
@@ -779,7 +882,7 @@ impl Key {
         &self,
         request: PlanSendRequestValue,
         answers: &mut Answers,
-    ) -> WasmResult<SendStepValue> {
+    ) -> WasmResult<TransactionStepValue> {
         let request: PlanSendRequest = dto::from_js(request.into(), &PlanSendRequest::SHAPE)?;
         let amount = dto::sats(&request.satoshis)?;
         let to = request.to;
@@ -795,6 +898,180 @@ impl Key {
         let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
             JsPlannedTransaction::from(unsent.outcome)
         });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan a token payment.
+    ///
+    /// The token moves as a reserve output while the miner fee is still paid in
+    /// native coins, so this reads the key's own spendable coins for the fee
+    /// and spends them alongside the token outputs you supply.
+    ///
+    /// Every token input is spent whole and the surplus returns as token
+    /// change — **a token output left out of `tokenUtxos` is not "saved", it is
+    /// simply not spent**, and one included but not needed still returns.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planSendToken)]
+    pub fn plan_send_token(
+        &self,
+        request: PlanSendTokenRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanSendTokenRequest =
+            dto::from_js(request.into(), &PlanSendTokenRequest::SHAPE)?;
+        let currency = dto::currency("currency", &request.currency)?;
+        let amount = dto::sats(&request.amount)?;
+        let token_utxos = dto::utxos_named("tokenUtxos", &request.token_utxos)?;
+        let to = request.to;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_send_token(
+                client,
+                self.private(),
+                currency,
+                &to,
+                amount,
+                &token_utxos,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan a payment out of funds a **VerusID** holds, rather than out of this
+    /// key's own coins.
+    ///
+    /// This is the everyday shape of money on Verus — funds live under an
+    /// identity — and it is a different signature from a plain spend: each
+    /// input carries a fulfillment, the same construction an identity update
+    /// uses. The surplus returns to the identity.
+    ///
+    /// The identity's current primary addresses are read from the chain and
+    /// checked against this key before anything is signed, because signing with
+    /// a key the identity no longer lists builds cleanly and then fails script
+    /// verification with a message that names nothing.
+    ///
+    /// # One signature only
+    ///
+    /// This signs with this key alone, so it can satisfy an identity whose
+    /// `minimumsignatures` is 1. An identity that needs more is refused by
+    /// name rather than built and rejected — collecting signatures from several
+    /// `Key` handles is not something this binding expresses yet.
+    ///
+    /// # Errors
+    ///
+    /// Throws if the identity does not exist, is revoked, does not list this
+    /// key as a primary address, or needs more signatures than one.
+    #[wasm_bindgen(js_name = planSendFromIdentity)]
+    pub fn plan_send_from_identity(
+        &self,
+        request: PlanSendFromIdentityRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanSendFromIdentityRequest =
+            dto::from_js(request.into(), &PlanSendFromIdentityRequest::SHAPE)?;
+        let amount = dto::sats(&request.satoshis)?;
+        let (identity, to) = (request.identity, request.to);
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_send_from_identity(
+                client,
+                &[self.private()],
+                &identity,
+                &to,
+                amount,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan storing application data on a VerusID.
+    ///
+    /// # An update republishes the whole identity
+    ///
+    /// There is no "set this field" transaction. An update states the identity
+    /// in full, and **anything not carried over is erased** — content,
+    /// authorities, private addresses, permanently.
+    ///
+    /// So this decodes the identity from its own output script, which is the
+    /// copy consensus reads, changes exactly the one entry, and leaves
+    /// everything else byte for byte. It never sets `allow_authority_change`:
+    /// publishing content cannot cost you the identity.
+    ///
+    /// # Pass an `i` address, not a name
+    ///
+    /// Both the outpoint and the transaction come from the node, so a hostile
+    /// endpoint can try to redirect the write to some *other* identity this key
+    /// controls — and with an empty `values`, that is a deletion of somebody
+    /// else's content.
+    ///
+    /// An `i` address **is** the identity's id, so naming one lets this compare
+    /// the decoded identity against your own input and refuse, without asking
+    /// the node anything. Give it a `name@` instead and the node resolves the
+    /// name: it will still catch an endpoint that contradicts itself, but not
+    /// one that lies consistently about both answers.
+    ///
+    /// The miner fee comes from this key's own coins, so the key must be one of
+    /// the identity's primary addresses.
+    ///
+    /// # One signature only
+    ///
+    /// As with [`Key::plan_send_from_identity`].
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planPublish)]
+    pub fn plan_publish(
+        &self,
+        request: PlanPublishRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<UpdateStepValue> {
+        let request: PlanPublishRequest = dto::from_js(request.into(), &PlanPublishRequest::SHAPE)?;
+        let key = dto::identity_id("key", &request.key)?;
+        let values = request
+            .values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                hex::decode(value)
+                    .map_err(|e| WasmError::new("InvalidHex", format!("values[{index}]: {e}")))
+            })
+            .collect::<WasmResult<Vec<Vec<u8>>>>()?;
+        let identity = request.identity;
+        let funding = self.address();
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_publish(
+                client,
+                &[self.private()],
+                &identity,
+                &funding,
+                key,
+                values.clone(),
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(
+            step,
+            |unsent: verus_flows::Unsent<verus_flows::Published>| JsPlannedUpdate {
+                hex: unsent.hex,
+                txid: unsent.txid,
+                fee: dto::sats_string(unsent.outcome.fee),
+                change: dto::sats_string(unsent.outcome.change),
+                key: unsent.outcome.key,
+                values: unsent.outcome.values,
+            },
+        );
         Ok(crate::to_js(&step)?.unchecked_into())
     }
 

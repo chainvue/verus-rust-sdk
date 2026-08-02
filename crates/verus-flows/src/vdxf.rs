@@ -189,6 +189,15 @@ pub struct Published {
     /// How many values stand under it once the update confirms. Zero means the
     /// key was removed.
     pub values: usize,
+    /// The miner fee the update pays, from the funding address.
+    ///
+    /// Storing data on an identity is not free, and a wallet asking a user to
+    /// approve it should be able to say what it costs. The builder computes
+    /// this; it used to be dropped here, and the omission was then explained
+    /// as if the number were unavailable.
+    pub fee: Amount,
+    /// Change returned to the funding address, zero if it would have been dust.
+    pub change: Amount,
 }
 
 /// Publish `values` under `key` on `identity`, replacing whatever was there.
@@ -293,8 +302,7 @@ pub fn prepare_publish(
     // empty value would then delete that identity's entry for the key.
     //
     // The sighash cannot catch this, because nothing about it is inconsistent.
-    // The check that can is offline: derive the id from the name the caller
-    // gave and compare against the object that came back.
+    // Two comparisons do, and they are not equally strong.
     let expected = record.identity_address.parse::<Address>().map_err(|e| {
         FlowError::Content(format!(
             "{identity} reported the identity address {:?}, which does not parse: {e}",
@@ -302,6 +310,33 @@ pub fn prepare_publish(
         ))
     })?;
     let decoded_id = verus_tx::identity_id(&object.name, Some(object.parent));
+
+    // **The strong one, and only available when the caller named an `i`
+    // address.** An `i` address *is* the identity's id, so this compares the
+    // decoded object against the caller's own input and needs no node at all.
+    // It closes the wholesale lie: a node that answers `getidentity` with some
+    // other identity's entire record — its address, its outpoint, its real
+    // script — still fails here.
+    //
+    // Prefer an `i` address for this reason. Publishing is the operation where
+    // a redirected write is destructive: an empty `values` on the wrong
+    // identity deletes that identity's entry for the key.
+    if let Ok(named) = identity.parse::<Address>() {
+        if named.kind() == AddressKind::Identity && named.hash() != decoded_id {
+            return Err(FlowError::Content(format!(
+                "asked for {identity} but the output the node pointed at holds {}, whose id is \
+                 {} — refusing to sign an update to an identity that was not named",
+                object.name,
+                key_address(decoded_id)
+            )));
+        }
+    }
+
+    // **The weak one**, which is all that is possible for a `name@` lookup:
+    // the node resolved the name, so the id it reported is its own claim and
+    // there is nothing offline to check it against. This catches a node that
+    // is inconsistent *with itself* — an honest `getidentity` and a redirected
+    // `getrawtransaction` — and not one that lies consistently in both.
     if expected.hash() != decoded_id {
         return Err(FlowError::Content(format!(
             "asked for {identity} but the output the node pointed at holds {}, whose id is {} \
@@ -369,6 +404,8 @@ pub fn prepare_publish(
             txid: signed.txid,
             key: key_address(key),
             values: values.len(),
+            fee: signed.fee,
+            change: signed.change,
         },
     })
 }
@@ -821,6 +858,79 @@ mod publish_tests {
             vec![b"mine".to_vec()],
         )
         .expect_err("an update to an unnamed identity must be refused");
+        assert!(
+            format!("{error}").contains("was not named"),
+            "the error must say what happened: {error}"
+        );
+        assert!(lying.broadcasts().is_empty(), "nothing may be broadcast");
+    }
+
+    /// The lie the *previous* check could not catch: a node that redirects
+    /// **consistently**, answering `getidentity` with another identity's whole
+    /// record — its address, its outpoint — and `getrawtransaction` with that
+    /// identity's real script.
+    ///
+    /// Nothing about that is internally inconsistent, so comparing the decoded
+    /// object against the node's own reported address passes. The caller asked
+    /// to publish on one identity and gets bytes that republish another — and
+    /// with an empty `values`, that is a redirected *deletion* of somebody
+    /// else's content.
+    ///
+    /// An `i` address is the identity's id, so anchoring to the caller's own
+    /// input closes it without asking the node anything.
+    #[test]
+    fn a_node_that_redirects_consistently_is_still_refused() {
+        let key = test_key();
+        let (mine, _) = on_chain(&key, [0xaa; 20]);
+
+        // A second identity the same key controls, complete and well formed.
+        let mut other = mine.clone();
+        other.name = "other".into();
+        let other_id = identity_id(&other.name, Some(other.parent));
+        let other_script = verus_tx::cc::identity_primary_script(
+            other_id,
+            other.to_bytes().expect("encodes"),
+            other.revocation_authority,
+            other.recovery_authority,
+        )
+        .expect("script");
+
+        let mine_id = identity_id(&mine.name, Some(mine.parent));
+        let address = key.address().to_string();
+        // Everything the node says is about `other`, consistently.
+        let lying = ScriptedReader::new(1_170_800)
+            .with_utxo(&address, 1_170_000, 500_000_000)
+            .with_identity(
+                &key_address(mine_id),
+                IdentityRecord {
+                    fully_qualified_name: "other@".into(),
+                    identity_address: key_address(other_id),
+                    status: "active".into(),
+                    outpoint: (Txid::from_internal(IDENTITY_TX), 0),
+                    block_height: 1_170_000,
+                    identity: json!({ "identityaddress": key_address(other_id) }),
+                },
+            )
+            .with_raw_transaction(
+                &Txid::from_internal(IDENTITY_TX).to_display_hex(),
+                json!({ "vout": [{
+                    "valueSat": 0,
+                    "scriptPubKey": { "hex": hex::encode(&other_script) }
+                }] }),
+            );
+
+        let error = publish(
+            &lying,
+            &lying,
+            &[&key],
+            // The caller names the identity by its `i` address, which is the
+            // id itself and therefore checkable without the node.
+            &key_address(mine_id),
+            &address,
+            [0xbb; 20],
+            Vec::new(),
+        )
+        .expect_err("a consistently redirected write must still be refused");
         assert!(
             format!("{error}").contains("was not named"),
             "the error must say what happened: {error}"

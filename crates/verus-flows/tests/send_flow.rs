@@ -163,3 +163,38 @@ fn hex_bytes(hex: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
         .collect()
 }
+
+/// The same outpoint twice builds and signs cleanly, then dies at the daemon as
+/// `bad-txns-inputs-duplicate` — after the caller has been shown a
+/// transaction. A wallet concatenating two views of its own token outputs makes
+/// exactly this mistake.
+#[test]
+fn a_token_output_listed_twice_is_refused_before_signing() {
+    use verus_tx::{CurrencyId, Txid, Utxo};
+
+    let chain = funded(1_000, 10_00000000);
+    let token = Utxo {
+        txid: Txid::from_internal([0x33; 32]),
+        vout: 0,
+        satoshis: verus_flows::Amount::ZERO,
+        script_pubkey: verus_tx::cc::reserve_output_script(
+            key().address().hash(),
+            CurrencyId::from_bytes([0x22; 20]),
+            1_000_000,
+        )
+        .expect("reserve script"),
+    };
+
+    let twice = [token.clone(), token];
+    let error = verus_flows::prepare_send_token(
+        &chain,
+        &key(),
+        CurrencyId::from_bytes([0x22; 20]),
+        PAYEE,
+        verus_flows::Amount::from_sat(500_000),
+        &twice,
+    )
+    .expect_err("an outpoint can only be spent once");
+    assert!(format!("{error}").contains("listed twice"), "{error}");
+    assert!(chain.broadcasts().is_empty());
+}
