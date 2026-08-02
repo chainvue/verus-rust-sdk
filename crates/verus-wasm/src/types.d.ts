@@ -841,3 +841,77 @@ export type OffersStep = PlanStep<Listing[]>;
 export type OfferTermsStep = PlanStep<OfferTerms>;
 /** @see Key.planTakeOffer */
 export type TakeOfferStep = PlanStep<Taken>;
+
+/**
+ * What to convert, into what, and on whose terms.
+ *
+ * A conversion is a **request at an unknown price**: the chain performs it when
+ * it imports the output, a block later at best, at whatever the reserve ratios
+ * are then. There is no slippage bound in the protocol.
+ */
+export interface PlanConvertRequest {
+    /** The currency being spent, as an `i…` address. */
+    from: string;
+    /** How much of it, in satoshis, as a decimal string. */
+    amount: string;
+    /**
+     * Which kind of conversion.
+     *
+     * Minting and burning are deliberately **not** here: a burn cannot be
+     * undone and a mint needs a controlling identity's authority, and neither
+     * should be reachable by changing a string. See `planBurn` and `planMint`.
+     */
+    kind: "intoFractional" | "intoReserve" | "reserveToReserve" | "preconvert";
+    /** The currency being bought — the fractional, the reserve, or the target. */
+    into: string;
+    /**
+     * The fractional to route through. Only for `"reserveToReserve"`, and
+     * refused for any other kind rather than ignored.
+     */
+    via?: string;
+    /** Where the result should land — an `R…` address. */
+    recipient: string;
+    /** The conversion fee, in satoshis, as a decimal string. Capped at one coin. */
+    fee: string;
+    /**
+     * The least you are willing to accept, in satoshis.
+     *
+     * **Nothing enforces this on chain.** It refuses before signing if the
+     * node's own estimate has already fallen below it, which is the only price
+     * check that exists.
+     */
+    minExpected?: string;
+    /**
+     * Outputs carrying the source currency, when it is a token. Leave empty
+     * when converting the chain's own currency.
+     */
+    tokenFunding?: Utxo[];
+}
+
+/** What to destroy. **A burn cannot be undone.** */
+export interface PlanBurnRequest {
+    /** The token's currency id, as an `i…` address. */
+    currency: string;
+    /** How much to destroy, in satoshis, as a decimal string. */
+    amount: string;
+    /** The conversion fee, in satoshis, as a decimal string. Capped at one coin. */
+    fee: string;
+    /** Outputs carrying the token. */
+    tokenFunding?: Utxo[];
+}
+
+/** What to mint, and to whom. */
+export interface PlanMintRequest {
+    /**
+     * The token's `i…` address — which is also the id of the identity that
+     * controls it, and that coincidence is the whole mechanism. The mint is
+     * funded from that identity's own outputs, so it must hold native coins.
+     */
+    currency: string;
+    /** How much new supply, in satoshis, as a decimal string. */
+    amount: string;
+    /** Where it lands — an `R…` address. */
+    recipient: string;
+    /** The conversion fee, in satoshis, as a decimal string. Capped at one coin. */
+    fee: string;
+}

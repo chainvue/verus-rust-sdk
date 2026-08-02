@@ -103,7 +103,8 @@ use crate::keys::Key;
 use crate::types::{
     ContentRequestValue, ContentStepValue, HistoryRequestValue, HistoryStepValue, JsText,
     LoginRequestValue, LoginStepValue, OfferTermsRequestValue, OfferTermsStepValue,
-    OffersRequestValue, OffersStepValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
+    OffersRequestValue, OffersStepValue, PlanBurnRequestValue, PlanConvertRequestValue,
+    PlanMintRequestValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
     PlanSendRequestValue, PlanSendTokenRequestValue, SpendableRequestValue, SpendableStepValue,
     TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue, UpdateStepValue,
     VerifyLoginRequestValue, VerifyLoginStepValue,
@@ -703,12 +704,220 @@ impl PlanPublishRequest {
     };
 }
 
-/// The largest miner fee a plan will accept where the caller names one outright.
+/// Read an absolute fee, refusing one that cannot have been meant.
 ///
-/// One coin, which is orders of magnitude above any real fee on this chain. Not
-/// a consensus rule and not advice — a bar below which a number cannot be a
-/// mistake and above which it almost certainly is.
+/// Every fee a caller names outright goes through here. There are four of them
+/// now — the taker's, and the three conversion plans — and each is the kind of
+/// field where a transposed digit is paid rather than caught.
+fn checked_fee(text: &str) -> WasmResult<verus_tx::Amount> {
+    let fee = dto::sats(text)?;
+    if fee.to_sat() > MAX_ABSOLUTE_FEE {
+        return Err(WasmError::new(
+            "FeeTooLarge",
+            format!(
+                "a fee of {} coins is almost certainly a unit mistake; the ceiling here is {}",
+                fee.to_coins_string(),
+                verus_tx::Amount::from_sat(MAX_ABSOLUTE_FEE).to_coins_string()
+            ),
+        ));
+    }
+    Ok(fee)
+}
+
+/// The largest fee a plan will accept where the caller names one outright.
+///
+/// Not always a *miner* fee: for the three conversion plans this bounds the
+/// **reserve transfer** fee, which the miner fee is computed separately from.
+/// The units are the same — native satoshis — so one ceiling covers both.
+///
+/// One coin, which is orders of magnitude above any real fee on this chain: the
+/// conversion fee observed from the daemon is 0.0002001. Not a consensus rule
+/// and not advice — a bar below which a number cannot be a mistake and above
+/// which it almost certainly is.
 const MAX_ABSOLUTE_FEE: u64 = verus_tx::SATS_PER_COIN;
+
+/// What to convert, into what, and on whose terms.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanConvertRequest {
+    /// The currency being spent, as an `i…` address.
+    pub from: String,
+    /// How much of it, in satoshis, as a decimal string.
+    pub amount: String,
+    /// Which kind of conversion. One of `"intoFractional"`, `"intoReserve"`,
+    /// `"reserveToReserve"`, `"preconvert"`.
+    ///
+    /// Minting and burning are **not** here. They have their own bindings
+    /// because they are not conversions in the sense this is: a burn destroys
+    /// value and cannot be undone, and a mint needs a controlling identity's
+    /// authority. Neither should be reachable by changing a string.
+    pub kind: String,
+    /// The currency being bought — the fractional, the reserve, or the target.
+    pub into: String,
+    /// The fractional to route through. **Only** for `"reserveToReserve"`, and
+    /// refused for every other kind rather than ignored.
+    #[serde(default)]
+    pub via: Option<String>,
+    /// Where the result should land — an `R…` address.
+    pub recipient: String,
+    /// The conversion fee, in satoshis, as a decimal string.
+    pub fee: String,
+    /// The least you are willing to accept, in satoshis.
+    ///
+    /// **Nothing enforces this on chain**, and that is not a limitation of this
+    /// SDK — the protocol has no slippage bound. A conversion is a request at
+    /// an unknown price: the chain performs it when it *imports* the output, a
+    /// block later at best, at whatever the reserve ratios are then.
+    ///
+    /// What this does is refuse before signing if the node's own estimate has
+    /// already fallen below it. That is the only price check that exists.
+    #[serde(default)]
+    pub min_expected: Option<String>,
+    /// Outputs carrying the source currency, when it is a token.
+    ///
+    /// Leave empty when converting the chain's own currency. As with a token
+    /// send, every token input is spent whole and the surplus returns as
+    /// change.
+    #[serde(default)]
+    pub token_funding: Vec<crate::dto::JsUtxo>,
+}
+
+impl PlanConvertRequest {
+    /// The keys a `PlanConvertRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("from", None),
+            ("amount", None),
+            ("kind", None),
+            ("into", None),
+            ("via", None),
+            ("recipient", None),
+            ("fee", None),
+            ("minExpected", None),
+            ("tokenFunding", Some(&crate::dto::JsUtxo::SHAPE)),
+        ],
+    };
+
+    /// The kind, with `into` and `via` resolved against it.
+    ///
+    /// The kind is a string beside two currency fields rather than a tagged
+    /// union, because the request sanitizer declares a fixed set of keys and
+    /// cannot vary them per variant — and losing the sanitizer here would be a
+    /// far worse trade than a slightly flatter shape.
+    ///
+    /// What that costs is a combination the shape permits and the meaning does
+    /// not: `via` alongside a kind that does not route. Refused by name rather
+    /// than ignored, because a caller who set it believed it did something.
+    fn conversion_kind(&self) -> WasmResult<verus_tx::convert::ConversionKind> {
+        use verus_tx::convert::ConversionKind;
+        let into = dto::currency("into", &self.into)?;
+
+        let routed = matches!(self.kind.as_str(), "reserveToReserve");
+        match (&self.via, routed) {
+            (Some(_), false) => {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!(
+                        "via is only used by a reserveToReserve conversion, and kind is {:?}",
+                        self.kind
+                    ),
+                ))
+            }
+            (None, true) => {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    "a reserveToReserve conversion needs `via`: the fractional holding both \
+                     reserves, which is what makes the route exist",
+                ))
+            }
+            _ => {}
+        }
+
+        Ok(match self.kind.as_str() {
+            "intoFractional" => ConversionKind::IntoFractional { fractional: into },
+            "intoReserve" => ConversionKind::IntoReserve { reserve: into },
+            "reserveToReserve" => ConversionKind::ReserveToReserve {
+                via: dto::currency("via", self.via.as_deref().unwrap_or_default())?,
+                target: into,
+            },
+            "preconvert" => ConversionKind::Preconvert { fractional: into },
+            "mint" | "burn" => {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!(
+                        "{:?} is not a conversion; use planMint or planBurn, which exist \
+                         separately because a burn cannot be undone and a mint needs an \
+                         identity's authority",
+                        self.kind
+                    ),
+                ))
+            }
+            other => {
+                return Err(WasmError::new(
+                    "InvalidArgument",
+                    format!(
+                        "unknown conversion kind {other:?}; expected intoFractional, \
+                         intoReserve, reserveToReserve or preconvert"
+                    ),
+                ))
+            }
+        })
+    }
+}
+
+/// What to destroy.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanBurnRequest {
+    /// The token's currency id, as an `i…` address.
+    pub currency: String,
+    /// How much to destroy, in satoshis, as a decimal string.
+    pub amount: String,
+    /// The conversion fee, in satoshis, as a decimal string.
+    pub fee: String,
+    /// Outputs carrying the token.
+    #[serde(default)]
+    pub token_funding: Vec<crate::dto::JsUtxo>,
+}
+
+impl PlanBurnRequest {
+    /// The keys a `PlanBurnRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("currency", None),
+            ("amount", None),
+            ("fee", None),
+            ("tokenFunding", Some(&crate::dto::JsUtxo::SHAPE)),
+        ],
+    };
+}
+
+/// What to mint, and to whom.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanMintRequest {
+    /// The token's `i…` address — which is **also** the id of the identity
+    /// that controls it, and that coincidence is the whole mechanism.
+    pub currency: String,
+    /// How much new supply, in satoshis, as a decimal string.
+    pub amount: String,
+    /// Where it lands — an `R…` address.
+    pub recipient: String,
+    /// The conversion fee, in satoshis, as a decimal string.
+    pub fee: String,
+}
+
+impl PlanMintRequest {
+    /// The keys a `PlanMintRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("currency", None),
+            ("amount", None),
+            ("recipient", None),
+            ("fee", None),
+        ],
+    };
+}
 
 /// What is standing on the marketplace against a currency or an identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1505,27 +1714,10 @@ impl Key {
         let recipient = dto::pubkey_hash_address("recipient", &request.recipient)?;
         let change: verus_keys::Address =
             dto::pubkey_hash_address("changeAddress", &request.change_address)?;
-        let fee = dto::sats(&request.fee)?.to_sat();
-        // The one absolute-satoshi fee in this API, and therefore the one place
-        // a transposed digit goes straight to a miner. `2900000000` reads as a
-        // plausible number and is twenty-nine coins.
-        //
-        // This binding takes the *offered* value away from the caller for
-        // exactly that reason; leaving the fee unbounded next to that would be
-        // inconsistent. Not a policy about what a fee should be — a bar for
-        // what cannot be meant, matching `MAX_FEE_PER_KB` in
-        // [`send`](crate::send).
-        if fee > MAX_ABSOLUTE_FEE {
-            return Err(WasmError::new(
-                "FeeTooLarge",
-                format!(
-                    "a miner fee of {} coins is almost certainly a unit mistake; the ceiling \
-                     here is {}",
-                    verus_tx::Amount::from_sat(fee).to_coins_string(),
-                    verus_tx::Amount::from_sat(MAX_ABSOLUTE_FEE).to_coins_string()
-                ),
-            ));
-        }
+        // A transposed digit here is paid to a miner, not caught: this binding
+        // takes the *offered* value away from the caller for that reason, and
+        // leaving the fee unbounded beside it would be inconsistent.
+        let fee = checked_fee(&request.fee)?.to_sat();
         let offer = request.offer;
 
         let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
@@ -1540,6 +1732,136 @@ impl Key {
                 txid: unsent.txid,
                 terms: unsent.outcome.terms.into(),
             }
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan a conversion from one currency into another.
+    ///
+    /// # Read this before wiring it to a button
+    ///
+    /// A conversion is a **request at an unknown price**. The transaction says
+    /// what goes in and where the result should land; it says nothing about
+    /// what comes out. The chain performs the conversion when it *imports* the
+    /// output, a block later at best, at whatever the reserve ratios are then.
+    ///
+    /// There is no slippage bound in the protocol. `minExpected` refuses before
+    /// signing if the node's own estimate has already fallen below it, and that
+    /// is the only price check that exists. **A wallet showing a user a number
+    /// must show it as an estimate.**
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planConvert)]
+    pub fn plan_convert(
+        &self,
+        request: PlanConvertRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanConvertRequest = dto::from_js(request.into(), &PlanConvertRequest::SHAPE)?;
+        let kind = request.conversion_kind()?;
+        let amount = dto::sats(&request.amount)?;
+        let fee = checked_fee(&request.fee)?;
+        let min_expected = match &request.min_expected {
+            Some(text) => Some(dto::sats(text)?),
+            None => None,
+        };
+        let token_funding = dto::utxos_named("tokenFunding", &request.token_funding)?;
+        let (from, recipient) = (request.from, request.recipient);
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_conversion(
+                client,
+                self.private(),
+                &from,
+                amount,
+                kind,
+                &recipient,
+                fee,
+                min_expected,
+                &token_funding,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan destroying supply of a token.
+    ///
+    /// **A burn cannot be undone.** Nothing is paid back, there is no recovery,
+    /// and for a fractional currency the supply change moves the price for
+    /// every holder. It is a separate binding rather than a flag on
+    /// [`Key::plan_convert`] for exactly that reason.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planBurn)]
+    pub fn plan_burn(
+        &self,
+        request: PlanBurnRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanBurnRequest = dto::from_js(request.into(), &PlanBurnRequest::SHAPE)?;
+        let amount = dto::sats(&request.amount)?;
+        let fee = checked_fee(&request.fee)?;
+        let token_funding = dto::utxos_named("tokenFunding", &request.token_funding)?;
+        let currency = request.currency;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_burn(
+                client,
+                self.private(),
+                &currency,
+                amount,
+                fee,
+                &token_funding,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan minting new supply of a centralized currency.
+    ///
+    /// `currency` is the token's `i` address — which is **also** the id of the
+    /// identity that controls it, and that coincidence is the mechanism:
+    /// consensus accepts a mint only from a transaction that spends an output
+    /// the controlling identity holds, signed with that identity's authority.
+    ///
+    /// So the transaction is funded from the identity's own pay-to-identity
+    /// outputs, not from this key's coins — **the identity must hold enough
+    /// native coins to pay for it**, and an ordinary `planSend` to the `i`
+    /// address is how you top it up.
+    ///
+    /// This key must be one of the identity's primary addresses, and as with
+    /// the other identity-authorised plans it signs alone, so a
+    /// `minimumsignatures` above one is refused by name.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planMint)]
+    pub fn plan_mint(
+        &self,
+        request: PlanMintRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanMintRequest = dto::from_js(request.into(), &PlanMintRequest::SHAPE)?;
+        let amount = dto::sats(&request.amount)?;
+        let fee = checked_fee(&request.fee)?;
+        let (currency, recipient) = (request.currency, request.recipient);
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_mint(client, self.private(), &currency, amount, &recipient, fee)
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
         });
         Ok(crate::to_js(&step)?.unchecked_into())
     }

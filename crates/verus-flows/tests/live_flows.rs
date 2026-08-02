@@ -370,6 +370,7 @@ fn a_conversion_reaches_the_chain() {
             fractional: CurrencyId::from_bytes(address_hash(SHYLOCK)),
         },
         &address,
+        key.address(),
         fee,
         None,
     )

@@ -73,6 +73,15 @@ extern "C" {
     /// TypeScript `TakeOfferRequest`.
     #[wasm_bindgen(typescript_type = "TakeOfferRequest")]
     pub type TakeOfferRequestValue;
+    /// TypeScript `PlanConvertRequest`.
+    #[wasm_bindgen(typescript_type = "PlanConvertRequest")]
+    pub type PlanConvertRequestValue;
+    /// TypeScript `PlanBurnRequest`.
+    #[wasm_bindgen(typescript_type = "PlanBurnRequest")]
+    pub type PlanBurnRequestValue;
+    /// TypeScript `PlanMintRequest`.
+    #[wasm_bindgen(typescript_type = "PlanMintRequest")]
+    pub type PlanMintRequestValue;
     /// TypeScript `HistoryRequest`.
     #[wasm_bindgen(typescript_type = "HistoryRequest")]
     pub type HistoryRequestValue;
@@ -263,9 +272,9 @@ mod tests {
         use crate::flows::{
             ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsListing,
             JsLoggedIn, JsOfferTerms, JsPlannedTransaction, JsPlannedUpdate, JsTaken, LoginRequest,
-            OfferTermsRequest, OffersRequest, PlanPublishRequest, PlanSendFromIdentityRequest,
-            PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
-            VerifyLoginRequest,
+            OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest, PlanMintRequest,
+            PlanPublishRequest, PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest,
+            PlanStep, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -358,6 +367,18 @@ mod tests {
         assert_declared("OfferTermsRequest", &OfferTermsRequest::default());
         assert_declared("OfferTerms", &JsOfferTerms::default());
         assert_declared("TakeOfferRequest", &TakeOfferRequest::default());
+        // Every optional populated: a `serde(default)` field is exactly the one
+        // a drift check would otherwise never see.
+        assert_declared(
+            "PlanConvertRequest",
+            &PlanConvertRequest {
+                via: Some(String::new()),
+                min_expected: Some(String::new()),
+                ..PlanConvertRequest::default()
+            },
+        );
+        assert_declared("PlanBurnRequest", &PlanBurnRequest::default());
+        assert_declared("PlanMintRequest", &PlanMintRequest::default());
         assert_declared("Taken", &JsTaken::default());
         assert_declared(
             "ContentValue",
@@ -544,8 +565,9 @@ mod tests {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
             ContentRequest, HistoryRequest, LoginRequest, OfferTermsRequest, OffersRequest,
-            PlanPublishRequest, PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest,
-            SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            PlanBurnRequest, PlanConvertRequest, PlanMintRequest, PlanPublishRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
+            TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -604,6 +626,17 @@ mod tests {
         check::<OffersRequest>("OffersRequest", &OffersRequest::SHAPE);
         check::<OfferTermsRequest>("OfferTermsRequest", &OfferTermsRequest::SHAPE);
         check::<TakeOfferRequest>("TakeOfferRequest", &TakeOfferRequest::SHAPE);
+        check::<PlanConvertRequest>("PlanConvertRequest", &PlanConvertRequest::SHAPE);
+        check::<PlanBurnRequest>("PlanBurnRequest", &PlanBurnRequest::SHAPE);
+        check::<PlanMintRequest>("PlanMintRequest", &PlanMintRequest::SHAPE);
+        check::<crate::dto::JsUtxo>(
+            "PlanConvertRequest.tokenFunding",
+            nested(&PlanConvertRequest::SHAPE, "tokenFunding"),
+        );
+        check::<crate::dto::JsUtxo>(
+            "PlanBurnRequest.tokenFunding",
+            nested(&PlanBurnRequest::SHAPE, "tokenFunding"),
+        );
         check::<crate::dto::JsUtxo>(
             "TakeOfferRequest.utxos",
             nested(&TakeOfferRequest::SHAPE, "utxos"),

@@ -1508,6 +1508,90 @@ console.log("\nflows, driven with no network");
     ok("and an absurd miner fee is refused rather than paid");
   }
 
+  // -- conversions, and the shapes the request permits but the meaning does not
+  {
+    const SHYLOCK = "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR";
+    const base = {
+      from: VRSCTEST,
+      amount: "150000000",
+      kind: "intoFractional",
+      into: SHYLOCK,
+      recipient: address,
+      fee: "20010",
+    };
+
+    const convertReplies = {
+      ...replies,
+      estimateconversion: JSON.stringify({
+        result: { estimatedcurrencyout: 1.49165329 },
+      }),
+    };
+    const convertPost = (b) => {
+      const reply = convertReplies[JSON.parse(b).method];
+      assert.ok(reply, `nothing recorded for ${JSON.parse(b).method}`);
+      return reply;
+    };
+    const drive = (request) => {
+      const a = new Answers();
+      try {
+        for (;;) {
+          const s = key.planConvert(request, a);
+          if (s.kind === "ready") return s.value;
+          for (const body of s.ask) a.record(body, convertPost(body));
+        }
+      } finally { a.free(); }
+    };
+
+    const converted = drive(base);
+    assert.match(converted.hex, /^[0-9a-f]+$/);
+    assert.equal(converted.txid.length, 64);
+    ok("a conversion is planned against the node's own estimate");
+
+    // `via` names the fractional to route through, and only a reserveToReserve
+    // conversion routes. Set beside any other kind it would do nothing — and a
+    // caller who set it believed it did something, so it is refused rather
+    // than ignored. That is the same rule the sanitizer applies to unknown
+    // keys, extended to a key that is known but meaningless here.
+    assert.throws(
+      () => drive({ ...base, via: SHYLOCK }),
+      (e) => e.name === "InvalidArgument" && /reserveToReserve/.test(e.message),
+    );
+    // And the mirror: routing without saying through what.
+    assert.throws(
+      () => drive({ ...base, kind: "reserveToReserve" }),
+      (e) => e.name === "InvalidArgument" && /needs `via`/.test(e.message),
+    );
+    ok("`via` and the conversion kind have to agree");
+
+    // Burning and minting are not conversions with a different string. A burn
+    // cannot be undone and a mint needs an identity's authority; neither
+    // should be reachable by editing one field.
+    for (const kind of ["burn", "mint"]) {
+      assert.throws(
+        () => drive({ ...base, kind }),
+        (e) => e.name === "InvalidArgument" && /planMint or planBurn/.test(e.message),
+      );
+    }
+    assert.throws(
+      () => drive({ ...base, kind: "intoFractionall" }),
+      (e) => e.name === "InvalidArgument" && /unknown conversion kind/.test(e.message),
+    );
+    ok("a burn or a mint is not reachable by changing a conversion's kind");
+
+    // Every fee a caller names outright is capped, not just the taker's.
+    for (const plan of [
+      () => drive({ ...base, fee: "2900000000" }),
+      () => key.planBurn({ currency: SHYLOCK, amount: "1", fee: "2900000000" }, new Answers()),
+      () => key.planMint(
+        { currency: SHYLOCK, amount: "1", recipient: address, fee: "2900000000" },
+        new Answers(),
+      ),
+    ]) {
+      assert.throws(plan, (e) => e.name === "FeeTooLarge");
+    }
+    ok("an absurd fee is refused by every plan that takes one");
+  }
+
   // -- the request sanitizer applies here too ------------------------------
   {
     const spare = new Answers();
