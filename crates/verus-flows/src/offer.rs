@@ -242,16 +242,30 @@ pub fn inspect(reader: &impl ChainReader, offer_hex: &str) -> Result<OfferTerms,
 
 /// A satoshi amount from a daemon `vout`.
 ///
-/// Prefers the integer `valueSat`; falls back to the decimal `value`, read from
-/// its original text rather than through `f64`. A float would round, and this is
-/// the number the taker is deciding on.
+/// **`valueSat` or nothing.** This used to fall back to the decimal `value`,
+/// with a comment claiming it read the original text rather than a `f64` — and
+/// that was false. By the time a `vout` is a [`serde_json::Value`], `value` has
+/// already been parsed into a float: re-rendering it with `to_string` prints
+/// the float back, it does not recover the text. `92233720.36854775` comes back
+/// as `92233720.36854777`, is accepted, and the taker is shown an offering two
+/// satoshis from the truth.
+///
+/// The exact text is not recoverable at this point, so there is nothing to
+/// repair — only a choice between a wrong number and no number. Every Verus
+/// daemon emits `valueSat`; a reply without it is one this crate cannot read
+/// exactly, and saying so beats guessing about the amount somebody is deciding
+/// to trade on.
 fn read_satoshis(vout: &serde_json::Value) -> Result<Amount, FlowError> {
-    if let Some(sats) = vout["valueSat"].as_u64() {
-        return Ok(Amount::from_sat(sats));
-    }
-    let text = vout["value"].to_string();
-    Amount::from_coins_str(text.trim_matches('"'))
-        .map_err(|e| FlowError::Offer(format!("the funding output's value: {e}")))
+    vout["valueSat"]
+        .as_u64()
+        .map(Amount::from_sat)
+        .ok_or_else(|| {
+            FlowError::Offer(
+                "the funding output reports no valueSat; its decimal `value` has already been \
+                 through a float by the time it gets here and cannot be read exactly"
+                    .into(),
+            )
+        })
 }
 
 /// An offer completed — broadcast by [`take`], still unsent from
@@ -506,6 +520,37 @@ mod browse_tests {
 
         assert!(found[0].live);
         assert!(!found[0].listing.is_live_at(1_170_900));
+    }
+
+    /// The float path that used to sit behind a comment saying it was not one.
+    ///
+    /// `read_satoshis` fell back to the decimal `value` "read from its original
+    /// text rather than through `f64`". By the time a `vout` is a
+    /// `serde_json::Value` there is no original text left — the float has
+    /// already happened, and `to_string` prints the float back. The first
+    /// assertion is that proof; the rest is the fail-closed behaviour that
+    /// replaced it.
+    #[test]
+    fn a_funding_value_that_has_been_through_a_float_is_refused_not_guessed() {
+        // Parsed from JSON text, because that is the path a daemon reply takes
+        // and the loss happens in the parser. Building the same number from a
+        // Rust literal does NOT reproduce it — an earlier version of this test
+        // did that and proved nothing.
+        let vout: serde_json::Value =
+            serde_json::from_str(r#"{"value":92233720.36854775}"#).expect("a daemon reply");
+
+        // Re-rendering does not recover the text it was parsed from: two
+        // satoshis have already gone.
+        assert_eq!(vout["value"].to_string(), "92233720.36854777");
+
+        let error = read_satoshis(&vout).expect_err("an inexact value must be refused");
+        assert!(format!("{error}").contains("valueSat"), "{error}");
+
+        // The shape every Verus daemon actually sends is read exactly.
+        assert_eq!(
+            read_satoshis(&serde_json::json!({ "valueSat": 150_000_000u64 })).unwrap(),
+            Amount::from_sat(150_000_000)
+        );
     }
 
     /// An empty answer is a legitimate outcome, and it is also what asking

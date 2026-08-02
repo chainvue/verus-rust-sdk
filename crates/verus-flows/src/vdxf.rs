@@ -304,7 +304,8 @@ pub fn prepare_publish(
     let decoded_id = verus_tx::identity_id(&object.name, Some(object.parent));
     if expected.hash() != decoded_id {
         return Err(FlowError::Content(format!(
-            "asked for {identity} but the output the node pointed at holds {}, whose id is {}              rather than {} — refusing to sign an update to an identity that was not named",
+            "asked for {identity} but the output the node pointed at holds {}, whose id is {} \
+             rather than {} — refusing to sign an update to an identity that was not named",
             object.name,
             key_address(decoded_id),
             record.identity_address
@@ -316,14 +317,26 @@ pub fn prepare_publish(
     // An identity output carries no native value. Reading it rather than
     // assuming means a nonzero one is named here instead of surfacing as an
     // opaque sighash rejection.
+    //
+    // An **absent** `valueSat` is refused rather than read as zero. Defaulting
+    // would let a node that simply omits the field walk straight through the
+    // check this is; and the value below is hardcoded to zero, so the sighash
+    // would then commit to an amount nobody verified. `launch::holding_output`
+    // refuses the same shape, and the two flows spend the same kind of output.
     let held = raw["vout"]
         .as_array()
         .and_then(|outs| outs.get(usize::try_from(vout).unwrap_or(usize::MAX)))
         .and_then(|out| out["valueSat"].as_u64())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            FlowError::Content(format!(
+                "the node's copy of the output holding {identity} reports no valueSat, so there \
+                 is nothing to check the zero-value rule against"
+            ))
+        })?;
     if held != 0 {
         return Err(FlowError::Content(format!(
-            "the output holding {identity} carries {held} satoshis; identity outputs hold none,              so this is not the output it claims to be"
+            "the output holding {identity} carries {held} satoshis; identity outputs hold none, \
+             so this is not the output it claims to be"
         )));
     }
 
@@ -543,6 +556,92 @@ mod tests {
 }
 
 #[cfg(test)]
+mod read_tests {
+    use super::*;
+    use crate::testing::ScriptedReader;
+    use serde_json::json;
+    use verus_rpc::IdentityRecord;
+    use verus_tx::Txid;
+
+    const KEY: [u8; 20] = [0xbb; 20];
+
+    /// An identity whose *current* multimap holds one value under [`KEY`],
+    /// while `getidentitycontent` accumulates two — the shape the chain
+    /// actually produces after a key has been rewritten once.
+    fn rewritten_once() -> ScriptedReader {
+        let key = key_address(KEY);
+        ScriptedReader::new(1_171_000)
+            .with_identity(
+                "app@",
+                IdentityRecord {
+                    fully_qualified_name: "app@".into(),
+                    identity_address: "iPYbC4ExJ7dRBZnpxq2LGXGgkWDQNQR48g".into(),
+                    status: "active".into(),
+                    outpoint: (Txid::from_internal([0x22; 32]), 0),
+                    block_height: 1_170_000,
+                    identity: json!({
+                        "identityaddress": "iPYbC4ExJ7dRBZnpxq2LGXGgkWDQNQR48g",
+                        "contentmultimap": { key.clone(): [hex::encode(b"second")] },
+                    }),
+                },
+            )
+            .with_identity_content(BTreeMap::from([(
+                key,
+                vec![
+                    ContentValue::Bytes(b"first".to_vec()),
+                    ContentValue::Bytes(b"second".to_vec()),
+                ],
+            )]))
+    }
+
+    /// The bug that shipped, and that only a live read caught: `read` reported
+    /// **every value ever published** under a key instead of the one the
+    /// identity holds.
+    ///
+    /// The two answers come from different daemon methods —
+    /// `getidentity` is current state, `getidentitycontent` accumulates over
+    /// history — and until the scripted node could tell them apart, nothing in
+    /// the offline suite could tell these two functions apart either. Pointing
+    /// `read_all` back at `identity_content` now fails here rather than on
+    /// chain.
+    #[test]
+    fn reading_now_is_not_reading_the_whole_history() {
+        let chain = rewritten_once();
+
+        let now = read(&chain, "app@", KEY).expect("current content");
+        assert_eq!(
+            now,
+            vec![ContentValue::Bytes(b"second".to_vec())],
+            "read() must report what the identity holds, not what it has held"
+        );
+
+        let ever = read_history(&chain, "app@", KEY).expect("accumulated content");
+        assert_eq!(ever.len(), 2, "read_history() is the audit view");
+        assert_eq!(ever[0], ContentValue::Bytes(b"first".to_vec()));
+    }
+
+    /// `read_all` is what `read` is defined in terms of, so it has to be on the
+    /// current-state side of the same line.
+    #[test]
+    fn reading_every_key_is_also_current_state() {
+        let chain = rewritten_once();
+        let all = read_all(&chain, "app@").expect("current content");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[&key_address(KEY)].len(), 1);
+    }
+
+    /// A key the identity has never carried is absent, not an error — a wallet
+    /// asking about its own key on someone else's identity is a normal read.
+    #[test]
+    fn a_key_that_was_never_written_reads_as_empty() {
+        let chain = rewritten_once();
+        assert!(read(&chain, "app@", [0xcc; 20])
+            .expect("a miss is not a failure")
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
 mod publish_tests {
     use super::*;
     use crate::testing::ScriptedReader;
@@ -727,6 +826,38 @@ mod publish_tests {
             "the error must say what happened: {error}"
         );
         assert!(lying.broadcasts().is_empty(), "nothing may be broadcast");
+    }
+
+    /// An omitted `valueSat` must be refused, not read as zero.
+    ///
+    /// The zero-value rule exists because an identity output carries no native
+    /// value and the builder hardcodes `Amount::ZERO` — so the sighash commits
+    /// to an amount that was never checked against the node's copy. Defaulting
+    /// an absent field to zero would walk straight through the check while
+    /// looking like it had made it. `launch::holding_output` refuses the same
+    /// shape, and these two flows spend the same kind of output.
+    #[test]
+    fn an_output_that_reports_no_value_at_all_is_refused() {
+        let key = test_key();
+        let (identity, script) = on_chain(&key, [0xaa; 20]);
+        let reader = reader(&key, &script, &identity).with_raw_transaction(
+            &Txid::from_internal(IDENTITY_TX).to_display_hex(),
+            // Everything a valid reply has, minus the value.
+            json!({ "vout": [{ "scriptPubKey": { "hex": hex::encode(&script) } }] }),
+        );
+
+        let error = publish(
+            &reader,
+            &reader,
+            &[&key],
+            "app@",
+            &key.address().to_string(),
+            [0xbb; 20],
+            vec![b"mine".to_vec()],
+        )
+        .expect_err("a value that cannot be checked must not be assumed");
+        assert!(format!("{error}").contains("valueSat"), "{error}");
+        assert!(reader.broadcasts().is_empty(), "nothing may be broadcast");
     }
 
     /// Paying the fee from an address the signing key does not control builds

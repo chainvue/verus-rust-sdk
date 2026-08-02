@@ -125,7 +125,9 @@ where
                     let reply = replies
                         .get(method.as_str())
                         .unwrap_or_else(|| panic!("no fixture for {method}"));
-                    answers.record(body.clone(), reply.clone());
+                    answers
+                        .record(body.clone(), reply.clone())
+                        .expect("a fixture fits");
                 }
                 rounds.push(bodies);
             }
@@ -152,6 +154,17 @@ fn history_resolves_in_a_single_round() {
     let methods: Vec<String> = rounds[0].iter().map(|b| method_of(b)).collect();
     assert!(methods.contains(&"getinfo".to_string()));
     assert!(methods.contains(&"getaddressdeltas".to_string()));
+
+    // The range has to reach the wire. The fixture is pre-trimmed to the
+    // queried heights, so a regression that dropped `range` entirely would
+    // still produce the right entries here and pass every other assertion —
+    // and would then ask a public node for an address's whole history.
+    let deltas = rounds[0]
+        .iter()
+        .find(|b| method_of(b) == "getaddressdeltas")
+        .expect("the deltas request");
+    assert!(deltas.contains("1170740"), "start height: {deltas}");
+    assert!(deltas.contains("1170760"), "end height: {deltas}");
 
     // And it actually computed something: the settled token swap.
     assert!(!entries.is_empty());
@@ -250,7 +263,9 @@ fn registration_keeps_asking_rather_than_assuming_a_name_is_free() {
         ["getinfo"]
     );
     for body in &bodies {
-        answers.record(body.clone(), replies[method_of(body).as_str()].clone());
+        answers
+            .record(body.clone(), replies[method_of(body).as_str()].clone())
+            .expect("a fixture fits");
     }
 
     // Round two is the one that matters. With the chain known but the identity
@@ -370,7 +385,9 @@ fn driving_a_flow_that_broadcasts_is_refused_rather_than_recorded() {
         match advance(&mut answers, operation) {
             Ok(Step::Ask(bodies)) => {
                 for body in &bodies {
-                    answers.record(body.clone(), replies[method_of(body).as_str()].clone());
+                    answers
+                        .record(body.clone(), replies[method_of(body).as_str()].clone())
+                        .expect("a fixture fits");
                 }
             }
             Ok(Step::Ready(sent)) => panic!("a driven flow must not broadcast: {}", sent.txid),
@@ -507,6 +524,70 @@ fn preparing_a_mint_resolves_in_a_single_round() {
     );
 }
 
+/// Maturity probes go out **together**, so a wallet with several young outputs
+/// costs one extra round rather than one per output.
+///
+/// `funding::probe_coinbase_heights` collects every probe before unwrapping any
+/// of them, precisely so this holds. Nothing else notices if a `?` is
+/// reintroduced inside that loop: the answers are the same, the transaction is
+/// the same, and only the number of network round trips changes — from two to
+/// one-per-young-output, silently.
+#[test]
+fn maturity_probes_for_several_young_outputs_share_one_round() {
+    let key = spender();
+    let address = key.address();
+    let script = format!("76a914{}88ac", hex::encode(address.hash()));
+
+    // Two outputs, both inside the 100-block maturity window, with different
+    // transactions — so two distinct probes are needed.
+    let mut replies = replies();
+    replies.insert(
+        "getaddressutxos",
+        format!(
+            r#"{{"result":[
+                {{"address":"{address}","blocktime":1785262420,"height":1167550,"isspendable":1,
+                  "outputIndex":0,"satoshis":500000000,"script":"{script}",
+                  "txid":"{}"}},
+                {{"address":"{address}","blocktime":1785262420,"height":1167551,"isspendable":1,
+                  "outputIndex":0,"satoshis":500000000,"script":"{script}",
+                  "txid":"{}"}}
+            ]}}"#,
+            "aa".repeat(32),
+            "bb".repeat(32),
+        ),
+    );
+    // Neither is actually a coinbase, so both stay spendable and the plan
+    // completes — the point here is the shape of the asking, not the outcome.
+    replies.insert(
+        "getrawtransaction",
+        r#"{"result":{"vin":[{"txid":"cc","vout":0}]}}"#.to_string(),
+    );
+
+    let (_unsent, rounds) = drive_with(replies, |client| {
+        verus_flows::prepare_send(
+            client,
+            &key,
+            PAYEE,
+            verus_flows::Amount::from_sat(1_000_000),
+        )
+    });
+
+    assert_eq!(
+        rounds.len(),
+        2,
+        "the tip and outputs, then the probes: {rounds:#?}"
+    );
+    let probes: Vec<String> = rounds[1].iter().map(|b| method_of(b)).collect();
+    assert_eq!(
+        probes,
+        ["getrawtransaction", "getrawtransaction"],
+        "both probes must be asked in the same round"
+    );
+    // And they must be different questions, or the test would pass with one
+    // probe issued twice.
+    assert_ne!(rounds[1][0], rounds[1][1]);
+}
+
 /// Publishing has one **irreducible** round boundary and one that was avoidable.
 ///
 /// The transaction holding the identity cannot be asked for until the identity
@@ -618,7 +699,9 @@ fn a_cached_node_error_is_an_answer_and_the_next_round_proceeds() {
         panic!("it cannot be ready knowing nothing");
     };
     for body in &bodies {
-        answers.record(body.clone(), replies[method_of(body).as_str()].clone());
+        answers
+            .record(body.clone(), replies[method_of(body).as_str()].clone())
+            .expect("a fixture fits");
     }
 
     // Round two asks about the name. Answer it the way a daemon answers for a
@@ -630,13 +713,17 @@ fn a_cached_node_error_is_an_answer_and_the_next_round_proceeds() {
         .iter()
         .find(|b| method_of(b) == "getidentity")
         .expect("the name check");
-    answers.record(
-        name_check.clone(),
-        r#"{"error":{"code":-5,"message":"Identity not found"}}"#,
-    );
+    answers
+        .record(
+            name_check.clone(),
+            r#"{"error":{"code":-5,"message":"Identity not found"}}"#,
+        )
+        .expect("a small reply");
     for body in bodies.iter().filter(|b| method_of(b) != "getidentity") {
         if let Some(reply) = replies.get(method_of(body).as_str()) {
-            answers.record(body.clone(), reply.clone());
+            answers
+                .record(body.clone(), reply.clone())
+                .expect("a fixture fits");
         }
     }
 

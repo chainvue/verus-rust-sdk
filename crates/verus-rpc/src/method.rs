@@ -78,9 +78,49 @@ impl Method {
     /// Whether calling this can change state anywhere.
     ///
     /// Exactly one method can, which is the property the read/write split in
-    /// [`crate::client`] rests on.
+    /// [`crate::client`] rests on — and, since [`Cassette`](crate::Cassette)
+    /// landed, rather more than that: a request this reports as a read is
+    /// **recorded and handed to a driver to post**, and a driver posts what it
+    /// is told.
+    ///
+    /// # Why every read is written out
+    ///
+    /// `matches!(self, Method::SendRawTransaction)` says the same thing in one
+    /// line and fails to the wrong side. A write method added later without a
+    /// case here would silently be a read: recorded rather than refused, then
+    /// posted once per round — up to the driver's round cap — by every caller
+    /// following the documented "post `ask` verbatim" contract.
+    ///
+    /// Listing the reads makes that a compile error instead. Same reason the
+    /// `name` match above is exhaustive, applied to the arm where being wrong
+    /// costs money rather than a label.
     pub(crate) const fn is_write(self) -> bool {
-        matches!(self, Method::SendRawTransaction)
+        match self {
+            Method::SendRawTransaction => true,
+
+            Method::GetInfo
+            | Method::GetBlockCount
+            | Method::GetBestBlockHash
+            | Method::GetBlockHash
+            | Method::GetBlock
+            | Method::GetAddressUtxos
+            | Method::GetAddressBalance
+            | Method::GetAddressDeltas
+            | Method::GetCurrency
+            | Method::GetCurrencyState
+            | Method::ListCurrencies
+            | Method::GetCurrencyConverters
+            | Method::EstimateFee
+            | Method::EstimateConversion
+            | Method::GetIdentity
+            | Method::GetIdentityHistory
+            | Method::GetIdentityContent
+            | Method::GetVdxfId
+            | Method::GetOffers
+            | Method::VerifyMessage
+            | Method::GetRawTransaction
+            | Method::DecodeRawTransaction => false,
+        }
     }
 
     /// Every variant.
@@ -115,10 +155,33 @@ impl Method {
 mod tests {
     use super::*;
 
+    /// Which methods write, over the whole enum.
+    ///
+    /// Note what this can and cannot do. It fails when a *correctly* flagged
+    /// second write is added, which is a prompt to think rather than a defect
+    /// found. It cannot fail when a flag is **forgotten** — the dangerous
+    /// direction — because a method missing from `ALL` is invisible here.
+    /// That direction is guarded by `is_write` being an exhaustive match, so a
+    /// new variant does not compile until it is classified.
     #[test]
     fn only_one_method_writes() {
         let writes: Vec<_> = Method::ALL.iter().filter(|m| m.is_write()).collect();
         assert_eq!(writes, vec![&Method::SendRawTransaction]);
+    }
+
+    /// `ALL` has to actually be all of them, or every test that iterates it
+    /// proves less than it looks like it does.
+    ///
+    /// Checked through `name`, whose match *is* exhaustive: a variant missing
+    /// from `ALL` has a name no entry produces.
+    #[test]
+    fn every_variant_is_listed() {
+        for method in Method::ALL {
+            assert!(!method.name().is_empty());
+        }
+        // Distinctness is checked separately; this is the count, pinned so a
+        // variant added to the enum and to `name` but not to `ALL` is caught.
+        assert_eq!(Method::ALL.len(), 23);
     }
 
     #[test]

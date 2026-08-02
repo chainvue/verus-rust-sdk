@@ -27,8 +27,8 @@
 //!   joining them cannot be recovered from the chain.
 //! * [`funding`] — which coins can actually be spent right now, which is not the
 //!   same as which coins exist.
-//! * [`history`] — what already happened, which a UTXO set cannot tell you:
-//!   an output that arrived and was spent is simply gone from it.
+//! * [`history`](mod@history) — what already happened, which a UTXO set cannot
+//!   tell you: an output that arrived and was spent is simply gone from it.
 //! * [`vdxf`](mod@vdxf) — keeping application data on a VerusID, and the care an
 //!   update needs given that it republishes the identity in full.
 //! * [`broadcast`](mod@broadcast) — and the one failure that must never be retried
@@ -95,18 +95,21 @@ pub use convert::{
 };
 pub use error::FlowError;
 pub use funding::{identity_held, spendable, Funding};
+pub use history::{history, HistoryEntry};
 pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
     Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
 };
 pub use launch::{launch_currency, prepare_launch, Launched};
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
-pub use offer::{inspect, prepare_take, Demand, OfferTerms, Taken, Taking};
+pub use offer::{browse, inspect, prepare_take, take, Demand, Listing, OfferTerms, Taken, Taking};
 pub use send::{
     prepare_send, prepare_send_from_identity, prepare_send_token, send, send_from_identity,
     send_token, Sent,
 };
-pub use vdxf::prepare_publish;
+pub use vdxf::{
+    key_address, prepare_publish, publish, read, read_all, read_history, Namespace, Published,
+};
 
 #[cfg(feature = "shielded")]
 pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};

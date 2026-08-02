@@ -372,6 +372,12 @@ export interface PlanSendRequest {
 /**
  * A transaction a flow built and signed. **Not broadcast** — posting it is the
  * page's, deliberately, and exactly once.
+ *
+ * If that post fails at the network level the outcome is ambiguous: it may have
+ * been relayed before the connection dropped. Do **not** recover by planning
+ * again — a fresh plan re-reads the UTXO set, still sees the coins as unspent,
+ * and spends them a second time. Read the transaction back by `txid` instead,
+ * and re-post this same `hex` only if it is genuinely absent.
  */
 export interface PlannedTransaction {
     /** The raw transaction, hex — what `sendrawtransaction` takes. */

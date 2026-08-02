@@ -30,6 +30,9 @@ pub struct ScriptedReader {
     utxos: RefCell<Vec<AddressUtxo>>,
     coinbase_heights: RefCell<Vec<u32>>,
     identities: RefCell<Vec<(String, IdentityRecord)>>,
+    /// What `getidentitycontent` accumulates, which is not what `getidentity`
+    /// holds. See the `identity_content` impl.
+    identity_content: RefCell<std::collections::BTreeMap<String, Vec<verus_rpc::ContentValue>>>,
     policy: RefCell<Option<CurrencyPolicy>>,
     confirmations: RefCell<Vec<(String, u32)>>,
     /// Heights handed out by successive `block_count` calls, consumed in order.
@@ -53,6 +56,7 @@ impl ScriptedReader {
             utxos: RefCell::new(Vec::new()),
             coinbase_heights: RefCell::new(Vec::new()),
             identities: RefCell::new(Vec::new()),
+            identity_content: RefCell::new(std::collections::BTreeMap::new()),
             policy: RefCell::new(None),
             confirmations: RefCell::new(Vec::new()),
             heights: RefCell::new(Vec::new()),
@@ -171,6 +175,20 @@ impl ScriptedReader {
         self.identities
             .borrow_mut()
             .push((name.to_string(), record));
+        self
+    }
+
+    /// What `getidentitycontent` reports, keyed by the multimap key's `i`
+    /// address.
+    ///
+    /// Deliberately independent of [`ScriptedReader::with_identity`]: the
+    /// daemon accumulates here and reports current state there, so a test that
+    /// cares about the difference has to be able to script them apart.
+    pub fn with_identity_content(
+        self,
+        content: std::collections::BTreeMap<String, Vec<verus_rpc::ContentValue>>,
+    ) -> Self {
+        *self.identity_content.borrow_mut() = content;
         self
     }
 
@@ -361,7 +379,14 @@ impl ChainReader for ScriptedReader {
         Ok(IdentityContent {
             identity: self.identity(name_or_id)?,
             content_map: Default::default(),
-            content_multimap: Default::default(),
+            // Scripted separately from `getidentity` on purpose. The daemon
+            // answers these two differently — `getidentitycontent` accumulates
+            // every value ever published under a key, `getidentity` reports
+            // what the identity holds now — and a double that returned the same
+            // thing for both would make the two indistinguishable, which is
+            // exactly the confusion that shipped once and had to be found on
+            // chain.
+            content_multimap: self.identity_content.borrow().clone(),
         })
     }
 
@@ -653,6 +678,7 @@ impl Broadcaster for ScriptedReader {
                 // every such test pass for the wrong reason.
                 RpcError::AnswerNeeded => RpcError::AnswerNeeded,
                 RpcError::WriteThroughCassette => RpcError::WriteThroughCassette,
+                RpcError::MethodUnavailable { method } => RpcError::MethodUnavailable { method },
                 other => RpcError::Unexpected(other.to_string()),
             });
         }

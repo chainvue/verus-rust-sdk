@@ -28,7 +28,7 @@
 //! # fn post(_body: &str) -> Result<String, FlowError> { unimplemented!() }
 //! # fn example() -> Result<(), FlowError> {
 //! let mut answers = Answers::new();
-//! let signed = loop {
+//! let entries = loop {
 //!     match advance(&mut answers, |client| verus_flows::history::history(client, &["R…"], None))? {
 //!         Step::Ready(value) => break value,
 //!         Step::Ask(bodies) => {
@@ -39,7 +39,7 @@
 //!         }
 //!     }
 //! };
-//! # let _ = signed;
+//! # let _ = entries;
 //! # Ok(())
 //! # }
 //! ```
@@ -123,6 +123,16 @@ use crate::error::FlowError;
 /// fetching forever.
 pub const MAX_ROUNDS: usize = 16;
 
+/// The largest reply [`Answers::record`] will take, matching the ceiling
+/// `HttpTransport` applies natively.
+///
+/// A driver fetches for itself, so nothing else bounds what it can hand back.
+/// Natively an oversized body is a caught error; in a browser, copying one into
+/// WebAssembly linear memory can abort the instance outright — and an aborted
+/// instance takes every imported key with it, for the life of the page. So the
+/// bound belongs on this side of the boundary too.
+pub const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024;
+
 /// What an operation still needs, or what it produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step<T> {
@@ -159,8 +169,29 @@ impl Answers {
     /// Record the reply to one of the bodies from [`Step::Ask`].
     ///
     /// The body is the key and must be passed back unchanged.
-    pub fn record(&mut self, body: impl Into<String>, reply: impl Into<String>) {
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::NotReady`] if the reply is larger than
+    /// [`MAX_REPLY_BYTES`]. A driver does its own fetching, so the ceiling
+    /// [`HttpTransport`](verus_rpc::RpcError) applies natively is not in the
+    /// path — and a browser copying an unbounded body into WebAssembly linear
+    /// memory does not get an error, it gets a dead module, taking any imported
+    /// keys with it.
+    pub fn record(
+        &mut self,
+        body: impl Into<String>,
+        reply: impl Into<String>,
+    ) -> Result<(), FlowError> {
+        let reply = reply.into();
+        if reply.len() > MAX_REPLY_BYTES {
+            return Err(FlowError::NotReady(format!(
+                "a reply of {} bytes exceeds the {MAX_REPLY_BYTES}-byte ceiling",
+                reply.len()
+            )));
+        }
         self.cassette.answer(body, reply);
+        Ok(())
     }
 
     /// How many rounds have run.
@@ -256,7 +287,9 @@ mod tests {
         assert_eq!(bodies.len(), 1);
         assert!(bodies[0].contains(r#""method":"getblockcount""#));
 
-        answers.record(bodies[0].clone(), r#"{"result":1171000}"#);
+        answers
+            .record(bodies[0].clone(), r#"{"result":1171000}"#)
+            .expect("a small reply");
 
         let step = advance(&mut answers, |client| {
             Ok(verus_rpc::ChainReader::block_count(client)?)
@@ -264,6 +297,25 @@ mod tests {
         .expect("the answer is known now");
         assert_eq!(step, Step::Ready(1_171_000));
         assert_eq!(answers.rounds(), 2);
+    }
+
+    /// The ceiling a driver has to enforce because nothing else can.
+    ///
+    /// `HttpTransport` caps what it reads; a driver fetches for itself, so a
+    /// hostile endpoint's reply arrives here unmeasured. Natively that is a
+    /// large allocation; in a browser it is a dead module.
+    #[test]
+    fn an_oversized_reply_is_refused() {
+        let mut answers = Answers::new();
+        let huge = "x".repeat(MAX_REPLY_BYTES + 1);
+        let refused = answers.record("body", huge);
+        assert!(
+            matches!(refused, Err(FlowError::NotReady(_))),
+            "{refused:?}"
+        );
+
+        // And the boundary itself is allowed, so the cap is not off by one.
+        assert!(answers.record("body", "x".repeat(MAX_REPLY_BYTES)).is_ok());
     }
 
     /// A real failure must not be mistaken for "needs an answer" and retried

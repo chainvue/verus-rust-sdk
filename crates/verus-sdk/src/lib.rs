@@ -197,21 +197,24 @@ pub mod vdxf {
 /// deliberately picks the batteries-included path.
 #[cfg(feature = "network")]
 pub mod network {
-    pub use verus_flows::offer::take;
+    pub use verus_flows::drive::{advance, Answers, Step};
     pub use verus_flows::{
-        broadcast, burn, convert, currency_names, estimate, identity_held, inspect,
-        launch_currency, mint, native_currency, plan_conversion, prepare_burn, prepare_conversion,
-        prepare_launch, prepare_mint, prepare_publish, prepare_registration,
-        prepare_registration_with_salt, prepare_send, prepare_send_from_identity,
-        prepare_send_token, prepare_take, send, send_from_identity, send_token, sign_login,
-        spendable, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
-        ConversionPlan, Demand, FlowError, Funding, Launched, LoggedIn, LoginPolicy, LoginRequest,
-        OfferTerms, Pending, ReadyToRegister, Registered, RegistrationOptions, Sent, Taken, Taking,
-        TokenBalances, Unsent, WaitPolicy,
+        broadcast, browse, burn, convert, currency_names, estimate, history, identity_held,
+        inspect, key_address, launch_currency, mint, native_currency, plan_conversion,
+        prepare_burn, prepare_conversion, prepare_launch, prepare_mint, prepare_publish,
+        prepare_registration, prepare_registration_with_salt, prepare_send,
+        prepare_send_from_identity, prepare_send_token, prepare_take, publish, read, read_all,
+        read_history, send, send_from_identity, send_token, sign_login, spendable, take,
+        token_balances, verify_login, AwaitingCommitment, CommitmentStatus, ConversionPlan, Demand,
+        FlowError, Funding, HistoryEntry, Launched, Listing, LoggedIn, LoginPolicy, LoginRequest,
+        Namespace, OfferTerms, Pending, Published, ReadyToRegister, Registered,
+        RegistrationOptions, Sent, Taken, Taking, TokenBalances, Unsent, WaitPolicy,
     };
     pub use verus_rpc::{
-        AddressBalance, AddressUtxo, Broadcaster, ChainInfo, ChainReader, ConversionEstimate,
-        CurrencyPolicy, HttpTransport, IdentityRecord, RpcClient, RpcError,
+        AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,
+        ContentValue, ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary,
+        HttpTransport, IdentityContent, IdentityRecord, OfferListing, OfferSide, RpcClient,
+        RpcError, SignedAmount,
     };
 }
 

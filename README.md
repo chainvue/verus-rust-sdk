@@ -101,12 +101,40 @@ await rpc("sendrawtransaction", [signed.hex]);
 key.free();
 ```
 
-`verus-wasm` builds and signs; it does **not** fetch or broadcast. That split is
-deliberate. `verus-rpc` is built on a synchronous transport and a browser has no
-synchronous `fetch`, so binding the flows would mean an async duplicate of every
-one of them — while the thing that would wrap, JSON-RPC over HTTP, is a few
-lines of JavaScript with the app's own auth, retries and node choice. So:
-**JavaScript asks the questions, WebAssembly holds the key and makes the bytes.**
+`verus-wasm` **never opens a socket and never broadcasts** — JavaScript does the
+fetching, WebAssembly holds the key and makes the bytes.
+
+That much has always been true. What used to stand here alongside it was that
+the SDK's *flows* could not be bound at all, because `verus-rpc` is synchronous
+and a browser has no synchronous `fetch`, so binding them would mean an async
+duplicate of every one. The premise was right and the conclusion was wrong. The
+answer was not a duplicate but to stop the flows doing their own I/O:
+
+```js
+import init, { Key, Answers, parseCoins } from "@chainvue/verus-wasm";
+await init();
+
+const key = Key.fromWif(wif);
+const answers = new Answers();
+for (;;) {
+  const step = key.planSend({ to, satoshis: parseCoins("1.5") }, answers);
+  if (step.kind === "ready") { await post(step.transaction.hex); break; }
+  // `ask` holds complete JSON-RPC bodies; post them verbatim, concurrently.
+  await Promise.all(step.ask.map(async (b) => answers.record(b, await post(b))));
+}
+answers.free();
+key.free();
+```
+
+Each call runs the same Rust a native caller runs, against what is already
+known, and hands back either the result or the requests it still needs. Nothing
+it returns can broadcast: the flows were split so that the re-runnable half
+takes no broadcaster, which is what makes re-running it safe.
+
+Reach for it when you want the SDK's own judgement — `planSend` knows a coinbase
+output is unspendable for a hundred blocks and that `getaddressutxos` does not
+say which outputs are coinbases, so it asks. Reach for `key.send` above when the
+application already has the data and only wants bytes signed.
 
 Three conventions carry through the whole JS API. Money is a **decimal string**,
 never a `number` — `satoshis: 1e8` throws, because a float64 cannot hold a
@@ -330,12 +358,16 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | VerusID lifecycle — commit, register, referred, token-parent sub-ID, update, 2-of-2 multisig, revoke, recover | ✅ **on chain**, all eight |
 | VerusID message signing / login | ✅ verified live against the daemon, both directions |
 | Shielded — t→z, z→t, z→z, multi-note, via lightwalletd end to end | ✅ **on chain** |
-| Marketplace offers — make, inspect against the chain, take | ✅ **on chain** (native legs; token demands byte-verified) |
+| Marketplace offers — make, inspect against the chain, take | ✅ **on chain**, including a token demand settled from a reserve input |
+| Marketplace discovery — every offer standing against a currency or an identity | ✅ parsed from both public nodes; 54 and 1843 listings |
+| Transaction history — what already happened, which a UTXO set cannot tell you | ✅ live, native and per-currency, signed movements |
+| Application data on a VerusID — read current, read history, publish | ✅ **on chain**, twice over, with the erase invariant proven |
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
 | Transparent P2SH multisig, SIGHASH variants, identity timelocks | ✅ byte-verified, not broadcast |
 | Mint new supply, spend from a VerusID | ✅ **on chain** — spent-by-identity, per consensus |
 | wasm bindings — build and sign from JavaScript | ✅ **byte-identical to the TypeScript SDK**, checked under node in CI |
+| wasm flows — whole SDK operations in the browser, the page doing the fetching | ✅ a planned payment is byte-identical to a directly built one, under node in CI |
 | PBaaS / cross-chain export | ⬜ needs a second system |
 
 Not published to crates.io yet — the API has not settled, and a crate name is a
