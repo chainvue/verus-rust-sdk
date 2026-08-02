@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
 const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
-        planContentHistory, planOffers, planOfferTerms, parseCoins, formatCoins, satsPerCoin, decodeOutput,
+        planContentHistory, planOffers, planOfferTerms, planCommitmentStatus, parseCoins, formatCoins, satsPerCoin, decodeOutput,
         tokenBalances, verifyMessage, signatureBlockHeight, vdxfKey,
         rootNamespace, identityId, validateMnemonic, mnemonicToSeed } = wasm;
 
@@ -1590,6 +1590,170 @@ console.log("\nflows, driven with no network");
       assert.throws(plan, (e) => e.name === "FeeTooLarge");
     }
     ok("an absurd fee is refused by every plan that takes one");
+  }
+
+  // -- a VerusID registration, end to end, driven from JavaScript -----------
+  //
+  // Two transactions with a wait between them, joined by a salt that exists
+  // nowhere else. This drives the whole thing and puts the pending value
+  // through `JSON.stringify`/`parse` between every step — because that is what
+  // a page does, and if the salt did not survive it the fee would be spent for
+  // nothing.
+  {
+    const COMMITMENT_HEIGHT = TIP;
+    const regReplies = {
+      ...replies,
+      getblockcount: JSON.stringify({ result: TIP }),
+      getblockhash: JSON.stringify({ result: "00".repeat(32) }),
+      // The name is free: the daemon's own answer for an identity nobody owns.
+      getidentity: JSON.stringify({ error: { code: -5, message: "Identity not found" } }),
+      getcurrency: readFileSync(
+        resolve(here, "../../../../fixtures/rpc/getcurrency_vrsctest.json"), "utf8"),
+      // VRSCTEST's real registration fee is 100 coins, per the capture above,
+      // so the address has to actually hold that much. Using the capture rather
+      // than pinning a cheap fee keeps the chain-policy read in the path.
+      getaddressutxos: JSON.stringify({
+        result: [{
+          address, blocktime: 1785262420, height: HEIGHT, isspendable: 1,
+          outputIndex: 0, satoshis: 200_00000000, script: SCRIPT, txid: TXID,
+        }],
+      }),
+    };
+    const regPost = (b) => {
+      const { method } = JSON.parse(b);
+      const reply = regReplies[method];
+      assert.ok(reply, `nothing recorded for ${method}`);
+      return reply;
+    };
+    const drive = (call, post = regPost) => {
+      const a = new Answers();
+      try {
+        for (;;) {
+          const s = call(a);
+          if (s.kind === "ready") return s.value;
+          for (const body of s.ask) a.record(body, post(body));
+        }
+      } finally { a.free(); }
+    };
+
+    // Step one, with a salt we choose so the whole thing is reproducible.
+    const SALT = "11".repeat(32);
+    let pending = drive((a) => key.planRegistration({ name: "browsertest", salt: SALT }, a));
+
+    assert.equal(pending.state, "awaitingCommitment");
+    assert.equal(pending.name, "browsertest");
+    assert.match(pending.commitmentHex, /^[0-9a-f]+$/);
+    assert.equal(typeof pending.registrationFee, "string");
+    ok("a name commitment is planned before anything is spent");
+
+    // What a chosen salt reproduces is the **reservation**, and that is what
+    // lets a page which lost its state re-derive its claim and go looking for
+    // the commitment output on chain.
+    //
+    // It does not reproduce the commitment *transaction*: that spends whichever
+    // outputs were available and expires relative to the tip. So this drives
+    // the second plan against a **moved chain**, which is the situation
+    // recovery actually happens in — and asserting equal txids there would be
+    // asserting something false. An earlier version of this test fed identical
+    // replies both times and "proved" reproducibility that does not hold.
+    const later = { ...regReplies, getblockcount: JSON.stringify({ result: TIP + 500 }) };
+    const again = drive(
+      (a) => key.planRegistration({ name: "browsertest", salt: SALT }, a),
+      (b) => later[JSON.parse(b).method] ?? regPost(b),
+    );
+    assert.notEqual(
+      again.commitmentTxid,
+      pending.commitmentTxid,
+      "a different tip means different bytes, even for the same claim",
+    );
+    // The claim itself is identical, which is the part that matters.
+    assert.deepEqual(
+      JSON.parse(again.pending).reservation,
+      JSON.parse(pending.pending).reservation,
+    );
+    ok("and a chosen salt reproduces the reservation, not the transaction");
+
+    // A salt that is not a secret defeats the point of having one.
+    assert.throws(
+      () => drive((a) => key.planRegistration({ name: "x", salt: "00".repeat(32) }, a)),
+      (e) => e.name === "InvalidArgument",
+    );
+    ok("an all-zero salt is refused");
+
+    // Persist. This is the step whose absence costs the fee.
+    const persisted = JSON.stringify(pending);
+    pending = JSON.parse(persisted);
+
+    // Anchor, persist again, then the page would post `commitmentHex`.
+    const beforeAnchor = JSON.parse(pending.pending).anchoredAt ?? null;
+    pending = drive((a) => key.planCommitmentAnchor({ pending }, a));
+    pending = JSON.parse(JSON.stringify(pending));
+    assert.equal(pending.state, "awaitingCommitment");
+    // The anchor has to actually land, or a reorg under this registration goes
+    // unnoticed. Asserting only the state would pass with the anchor dropped.
+    assert.equal(beforeAnchor, null);
+    const anchor = JSON.parse(pending.pending).anchored_at;
+    assert.ok(Array.isArray(anchor), "the anchor must be recorded");
+    assert.equal(anchor[0], TIP);
+    ok("the reorg anchor is recorded before the commitment goes out");
+
+    // Step two is not reachable yet, and that has to be enforced rather than
+    // trusted: running it against an unconfirmed commitment spends the
+    // registration fee against an output the chain will not accept. In Rust
+    // these are different types; across JSON it can only be a check.
+    assert.throws(
+      () => drive((a) => key.planRegistrationComplete({ pending }, a)),
+      (e) => e.name === "WrongStep",
+    );
+    ok("and step two is refused until step one has confirmed");
+
+    // Unconfirmed: still waiting.
+    const waiting = drive(
+      (a) => planCommitmentStatus({ pending }, a),
+      (b) => {
+        const { method } = JSON.parse(b);
+        if (method === "getrawtransaction") {
+          return JSON.stringify({ result: { confirmations: 0, vout: [] } });
+        }
+        return regPost(b);
+      },
+    );
+    assert.equal(waiting.kind, "waiting");
+    assert.equal(waiting.confirmations, 0);
+    ok("an unconfirmed commitment reports waiting, not ready");
+
+    // Confirmed: the commitment output has to be *found*, by matching the
+    // script the reservation derives, rather than assumed to be output zero.
+    const commitmentScript = outputScripts(pending.commitmentHex)[0];
+    const confirmedPost = (b) => {
+      const { method } = JSON.parse(b);
+      if (method === "getrawtransaction") {
+        return JSON.stringify({
+          result: {
+            confirmations: 1,
+            vout: [{ valueSat: 0, scriptPubKey: { hex: commitmentScript } }],
+          },
+        });
+      }
+      return regPost(b);
+    };
+    const ready = drive((a) => planCommitmentStatus({ pending }, a), confirmedPost);
+    assert.equal(ready.kind, "ready");
+    assert.equal(ready.pending.state, "readyToRegister");
+    ok("and a confirmed one moves to readyToRegister");
+
+    // Step two, through storage like everything else.
+    const readyPending = JSON.parse(JSON.stringify(ready.pending));
+    const registered = drive(
+      (a) => key.planRegistrationComplete({ pending: readyPending }, a),
+      confirmedPost,
+    );
+    assert.match(registered.hex, /^[0-9a-f]+$/);
+    assert.equal(registered.name, "browsertest");
+    assert.match(registered.identityAddress, /^i/);
+    assert.equal(typeof registered.feePaid, "string");
+    assert.ok(BigInt(registered.feePaid) > 0n);
+    ok("the registration itself is built and signed, salt intact through storage");
   }
 
   // -- the request sanitizer applies here too ------------------------------

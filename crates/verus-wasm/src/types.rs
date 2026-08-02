@@ -82,6 +82,21 @@ extern "C" {
     /// TypeScript `PlanMintRequest`.
     #[wasm_bindgen(typescript_type = "PlanMintRequest")]
     pub type PlanMintRequestValue;
+    /// TypeScript `PlanRegistrationRequest`.
+    #[wasm_bindgen(typescript_type = "PlanRegistrationRequest")]
+    pub type PlanRegistrationRequestValue;
+    /// TypeScript `PendingRequest`.
+    #[wasm_bindgen(typescript_type = "PendingRequest")]
+    pub type PendingRequestValue;
+    /// TypeScript `RegistrationStep`.
+    #[wasm_bindgen(typescript_type = "RegistrationStep")]
+    pub type RegistrationStepValue;
+    /// TypeScript `CommitmentStatusStep`.
+    #[wasm_bindgen(typescript_type = "CommitmentStatusStep")]
+    pub type CommitmentStatusStepValue;
+    /// TypeScript `RegisteredStep`.
+    #[wasm_bindgen(typescript_type = "RegisteredStep")]
+    pub type RegisteredStepValue;
     /// TypeScript `HistoryRequest`.
     #[wasm_bindgen(typescript_type = "HistoryRequest")]
     pub type HistoryRequestValue;
@@ -273,8 +288,9 @@ mod tests {
             ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsListing,
             JsLoggedIn, JsOfferTerms, JsPlannedTransaction, JsPlannedUpdate, JsTaken, LoginRequest,
             OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest, PlanMintRequest,
-            PlanPublishRequest, PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest,
-            PlanStep, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            PlanPublishRequest, PlanRegistrationRequest, PlanSendFromIdentityRequest,
+            PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
+            VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -379,6 +395,19 @@ mod tests {
         );
         assert_declared("PlanBurnRequest", &PlanBurnRequest::default());
         assert_declared("PlanMintRequest", &PlanMintRequest::default());
+        assert_declared(
+            "PlanRegistrationRequest",
+            &PlanRegistrationRequest {
+                min_sigs: Some(0),
+                referral: Some(String::new()),
+                pin_fee: Some(String::new()),
+                salt: Some(String::new()),
+                ..PlanRegistrationRequest::default()
+            },
+        );
+        assert_declared("Pending", &crate::flows::JsPending::default());
+        assert_declared("PendingRequest", &crate::flows::PendingRequest::default());
+        assert_declared("Registered", &crate::flows::JsRegistered::default());
         assert_declared("Taken", &JsTaken::default());
         assert_declared(
             "ContentValue",
@@ -453,6 +482,47 @@ mod tests {
                 .map(|d| demand_interface(d).to_string())
                 .collect::<BTreeSet<_>>(),
             union_members("Demand")
+        );
+    }
+
+    /// The commitment status union.
+    ///
+    /// A registration reads this to decide whether to spend the registration
+    /// fee, so a variant that is declared wrongly — or reachable in Rust and
+    /// missing from the union — is a caller unable to tell "wait" from "the
+    /// chain moved under you".
+    #[test]
+    fn every_commitment_status_variant_is_declared_and_reachable() {
+        use crate::flows::{JsCommitmentStatus, JsPending};
+
+        fn interface_of(status: &JsCommitmentStatus) -> &'static str {
+            match status {
+                JsCommitmentStatus::Waiting { .. } => "CommitmentWaiting",
+                JsCommitmentStatus::Ready { .. } => "CommitmentReady",
+                JsCommitmentStatus::Reorged { .. } => "CommitmentReorged",
+                JsCommitmentStatus::Gone => "CommitmentGone",
+            }
+        }
+
+        let samples = [
+            JsCommitmentStatus::Waiting { confirmations: 0 },
+            JsCommitmentStatus::Ready {
+                pending: JsPending::default(),
+            },
+            JsCommitmentStatus::Reorged {
+                detail: String::new(),
+            },
+            JsCommitmentStatus::Gone,
+        ];
+        for sample in &samples {
+            assert_declared(interface_of(sample), sample);
+        }
+        assert_eq!(
+            samples
+                .iter()
+                .map(|s| interface_of(s).to_string())
+                .collect::<BTreeSet<_>>(),
+            union_members("CommitmentStatus")
         );
     }
 
@@ -566,8 +636,8 @@ mod tests {
         use crate::flows::{
             ContentRequest, HistoryRequest, LoginRequest, OfferTermsRequest, OffersRequest,
             PlanBurnRequest, PlanConvertRequest, PlanMintRequest, PlanPublishRequest,
-            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
-            TakeOfferRequest, VerifyLoginRequest,
+            PlanRegistrationRequest, PlanSendFromIdentityRequest, PlanSendRequest,
+            PlanSendTokenRequest, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -629,6 +699,14 @@ mod tests {
         check::<PlanConvertRequest>("PlanConvertRequest", &PlanConvertRequest::SHAPE);
         check::<PlanBurnRequest>("PlanBurnRequest", &PlanBurnRequest::SHAPE);
         check::<PlanMintRequest>("PlanMintRequest", &PlanMintRequest::SHAPE);
+        check::<PlanRegistrationRequest>(
+            "PlanRegistrationRequest",
+            &PlanRegistrationRequest::SHAPE,
+        );
+        check::<crate::flows::PendingRequest>(
+            "PendingRequest",
+            &crate::flows::PendingRequest::SHAPE,
+        );
         check::<crate::dto::JsUtxo>(
             "PlanConvertRequest.tokenFunding",
             nested(&PlanConvertRequest::SHAPE, "tokenFunding"),

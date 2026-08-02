@@ -101,13 +101,14 @@ use crate::dto::{self, Shape};
 use crate::error::{WasmError, WasmResult};
 use crate::keys::Key;
 use crate::types::{
-    ContentRequestValue, ContentStepValue, HistoryRequestValue, HistoryStepValue, JsText,
-    LoginRequestValue, LoginStepValue, OfferTermsRequestValue, OfferTermsStepValue,
-    OffersRequestValue, OffersStepValue, PlanBurnRequestValue, PlanConvertRequestValue,
-    PlanMintRequestValue, PlanPublishRequestValue, PlanSendFromIdentityRequestValue,
-    PlanSendRequestValue, PlanSendTokenRequestValue, SpendableRequestValue, SpendableStepValue,
-    TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue, UpdateStepValue,
-    VerifyLoginRequestValue, VerifyLoginStepValue,
+    CommitmentStatusStepValue, ContentRequestValue, ContentStepValue, HistoryRequestValue,
+    HistoryStepValue, JsText, LoginRequestValue, LoginStepValue, OfferTermsRequestValue,
+    OfferTermsStepValue, OffersRequestValue, OffersStepValue, PendingRequestValue,
+    PlanBurnRequestValue, PlanConvertRequestValue, PlanMintRequestValue, PlanPublishRequestValue,
+    PlanRegistrationRequestValue, PlanSendFromIdentityRequestValue, PlanSendRequestValue,
+    PlanSendTokenRequestValue, RegisteredStepValue, RegistrationStepValue, SpendableRequestValue,
+    SpendableStepValue, TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue,
+    UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -919,6 +920,194 @@ impl PlanMintRequest {
     };
 }
 
+/// A registration in progress, as JavaScript holds it.
+///
+/// # Persist this before broadcasting anything
+///
+/// `pending` carries the reservation's **salt**, and the salt is the one value
+/// in the whole registration that cannot be recovered from the chain. Lose it
+/// after the commitment is broadcast and the commitment fee is gone with no way
+/// to redeem it. Write it somewhere durable before you post the commitment, not
+/// after.
+///
+/// Treat it as opaque and hand it back unchanged. It is JSON so it can be
+/// stored, not so it can be edited.
+///
+/// # The ordering guarantee, and what it costs at this boundary
+///
+/// In Rust the two steps are different *types*: a commitment that has not
+/// confirmed cannot be handed to the registration step, because it does not
+/// type-check. A JSON blob crossing into JavaScript has no such property, so
+/// the guarantee becomes a runtime one — `state` records which step this is at,
+/// and `planRegistrationComplete` refuses a value that is not
+/// `"readyToRegister"`.
+///
+/// That is a real weakening and worth naming precisely. `state` is the **only**
+/// thing distinguishing the two steps: the inner blob serializes identically
+/// either way, so editing the string is enough to get past the check. What
+/// stops it there is the chain rather than this crate — a registration built
+/// against a commitment that has not confirmed spends an input the chain will
+/// not accept, so the transaction is rejected rather than mined. Nothing
+/// further is lost; the commitment fee went when the commitment did.
+///
+/// So the check catches the mistake, not an attack, and the attack it does not
+/// catch costs the person making it. Both halves of that are worth knowing
+/// before building on it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsPending {
+    /// Which step this is at: `"awaitingCommitment"` or `"readyToRegister"`.
+    pub state: String,
+    /// The name being claimed, without the parent.
+    pub name: String,
+    /// What the registration will cost, in satoshis, as a decimal string.
+    ///
+    /// Read from chain policy when the plan was made. A node that misreports it
+    /// is the one failure with teeth here, because it is discovered *after* the
+    /// commitment is spent — `pinFee` is the escape hatch.
+    pub registration_fee: String,
+    /// The commitment transaction, hex. Post this for step one.
+    pub commitment_hex: String,
+    /// Its txid.
+    pub commitment_txid: String,
+    /// The flow's own state, including the salt. **Opaque** — a JSON string to
+    /// store and hand back unchanged, not an object to look inside.
+    ///
+    /// A string rather than a nested object deliberately. The request sanitizer
+    /// does not recurse into a leaf, so an object here would reach
+    /// `serde_json::Value` with its nesting bounded only by the stack — the
+    /// module-bricking overflow [`crate::dto::from_js`] documents closing for
+    /// `utxos`. As text it goes through `serde_json::from_str`, whose own
+    /// recursion limit refuses a hostile blob cleanly, and "hand it back
+    /// unchanged" becomes literally true rather than a request.
+    pub pending: String,
+}
+
+/// What to claim, and under what terms.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanRegistrationRequest {
+    /// The name to claim, without the parent.
+    pub name: String,
+    /// The addresses that will control the identity. Empty means this key's own.
+    #[serde(default)]
+    pub primary_addresses: Vec<String>,
+    /// How many of them must sign. Omit for one.
+    #[serde(default)]
+    pub min_sigs: Option<u32>,
+    /// An identity to credit as referrer, which reduces the fee.
+    #[serde(default)]
+    pub referral: Option<String>,
+    /// Override the registration fee read from chain policy, in satoshis.
+    ///
+    /// The node reports this figure and it is spent before it can be checked
+    /// against anything, so a wrong one is discovered after the commitment.
+    /// Pin it when you know better.
+    #[serde(default)]
+    pub pin_fee: Option<String>,
+    /// The reservation salt, 32 bytes as hex. Omit and one is drawn here.
+    ///
+    /// Supplying one makes the **reservation** reproducible: the same name,
+    /// key and salt always derive the same claim, and therefore the same
+    /// commitment *hash*. That is what lets a page which lost its state
+    /// re-derive the claim and go looking for its commitment output on chain,
+    /// rather than losing the fee.
+    ///
+    /// It does **not** make the commitment *transaction* reproducible. That
+    /// one spends whichever outputs were available and expires relative to the
+    /// tip, so re-planning after the chain has moved gives different bytes and
+    /// a different txid for the same reservation. Recovery means matching the
+    /// commitment script, not the txid.
+    ///
+    /// Whatever you choose must be unpredictable: the salt is what stops
+    /// somebody else seeing your name before you have claimed it. An
+    /// all-zero salt is refused for that reason.
+    #[serde(default)]
+    pub salt: Option<String>,
+}
+
+impl PlanRegistrationRequest {
+    /// The keys a `PlanRegistrationRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("name", None),
+            ("primaryAddresses", None),
+            ("minSigs", None),
+            ("referral", None),
+            ("pinFee", None),
+            ("salt", None),
+        ],
+    };
+}
+
+/// A registration in progress, handed back for the next step.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRequest {
+    /// The value a previous step returned, unchanged.
+    pub pending: JsPending,
+}
+
+impl PendingRequest {
+    /// The keys a `PendingRequest` object may carry.
+    ///
+    /// `pending` is declared as a leaf: its contents are this crate's own
+    /// serialization handed back verbatim, not a shape a caller composes, so
+    /// sanitising inside it would refuse fields the SDK itself wrote.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[("pending", None)],
+    };
+}
+
+/// Where a commitment stands.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum JsCommitmentStatus {
+    /// Accepted but not yet mined. Poll again.
+    Waiting {
+        /// How many confirmations it has. Zero means it is in the mempool.
+        confirmations: u32,
+    },
+    /// Confirmed. `pending` has moved to `"readyToRegister"`.
+    Ready {
+        /// The value to hand to `planRegistrationComplete`.
+        pending: JsPending,
+    },
+    /// The chain moved under this registration, so what was read before is
+    /// suspect. Start again rather than spending against a view that is gone.
+    Reorged {
+        /// What was noticed.
+        detail: String,
+    },
+    /// The node has never seen the commitment. It may never have been posted,
+    /// or it may have been dropped from the mempool.
+    ///
+    /// The default only because a drift check needs one, and this is the
+    /// variant that claims least.
+    #[default]
+    Gone,
+}
+
+/// A registration transaction, built and signed. **Not broadcast.**
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsRegistered {
+    /// The raw transaction, hex — what `sendrawtransaction` takes.
+    pub hex: String,
+    /// Its txid in display order, computed before anything is sent.
+    pub txid: String,
+    /// The name claimed, without the parent.
+    pub name: String,
+    /// The identity's `i` address — computable before the identity exists.
+    pub identity_address: String,
+    /// What the registration cost, in satoshis, as a decimal string.
+    pub fee_paid: String,
+}
+
 /// What is standing on the marketplace against a currency or an identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1375,6 +1564,103 @@ pub fn plan_content_history(
             })
             .collect::<BTreeMap<_, _>>()
     });
+    Ok(crate::to_js(&step)?.unchecked_into())
+}
+
+/// Read a stored pending back, insisting it is at the step this call needs.
+///
+/// The Rust API makes this a type error; JSON cannot, so it is a check. Getting
+/// it wrong is not a cosmetic mistake — running step two against a commitment
+/// that has not confirmed spends the registration fee against an output the
+/// chain will not accept.
+fn pending_at<S>(stored: &JsPending, want: &str) -> WasmResult<verus_flows::Pending<S>>
+where
+    S: serde::de::DeserializeOwned,
+{
+    if stored.state != want {
+        return Err(WasmError::new(
+            "WrongStep",
+            format!(
+                "this registration is at {:?} and this step needs {want:?}",
+                stored.state
+            ),
+        ));
+    }
+    // `from_str`, so serde_json's own recursion limit applies: a blob nested
+    // thousands deep is refused here rather than unwound on the wasm stack.
+    serde_json::from_str(&stored.pending).map_err(|e| {
+        WasmError::new(
+            "InvalidArgument",
+            format!("the stored registration could not be read back: {e}"),
+        )
+    })
+}
+
+/// Render a flow `Pending` for JavaScript to hold.
+fn stored_pending<S>(pending: &verus_flows::Pending<S>, state: &str) -> WasmResult<JsPending>
+where
+    S: serde::Serialize,
+{
+    Ok(JsPending {
+        state: state.to_string(),
+        name: pending.name().to_string(),
+        registration_fee: dto::sats_string(pending.registration_fee),
+        commitment_hex: pending.commitment_hex.clone(),
+        commitment_txid: pending.commitment_txid.clone(),
+        pending: serde_json::to_string(pending).map_err(|e| {
+            WasmError::new("VerusError", format!("the registration did not store: {e}"))
+        })?,
+    })
+}
+
+/// Ask whether a commitment has confirmed. **One call, no waiting.**
+///
+/// Poll this; do not busy-loop it. A commitment takes a block, and the public
+/// infrastructure this asks is not yours. It costs up to four requests: the
+/// confirmation count, then the tip and the hash at the anchored height to spot
+/// a reorg, and on the round it settles the commitment transaction, to confirm
+/// which output actually carries the commitment rather than assuming.
+///
+/// # Errors
+///
+/// Throws if the stored value is not at `"awaitingCommitment"`.
+#[wasm_bindgen(js_name = planCommitmentStatus)]
+pub fn plan_commitment_status(
+    request: PendingRequestValue,
+    answers: &mut Answers,
+) -> WasmResult<CommitmentStatusStepValue> {
+    let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+    let pending: verus_flows::Pending<verus_flows::AwaitingCommitment> =
+        pending_at(&request.pending, "awaitingCommitment")?;
+
+    let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+        pending.poll(client)
+    })
+    .map_err(WasmError::from)?;
+
+    let step = match step {
+        verus_flows::drive::Step::Ask(ask) => PlanStep {
+            kind: "ask".into(),
+            ask,
+            value: None,
+        },
+        verus_flows::drive::Step::Ready(status) => PlanStep {
+            kind: "ready".into(),
+            ask: Vec::new(),
+            value: Some(match status {
+                verus_flows::CommitmentStatus::Waiting { confirmations } => {
+                    JsCommitmentStatus::Waiting { confirmations }
+                }
+                verus_flows::CommitmentStatus::Ready(ready) => JsCommitmentStatus::Ready {
+                    pending: stored_pending(&*ready, "readyToRegister")?,
+                },
+                verus_flows::CommitmentStatus::Reorged { detail } => {
+                    JsCommitmentStatus::Reorged { detail }
+                }
+                verus_flows::CommitmentStatus::CommitmentGone => JsCommitmentStatus::Gone,
+            }),
+        },
+    };
     Ok(crate::to_js(&step)?.unchecked_into())
 }
 
@@ -1863,6 +2149,183 @@ impl Key {
         let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
             JsPlannedTransaction::from(unsent.outcome)
         });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan step one of a VerusID registration: the name commitment.
+    ///
+    /// Registration is **two transactions with a wait between them**, and the
+    /// order is not a convenience. The commitment claims the name without
+    /// revealing it, so nobody watching the mempool can register it ahead of
+    /// you; the registration then reveals it and pays the fee. What joins them
+    /// is a salt that exists only in the value this returns.
+    ///
+    /// **Persist what comes back before you post the commitment.** Once those
+    /// bytes are on the network the commitment fee is spent, and without the
+    /// salt it cannot be redeemed — the name is not claimed and the fee is not
+    /// recoverable. See [`JsPending`].
+    ///
+    /// Nothing is broadcast. See the module docs.
+    ///
+    /// # Errors
+    ///
+    /// Throws if the name is already taken — checked before anything is spent —
+    /// if the address cannot cover the registration fee, or if a named referrer
+    /// does not exist.
+    #[wasm_bindgen(js_name = planRegistration)]
+    pub fn plan_registration(
+        &self,
+        request: PlanRegistrationRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<RegistrationStepValue> {
+        let request: PlanRegistrationRequest =
+            dto::from_js(request.into(), &PlanRegistrationRequest::SHAPE)?;
+        let options = verus_flows::RegistrationOptions {
+            primary_addresses: request.primary_addresses.clone(),
+            min_sigs: request.min_sigs,
+            referral: request.referral.clone(),
+            pin_fee: match &request.pin_fee {
+                Some(text) => Some(dto::sats(text)?),
+                None => None,
+            },
+        };
+        let salt = match &request.salt {
+            Some(text) => {
+                let salt = dto::fixed_hex::<32>("salt", text)?;
+                // Entropy cannot be judged from one value, but the sentinel a
+                // caller reaches for while wiring things up can be. A
+                // predictable salt lets somebody else derive the commitment
+                // hash for a name they can see you are about to claim.
+                if salt == [0u8; 32] {
+                    return Err(WasmError::new(
+                        "InvalidArgument",
+                        "an all-zero salt is not a secret; the salt is what stops somebody                          claiming the name before you do",
+                    ));
+                }
+                Some(salt)
+            }
+            None => None,
+        };
+        let name = request.name;
+
+        let step = advance(
+            &mut answers.inner,
+            |client: &RpcClient<Cassette>| match salt {
+                // A salt the caller chose makes the whole plan reproducible: same
+                // name, key and salt, same commitment. Worth having, because a page
+                // that loses its state can then re-derive rather than lose the fee.
+                Some(salt) => verus_flows::prepare_registration_with_salt(
+                    client,
+                    self.private(),
+                    &name,
+                    &options,
+                    salt,
+                ),
+                // Otherwise one is drawn per call — and therefore a different one
+                // on every round of the driver. That is harmless here, and worth
+                // knowing why: no request this operation makes mentions the salt,
+                // so every round asks the same questions and the salt in the value
+                // that finally returns is the one its commitment was built from.
+                None => verus_flows::prepare_registration(client, self.private(), &name, &options),
+            },
+        )
+        .map_err(WasmError::from)?;
+
+        let step = match step {
+            verus_flows::drive::Step::Ask(ask) => PlanStep {
+                kind: "ask".into(),
+                ask,
+                value: None,
+            },
+            verus_flows::drive::Step::Ready(pending) => PlanStep {
+                kind: "ready".into(),
+                ask: Vec::new(),
+                value: Some(stored_pending(&pending, "awaitingCommitment")?),
+            },
+        };
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Record where the chain was, before posting the commitment.
+    ///
+    /// The anchor is a (height, hash) pair that
+    /// [`planCommitmentStatus`](plan_commitment_status) compares against later,
+    /// so a chain that was rewritten under this registration is noticed instead
+    /// of being registered against. Call this, persist the result, then post
+    /// `commitmentHex`.
+    ///
+    /// The anchor lands on the value returned here whatever the broadcast then
+    /// does — an ambiguous post, where the commitment may well be on the
+    /// network, is exactly when it is still needed.
+    ///
+    /// Reads nothing else and signs nothing: the commitment was signed by
+    /// `planRegistration`.
+    #[wasm_bindgen(js_name = planCommitmentAnchor)]
+    pub fn plan_commitment_anchor(
+        &self,
+        request: PendingRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<RegistrationStepValue> {
+        let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+        let pending: verus_flows::Pending<verus_flows::AwaitingCommitment> =
+            pending_at(&request.pending, "awaitingCommitment")?;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            let mut anchored = pending.clone();
+            anchored.anchor(client)?;
+            Ok(anchored)
+        })
+        .map_err(WasmError::from)?;
+
+        let step = match step {
+            verus_flows::drive::Step::Ask(ask) => PlanStep {
+                kind: "ask".into(),
+                ask,
+                value: None,
+            },
+            verus_flows::drive::Step::Ready(anchored) => PlanStep {
+                kind: "ready".into(),
+                ask: Vec::new(),
+                value: Some(stored_pending(&anchored, "awaitingCommitment")?),
+            },
+        };
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan step two: the registration itself.
+    ///
+    /// Only reachable from a `"readyToRegister"` value — the one
+    /// [`planCommitmentStatus`](plan_commitment_status) hands back once the
+    /// commitment has confirmed. Running it earlier spends the registration fee
+    /// against an output the chain will not accept, which is why the step is
+    /// checked rather than assumed.
+    ///
+    /// Nothing is broadcast. See the module docs.
+    #[wasm_bindgen(js_name = planRegistrationComplete)]
+    pub fn plan_registration_complete(
+        &self,
+        request: PendingRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<RegisteredStepValue> {
+        let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+        let pending: verus_flows::Pending<verus_flows::ReadyToRegister> =
+            pending_at(&request.pending, "readyToRegister")?;
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            pending.prepare(client, self.private())
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(
+            step,
+            |unsent: verus_flows::Unsent<verus_flows::Registered>| JsRegistered {
+                hex: unsent.hex,
+                txid: unsent.txid,
+                name: unsent.outcome.name,
+                identity_address: dto::identity_address(unsent.outcome.identity_address),
+                fee_paid: dto::sats_string(unsent.outcome.fee_paid),
+            },
+        );
         Ok(crate::to_js(&step)?.unchecked_into())
     }
 
