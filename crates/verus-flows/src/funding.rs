@@ -31,7 +31,13 @@ pub struct Funding {
     pub tip: u32,
     /// The sum of [`Funding::utxos`].
     pub total: Amount,
-    /// Outputs excluded because they are coinbase and not yet mature.
+    /// Outputs excluded because they cannot be spent **yet**, as distinct from
+    /// [`Funding::other`], which is the wrong *kind* of output.
+    ///
+    /// Mostly immature coinbases, and named for that case, but it is whatever
+    /// the maturity filter withheld — an output the node marked unspendable
+    /// lands here too. So "wait a hundred blocks" is the usual explanation for
+    /// this list, not a guaranteed one.
     ///
     /// Reported rather than silently dropped: "you have 500 but can spend 20"
     /// is a fact a wallet needs to be able to explain to a user.
@@ -51,7 +57,7 @@ pub struct Funding {
 }
 
 impl Funding {
-    /// The value sitting in immature coinbase outputs.
+    /// The value sitting in outputs that are not spendable yet.
     pub fn immature_total(&self) -> Amount {
         Amount::checked_sum(self.immature.iter().map(|found| found.utxo.satoshis))
             .unwrap_or(Amount::ZERO)

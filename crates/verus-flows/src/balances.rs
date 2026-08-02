@@ -162,8 +162,13 @@ pub fn currency_names(
                     names.insert(currency, policy.name);
                 }
             }
-            // The node answered, and its answer was "no such currency".
-            Err(verus_rpc::RpcError::Node { .. }) => {}
+            // The node answered, and its answer was "no such currency" — which
+            // is `-5`, and only `-5`. An internal error, a bad parameter or a
+            // rate limit is not a statement about the currency; reading one as
+            // "unnamed" leaves a token showing as a bare `i` address with
+            // nothing to say why. The same rule `crate::error::absent_is_none`
+            // applies to identities.
+            Err(verus_rpc::RpcError::Node { code: -5, .. }) => {}
             Err(error) => return Err(error.into()),
         }
     }

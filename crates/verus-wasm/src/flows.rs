@@ -20,7 +20,7 @@
 //! to sign is the same code a native caller runs — not a translation of it.
 //!
 //! ```js
-//! import init, { Key, Answers, planHistory } from "@chainvue/verus-wasm";
+//! import init, { Key, Answers, parseCoins } from "@chainvue/verus-wasm";
 //! await init();
 //!
 //! const post = (body) =>
@@ -47,6 +47,36 @@
 //! what happens here — a send that went out once per round would send a
 //! different transaction each time. So `step.transaction.hex` comes back and
 //! the page posts it, once, deliberately, outside the loop.
+//!
+//! # If that post fails, do not plan again
+//!
+//! The one thing the SDK cannot do for you, because the POST is yours.
+//!
+//! A failed `sendrawtransaction` is **ambiguous**: the request may never have
+//! arrived, or may have arrived, been accepted and relayed to the whole network
+//! before the connection dropped. From the page the two look identical.
+//!
+//! The wrong recovery is to run the loop again. A fresh plan re-reads the UTXO
+//! set; if the first transaction did land and has not yet confirmed, the coins
+//! still look unspent, and the second plan spends them again — a **second
+//! payment**, not a retry.
+//!
+//! The right recovery is one read and, at most, the *same bytes*:
+//!
+//! ```js
+//! try {
+//!   await post(sendRawTransaction(step.transaction.hex));
+//! } catch (networkFailure) {
+//!   const seen = await post(getRawTransaction(step.transaction.txid));
+//!   // Absent? It never arrived, and re-posting the identical hex is safe.
+//!   // Present? It is already on the network. Nothing to do.
+//!   if (!JSON.parse(seen).result) await post(sendRawTransaction(step.transaction.hex));
+//! }
+//! ```
+//!
+//! A node that *answers* and refuses is different, and not ambiguous: it
+//! understood the transaction and said no. Re-posting it unchanged will fail
+//! the same way.
 //!
 //! # `ask` is posted verbatim
 //!
@@ -125,8 +155,7 @@ impl Answers {
     pub fn record(&mut self, body: JsText, reply: JsText) -> WasmResult<()> {
         let body = dto::text("body", body.as_ref())?;
         let reply = dto::text("reply", reply.as_ref())?;
-        self.inner.record(body, reply);
-        Ok(())
+        self.inner.record(body, reply).map_err(WasmError::from)
     }
 
     /// How many rounds have run.

@@ -409,8 +409,16 @@ impl Pending<AwaitingCommitment> {
 
     /// Ask once whether step 1 has confirmed.
     ///
-    /// **One request, and no sleeping.** A GUI, an async runtime and a wasm
-    /// build can all call this; none of them can call something that blocks.
+    /// **No sleeping.** A GUI, an async runtime and a wasm build can all call
+    /// this; none of them can call something that blocks.
+    ///
+    /// It costs **up to four requests**, not one: the confirmation count, then
+    /// — once anchored — the tip and the hash at the anchored height to check
+    /// for a reorg, and on the round it settles, the commitment transaction to
+    /// confirm which output carries the commitment. Four whatever the wallet
+    /// holds, not four per output. Worth knowing before polling a public
+    /// endpoint in a loop; `WaitPolicy::MINIMUM_INTERVAL` is the other half of
+    /// that.
     pub fn poll(self, reader: &impl ChainReader) -> Result<CommitmentStatus, FlowError> {
         let confirmations = match reader.confirmations(&self.commitment_txid)? {
             Some(confirmations) => confirmations,

@@ -39,7 +39,17 @@ const NETWORK_CRATES: &[&str] = &[
 ];
 
 fn dependency_tree_with(package: &str, feature_args: &[&str]) -> String {
-    let mut args = vec!["tree", "-p", package, "-e", "normal", "--prefix", "none"];
+    // `--target all`, not the host default. `verus-wasm` already carries a
+    // `[target.'cfg(target_arch = "wasm32")'.dependencies]` section, and a
+    // host-resolved tree cannot see inside one — so a wasm-gated HTTP client
+    // (`reqwest` compiles to wasm over `fetch`, and would be *useful* there)
+    // would ship in the browser artifact while this test reported it clean.
+    //
+    // That is the one place where the screen being wrong matters most: the
+    // browser is the environment the claim is really about.
+    let mut args = vec![
+        "tree", "-p", package, "-e", "normal", "--prefix", "none", "--target", "all",
+    ];
     args.extend_from_slice(feature_args);
     let output = Command::new(env!("CARGO"))
         .args(&args)

@@ -136,6 +136,11 @@ pub fn broadcast(
         Err(error @ (RpcError::WriteThroughCassette | RpcError::AnswerNeeded)) => {
             Err(FlowError::Rpc(error))
         }
+        // `-32601` is the node **answering**: it will not serve
+        // `sendrawtransaction`, usually because it is a filtering proxy. The
+        // transaction was not relayed and the outcome is not in doubt — so it
+        // is not uncertainty, it is "find a node that will take this".
+        Err(error @ RpcError::MethodUnavailable { .. }) => Err(FlowError::Rpc(error)),
         // Everything else — a dropped connection, a timeout, a proxy's HTML —
         // leaves the outcome genuinely unknown.
         Err(error) => Err(FlowError::BroadcastUncertain {
@@ -222,6 +227,22 @@ mod tests {
         let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::AnswerNeeded);
         match broadcast(&node, "00ff", TXID) {
             Err(FlowError::Rpc(RpcError::AnswerNeeded)) => {}
+            other => panic!("nothing was sent, so nothing is uncertain: {other:?}"),
+        }
+    }
+
+    /// A node that refuses to serve `sendrawtransaction` has **answered**.
+    ///
+    /// Public Verus infrastructure is full of filtering proxies, so this is a
+    /// common reply — and the remedy is another endpoint, not the check-and-
+    /// resend dance an uncertain outcome calls for. Nothing was relayed.
+    #[test]
+    fn a_node_that_will_not_relay_is_a_known_outcome() {
+        let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::MethodUnavailable {
+            method: "sendrawtransaction",
+        });
+        match broadcast(&node, "00ff", TXID) {
+            Err(FlowError::Rpc(RpcError::MethodUnavailable { .. })) => {}
             other => panic!("nothing was sent, so nothing is uncertain: {other:?}"),
         }
     }
