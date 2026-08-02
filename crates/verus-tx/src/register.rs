@@ -887,6 +887,9 @@ pub fn build_identity_registration(
                 sub.fee,
                 crate::convert::ConversionKind::Burn,
                 params.change_address,
+                // A burn carries a plain destination with no auxiliary at all,
+                // so the refund address is unused here.
+                params.change_address,
                 CurrencyId::from_bytes(params.system_id),
                 sub.transfer_fee,
             )?;
@@ -1498,6 +1501,7 @@ mod tests {
             parent_currency,
             Amount::from_sat(1_00000000),
             crate::convert::ConversionKind::Burn,
+            key.address(),
             key.address(),
             CurrencyId::from_bytes(parent),
             Amount::from_sat(20_000),

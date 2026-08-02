@@ -58,6 +58,10 @@ pub struct ConversionPlan {
     /// enforce it — if the price moves after the transaction is broadcast, the
     /// conversion still happens. Recording it makes the intent explicit and
     /// catches a price that has already moved.
+    ///
+    /// Not accepted for a [`ConversionKind::Preconvert`] at all: there is no
+    /// market to price a pre-launch currency against, so a floor there could
+    /// only be checked against a fabricated number.
     pub min_expected: Option<Amount>,
 }
 
@@ -74,12 +78,21 @@ impl ConversionPlan {
 /// Price a conversion and check it against a floor, without signing anything.
 ///
 /// Takes a [`ChainReader`] and no [`Broadcaster`], so it cannot send.
+///
+/// `refund` is where the value returns if the conversion cannot be completed.
+/// It is normally the sender's own address, and it matters most for a
+/// [`ConversionKind::Preconvert`]: a launch that misses its `min_preconversion`
+/// refunds **every** contribution, so for that kind the refund path is the
+/// ordinary outcome rather than a rare one. Naming the recipient here instead
+/// would send your money back to whoever you were converting for.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_conversion(
     reader: &impl ChainReader,
     source: &str,
     amount: Amount,
     kind: ConversionKind,
     recipient: &str,
+    refund: Address,
     fee: Amount,
     min_expected: Option<Amount>,
 ) -> Result<ConversionPlan, FlowError> {
@@ -108,8 +121,22 @@ pub fn plan_conversion(
         // A pre-launch currency has no reserves, so there is no market to price
         // against and `estimateconversion` has nothing to answer with. What a
         // preconversion returns is decided at launch, from the final ratio of
-        // everyone's contributions — not knowable now, and reporting a
-        // confident zero would be less honest than reporting none.
+        // everyone's contributions — not knowable now.
+        //
+        // **So a floor cannot be checked here, and pretending otherwise was
+        // worse than refusing.** The zero below used to be compared against
+        // `min_expected` like any other estimate, which failed every floor
+        // above zero and reported it as "the node expects 0" — a number the
+        // node was never asked for and never produced. Refused by name
+        // instead.
+        if min_expected.is_some() {
+            return Err(FlowError::NotReady(
+                "a preconversion cannot be checked against a floor: the currency has not \
+                 launched, so it has no reserves to price against, and what you receive \
+                 is decided at launch from everyone's contributions together"
+                    .into(),
+            ));
+        }
         Amount::ZERO
     } else {
         estimate(reader, source, &to, amount, via.as_deref())?.estimated_out
@@ -120,6 +147,7 @@ pub fn plan_conversion(
         amount,
         kind,
         recipient,
+        refund,
         // The fee is paid natively unless a caller has reason to do otherwise;
         // that is what the daemon does for every template captured here.
         chain_currency,
@@ -185,7 +213,18 @@ pub fn prepare_conversion(
     min_expected: Option<Amount>,
     token_funding: &[Utxo],
 ) -> Result<Unsent<Sent>, FlowError> {
-    let plan = plan_conversion(reader, source, amount, kind, recipient, fee, min_expected)?;
+    // The refund goes back to the signer, which is what the daemon does and
+    // what a caller converting on somebody else's behalf needs.
+    let plan = plan_conversion(
+        reader,
+        source,
+        amount,
+        kind,
+        recipient,
+        key.address(),
+        fee,
+        min_expected,
+    )?;
     if !plan.acceptable() {
         return Err(FlowError::NotReady(format!(
             "the node expects {} but {} was required",
@@ -230,6 +269,8 @@ pub fn prepare_burn(
         currency_of(currency)?,
         amount,
         ConversionKind::Burn,
+        key.address(),
+        // A burn's destination carries no auxiliary, so this is unused.
         key.address(),
         chain_currency,
         fee,
@@ -340,6 +381,8 @@ pub fn prepare_mint(
         ConversionKind::Mint {
             currency: currency_id,
         },
+        recipient,
+        // A mint's destination carries no auxiliary either.
         recipient,
         chain_currency,
         fee,
@@ -455,6 +498,109 @@ mod tests {
         assert_eq!(node.broadcasts()[0], sent.hex);
     }
 
+    /// **Converting for somebody else must not refund to them.**
+    ///
+    /// The auxiliary destination on a converting transfer is the refund
+    /// address: where the value goes if the conversion cannot be completed. It
+    /// used to be filled with the recipient, which is right only when the
+    /// recipient is you.
+    ///
+    /// For a preconversion that is not a corner case — a launch missing its
+    /// `min_preconversion` refunds every contribution, so the refund path is
+    /// the ordinary outcome. Paying one to a friend's address would have sent
+    /// them your money back as well as their tokens.
+    #[test]
+    fn a_conversion_refunds_to_the_signer_not_the_recipient() {
+        let node = chain(1_000, 1_49165329);
+        let stranger = PrivateKey::from_bytes(&[0x99; 32], true).unwrap().address();
+        assert_ne!(stranger, key().address());
+
+        let unsent = prepare_conversion(
+            &node,
+            &key(),
+            VRSCTEST,
+            Amount::from_sat(1_50000000),
+            shylock(),
+            &stranger.to_string(),
+            Amount::from_sat(20_010),
+            None,
+            &[],
+        )
+        .expect("prepare");
+
+        // Read the reserve transfer back out of the bytes that would be sent,
+        // rather than trusting the builder's report of what it did.
+        let raw = hex::decode(&unsent.hex).expect("hex");
+        let tx = verus_wire::TxV4::deserialize(&raw).expect("parse");
+        let transfer = tx
+            .outputs
+            .iter()
+            .find_map(
+                |out| match verus_tx::decode_output_script(&out.script_pubkey) {
+                    Ok(verus_tx::OutputKind::ReserveTransfer { transfer, .. }) => Some(*transfer),
+                    _ => None,
+                },
+            )
+            .expect("the conversion carries a reserve transfer");
+
+        assert_eq!(
+            transfer.destination.recipient,
+            verus_tx::Destination::PubKeyHash(stranger.hash()),
+            "the tokens go where they were sent"
+        );
+        assert_eq!(
+            transfer.destination.auxiliary,
+            vec![verus_tx::Destination::PubKeyHash(key().address().hash())],
+            "and the refund comes back to whoever paid"
+        );
+    }
+
+    /// A floor cannot be checked against a market that does not exist yet, and
+    /// the previous answer was to compare it against a fabricated zero — which
+    /// failed every floor above zero and blamed the node for a number it was
+    /// never asked for.
+    #[test]
+    fn a_preconversion_refuses_a_floor_rather_than_inventing_one() {
+        let node = chain(1_000, 0);
+        let error = prepare_conversion(
+            &node,
+            &key(),
+            VRSCTEST,
+            Amount::from_sat(1_00000000),
+            ConversionKind::Preconvert {
+                fractional: currency_of(SHYLOCK).unwrap(),
+            },
+            &key().address().to_string(),
+            Amount::from_sat(20_010),
+            Some(Amount::from_sat(1)),
+            &[],
+        )
+        .expect_err("a preconversion has no price to check a floor against");
+        let message = format!("{error}");
+        assert!(message.contains("has not launched"), "{message}");
+        assert!(
+            !message.contains("the node expects"),
+            "the node was never asked: {message}"
+        );
+
+        // Without a floor it plans normally — the refusal is about the floor,
+        // not about preconverting.
+        assert!(prepare_conversion(
+            &node,
+            &key(),
+            VRSCTEST,
+            Amount::from_sat(1_00000000),
+            ConversionKind::Preconvert {
+                fractional: currency_of(SHYLOCK).unwrap(),
+            },
+            &key().address().to_string(),
+            Amount::from_sat(20_010),
+            None,
+            &[],
+        )
+        .is_ok());
+    }
+
     /// A floor that the node's own estimate already fails must stop before
     /// anything is signed. It is the only price check that exists.
     #[test]
@@ -505,6 +651,7 @@ mod tests {
             Amount::from_sat(1_50000000),
             shylock(),
             &key().address().to_string(),
+            key().address(),
             Amount::from_sat(20_010),
             Some(Amount::from_sat(1_40000000)),
         )
@@ -525,6 +672,7 @@ mod tests {
             Amount::from_sat(1_50000000),
             shylock(),
             &key().address().to_string(),
+            key().address(),
             Amount::from_sat(20_010),
             None,
         )

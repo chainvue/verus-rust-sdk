@@ -724,11 +724,16 @@ fn checked_fee(text: &str) -> WasmResult<verus_tx::Amount> {
     Ok(fee)
 }
 
-/// The largest miner fee a plan will accept where the caller names one outright.
+/// The largest fee a plan will accept where the caller names one outright.
 ///
-/// One coin, which is orders of magnitude above any real fee on this chain. Not
-/// a consensus rule and not advice — a bar below which a number cannot be a
-/// mistake and above which it almost certainly is.
+/// Not always a *miner* fee: for the three conversion plans this bounds the
+/// **reserve transfer** fee, which the miner fee is computed separately from.
+/// The units are the same — native satoshis — so one ceiling covers both.
+///
+/// One coin, which is orders of magnitude above any real fee on this chain: the
+/// conversion fee observed from the daemon is 0.0002001. Not a consensus rule
+/// and not advice — a bar below which a number cannot be a mistake and above
+/// which it almost certainly is.
 const MAX_ABSOLUTE_FEE: u64 = verus_tx::SATS_PER_COIN;
 
 /// What to convert, into what, and on whose terms.

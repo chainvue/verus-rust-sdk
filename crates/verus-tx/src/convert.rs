@@ -728,11 +728,13 @@ impl ReserveTransfer {
 ///
 /// Refuses a zero amount, and refuses converting a currency into itself, which
 /// the chain would reject after the fee had been paid.
+#[allow(clippy::too_many_arguments)]
 pub fn build_conversion(
     source: CurrencyId,
     amount: Amount,
     kind: ConversionKind,
     recipient: Address,
+    refund: Address,
     fee_currency: CurrencyId,
     fee: Amount,
 ) -> Result<ReserveTransfer, TxError> {
@@ -769,7 +771,19 @@ pub fn build_conversion(
         ConversionKind::Burn | ConversionKind::Mint { .. } => {
             TransferDestination::plain(Destination::PubKeyHash(recipient.hash()))
         }
-        _ => TransferDestination::converting(Destination::PubKeyHash(recipient.hash())),
+        // `refund`, not `recipient`. The two are the same when you convert for
+        // yourself, which is how every daemon template here was captured — so
+        // this is byte-identical there. They differ when you convert *for
+        // somebody else*, and naming the recipient twice then sends them your
+        // money back as well as your conversion.
+        //
+        // For a preconvert that is not a corner case: a launch missing its
+        // `min_preconversion` refunds **every** contribution, so the refund
+        // path is the ordinary outcome rather than a rare one.
+        _ => TransferDestination::converting_with_refund(
+            Destination::PubKeyHash(recipient.hash()),
+            Destination::PubKeyHash(refund.hash()),
+        ),
     };
 
     Ok(ReserveTransfer {
@@ -829,6 +843,7 @@ mod tests {
                 fractional: CurrencyId::from_bytes(SHYLOCK),
             },
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(20_010),
         )
@@ -864,6 +879,7 @@ mod tests {
                 reserve: CurrencyId::from_bytes(VRSCTEST),
             },
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(20_010),
         )
@@ -896,6 +912,7 @@ mod tests {
             Amount::from_sat(1_00000000),
             ConversionKind::Burn,
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(20_000),
         )
@@ -921,6 +938,7 @@ mod tests {
                 via: CurrencyId::from_bytes(SDKDISCOUNT),
                 target: CurrencyId::from_bytes(TARGET_RESERVE),
             },
+            recipient(),
             recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(20_010),
@@ -978,6 +996,7 @@ mod tests {
             Amount::from_sat(1),
             ConversionKind::Burn,
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
         )
@@ -991,6 +1010,7 @@ mod tests {
             ConversionKind::IntoFractional {
                 fractional: CurrencyId::from_bytes(SHYLOCK),
             },
+            recipient(),
             recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
@@ -1011,6 +1031,7 @@ mod tests {
                 fractional: CurrencyId::from_bytes(SHYLOCK)
             },
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
         )
@@ -1026,6 +1047,7 @@ mod tests {
             ConversionKind::IntoFractional {
                 fractional: CurrencyId::from_bytes(SHYLOCK)
             },
+            recipient(),
             recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
@@ -1043,6 +1065,7 @@ mod tests {
             Amount::from_sat(1),
             ConversionKind::ReserveToReserve { via, target: via },
             recipient(),
+            recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
         )
@@ -1054,6 +1077,7 @@ mod tests {
                 via,
                 target: CurrencyId::from_bytes(VRSCTEST),
             },
+            recipient(),
             recipient(),
             CurrencyId::from_bytes(VRSCTEST),
             Amount::from_sat(1),
@@ -1074,6 +1098,7 @@ mod tests {
                 fractional: CurrencyId::from_bytes(SHYLOCK),
             },
             recipient(),
+            recipient(),
             chain,
             Amount::from_sat(7),
         )
@@ -1084,6 +1109,7 @@ mod tests {
             CurrencyId::from_bytes(SHYLOCK),
             Amount::from_sat(500),
             ConversionKind::IntoReserve { reserve: chain },
+            recipient(),
             recipient(),
             chain,
             Amount::from_sat(7),
@@ -1096,6 +1122,7 @@ mod tests {
             CurrencyId::from_bytes(SHYLOCK),
             Amount::from_sat(500),
             ConversionKind::IntoReserve { reserve: chain },
+            recipient(),
             recipient(),
             CurrencyId::from_bytes(SDKDISCOUNT),
             Amount::from_sat(7),
@@ -1530,6 +1557,7 @@ mod mint_destination_tests {
             Amount::from_sat(1),
             ConversionKind::Mint { currency: token },
             recipient,
+            recipient,
             source,
             Amount::from_sat(1),
         )
@@ -1544,6 +1572,7 @@ mod mint_destination_tests {
             source,
             Amount::from_sat(1),
             ConversionKind::IntoFractional { fractional: token },
+            recipient,
             recipient,
             source,
             Amount::from_sat(1),
@@ -1579,6 +1608,7 @@ mod mint_funding_tests {
             chain(),
             Amount::from_coins_str("500").unwrap(),
             ConversionKind::Mint { currency: token() },
+            key().address(),
             key().address(),
             chain(),
             Amount::from_sat(20_000),
@@ -1679,6 +1709,7 @@ mod mint_funding_tests {
             ConversionKind::IntoFractional {
                 fractional: token(),
             },
+            key().address(),
             key().address(),
             chain(),
             Amount::from_sat(20_000),
