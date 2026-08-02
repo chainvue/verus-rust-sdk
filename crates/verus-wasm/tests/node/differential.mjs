@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
 const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
-        planContentHistory, parseCoins, formatCoins, satsPerCoin, decodeOutput,
+        planContentHistory, planOffers, planOfferTerms, parseCoins, formatCoins, satsPerCoin, decodeOutput,
         tokenBalances, verifyMessage, signatureBlockHeight, vdxfKey,
         rootNamespace, identityId, validateMnemonic, mnemonicToSeed } = wasm;
 
@@ -1325,6 +1325,96 @@ console.log("\nflows, driven with no network");
     assert.equal(occurrences(Buffer.from("not mine").toString("hex")), 1, "and its value");
     assert.equal(occurrences(Buffer.from("mine").toString("hex")), 2, "ours went in");
     ok("and the republished identity keeps every key, value and authority");
+  }
+
+  // -- browsing the marketplace ---------------------------------------------
+  //
+  // Against the live capture, so the shapes are the daemon's own rather than
+  // ones invented here.
+  {
+    const offerReplies = {
+      ...replies,
+      getoffers: readFileSync(
+        resolve(here, "../../../../fixtures/rpc/getoffers_vrsctest.json"), "utf8"),
+    };
+    const offerPost = (b) => {
+      const reply = offerReplies[JSON.parse(b).method];
+      assert.ok(reply, `nothing recorded for ${JSON.parse(b).method}`);
+      return reply;
+    };
+
+    const a = new Answers();
+    let listings;
+    let rounds = 0;
+    for (;;) {
+      const s = planOffers({ target: VRSCTEST, isCurrency: true, withOfferBytes: true }, a);
+      if (s.kind === "ready") { listings = s.value; break; }
+      rounds += 1;
+      for (const body of s.ask) a.record(body, offerPost(body));
+    }
+    a.free();
+
+    // **Two rounds, and deliberately so.** `browse` reads the offers and only
+    // then the tip, which means the tip is never older than the listings — an
+    // offer expiring in the gap is judged dead rather than alive. Issuing both
+    // together would save a round trip and flip that the unsafe way, so this
+    // number is pinned to stop the optimisation.
+    assert.equal(rounds, 2, "offers first, then the tip");
+    assert.ok(listings.length > 0);
+
+    const listing = listings[0];
+    // Either side can be currencies or an identity, and the discriminator has
+    // to be there for a caller to tell.
+    assert.ok(["currencies", "identity"].includes(listing.offering.kind));
+    assert.ok(["currencies", "identity"].includes(listing.accepting.kind));
+    // A price is text, verbatim from the daemon: it is a ratio, not an amount,
+    // and it arrives already rounded by a double division.
+    assert.equal(typeof listing.price, "string");
+    // Amounts inside a side are decimal strings like all money.
+    for (const side of [listing.offering, listing.accepting]) {
+      if (side.kind === "currencies") {
+        for (const amount of Object.values(side.amounts)) {
+          assert.equal(typeof amount, "string");
+          assert.match(amount, /^[0-9]+$/);
+        }
+      } else {
+        // camelCase, like every other field — serde renames enum *variants*
+        // by default, not the fields inside them.
+        assert.equal(typeof side.identityId, "string");
+        assert.equal(typeof side.systemId, "string");
+      }
+    }
+    ok("the marketplace lists offers-then-tip, with prices as text");
+
+    // -- and reading one against the chain ---------------------------------
+    const withBytes = listings.find((l) => l.rawOffer);
+    assert.ok(withBytes, "withOfferBytes must actually return the bytes");
+
+    // `planOfferTerms` reads the funding output, so it needs that transaction.
+    // Refusing an offer whose funding outpoint is not an offer funding output
+    // is the check worth proving: it means the maker's signature covers
+    // something other than what the offer claims.
+    const termsReplies = {
+      ...offerReplies,
+      getrawtransaction: JSON.stringify({
+        result: { vout: [{ valueSat: 1000, scriptPubKey: { hex: SCRIPT } }] },
+      }),
+    };
+    const b = new Answers();
+    let refusal;
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const s = planOfferTerms({ offer: withBytes.rawOffer }, b);
+        if (s.kind === "ready") break;
+        for (const body of s.ask) {
+          b.record(body, termsReplies[JSON.parse(body).method]);
+        }
+      }
+    } catch (e) { refusal = e; }
+    b.free();
+    assert.ok(refusal, "an ordinary coin is not an offer funding output");
+    assert.equal(refusal.name, "Offer");
+    ok("an offer over an ordinary output is refused, not completed");
   }
 
   // -- the request sanitizer applies here too ------------------------------

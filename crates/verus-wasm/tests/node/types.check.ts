@@ -23,6 +23,8 @@ import {
   planVerifyLogin,
   planSpendable,
   planContent,
+  planOffers,
+  planOfferTerms,
   parseCoins,
   formatCoins,
   verifyMessage,
@@ -61,6 +63,13 @@ import {
   type Funding,
   type ContentRequest,
   type Content,
+  type OffersRequest,
+  type Listing,
+  type OfferSide,
+  type OfferTerms,
+  type Demand,
+  type TakeOfferRequest,
+  type Taken,
 } from "../../pkg/verus_wasm.js";
 
 declare const key: Key;
@@ -376,6 +385,48 @@ const numericToken: PlanSendTokenRequest = { currency: "i", to: "R", amount: 1, 
 // @ts-expect-error values are hex strings, not bytes
 const rawValues: PlanPublishRequest = { identity: "a@", key: "i", values: [new Uint8Array()] };
 
+// Offers. Either side of an offer can be currencies or an identity, so the
+// union has to narrow — a caller reading `identityId` off a currencies side
+// would get `undefined` at runtime with no signal.
+const browse: OffersRequest = { target: "iJhCez…", isCurrency: true };
+const listings: Listing[] | undefined = planOffers(browse, answers).value;
+const side: OfferSide | undefined = listings?.[0].offering;
+if (side && side.kind === "identity") {
+  const who: string = side.identityId;
+  void who;
+}
+if (side && side.kind === "currencies") {
+  // @ts-expect-error a currencies side names no identity
+  const notHere = side.identityId;
+  void notHere;
+}
+
+const terms: OfferTerms | undefined = planOfferTerms({ offer: "00" }, answers).value;
+const demand: Demand | undefined = terms?.demand;
+if (demand && demand.kind === "token") {
+  const which: string = demand.currency;
+  void which;
+}
+if (demand && demand.kind === "native") {
+  // @ts-expect-error a native demand names no currency
+  const noCurrency = demand.currency;
+  void noCurrency;
+}
+
+// A price is text, and typing it as a number would be exactly the rounding the
+// SDK refuses everywhere else.
+// @ts-expect-error a price is verbatim text, not a number
+const numericPrice: number | undefined = listings?.[0].price;
+
+const take: TakeOfferRequest = {
+  offer: "00", utxos: [utxo], recipient: "R…", changeAddress: "R…", fee: "20000",
+};
+const taken: Taken | undefined = key.planTakeOffer(take, answers).value;
+
+// @ts-expect-error a miner fee is a decimal string, never a number
+const numericTakeFee: TakeOfferRequest = { offer: "00", utxos: [], recipient: "R", changeAddress: "R", fee: 20000 };
+
 void [numericAmount, misspelled, stringHeight];
+void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];
 void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

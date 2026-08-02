@@ -674,3 +674,163 @@ export interface PlannedUpdate {
     /** How many values will stand under it. Zero means the key is removed. */
     values: number;
 }
+
+/** What is standing on the marketplace against a currency or an identity. */
+export interface OffersRequest {
+    /** What to look for offers against. */
+    target: string;
+    /**
+     * How to read `target`. Getting this wrong fails **quietly**: a currency
+     * asked about as an identity comes back empty, which is indistinguishable
+     * from a currency nobody is trading. A plain name is only ever an identity.
+     */
+    isCurrency: boolean;
+    /**
+     * Ask for each maker's signed half-transaction too. Without it a listing is
+     * something to display; with it, something `planOfferTerms` can check and
+     * `planTakeOffer` can complete. It makes the reply substantially larger.
+     */
+    withOfferBytes?: boolean;
+}
+
+/** Currency, possibly several at once. */
+export interface OfferSideCurrencies {
+    kind: "currencies";
+    /** Keyed by currency `i` address; amounts in satoshis, decimal strings. */
+    amounts: Record<string, string>;
+}
+
+/** A VerusID itself, changing hands. */
+export interface OfferSideIdentity {
+    kind: "identity";
+    /** The identity's `i` address. */
+    identityId: string;
+    /** Its name, without the parent. */
+    name: string;
+    /** The system it lives on. */
+    systemId: string;
+}
+
+/**
+ * One side of an offer. Either side can be either kind, which is what makes an
+ * identity sale and a token trade the same mechanism.
+ */
+export type OfferSide = OfferSideCurrencies | OfferSideIdentity;
+
+/** One offer standing on the marketplace, read against a particular tip. */
+export interface Listing {
+    /** What the maker is giving. */
+    offering: OfferSide;
+    /** What the maker wants for it. */
+    accepting: OfferSide;
+    /** Height after which it can no longer be completed. Zero means never. */
+    blockExpiry: number;
+    /**
+     * The transaction holding the output the maker signed away — **not** the id
+     * of the offer transaction. The daemon calls this `txid`, which reads as
+     * "this offer's transaction" and is the wrong thing to fetch.
+     */
+    fundingTxid: string;
+    /** The maker's signed half-transaction, when `withOfferBytes` was set. */
+    rawOffer?: string;
+    /**
+     * The daemon's own price, verbatim text — not a number and not an amount.
+     * A price is a ratio between the two sides, so it is denominated in
+     * nothing; and the daemon divides in `double` before printing, so it
+     * arrives already rounded.
+     */
+    price: string;
+    /** Which of the daemon's price buckets this was listed in. */
+    bucket: string;
+    /** Whether it could still be completed at the tip this was read against. */
+    live: boolean;
+}
+
+/** An offer to read against the chain. */
+export interface OfferTermsRequest {
+    /** The maker's signed half-transaction, hex — a listing's `rawOffer`. */
+    offer: string;
+}
+
+/** Native coins. */
+export interface DemandNative {
+    kind: "native";
+    /** How much, in satoshis, as a decimal string. */
+    amount: string;
+    /** The address the maker wants paying. */
+    recipient: string;
+}
+
+/** A token, as a reserve output. */
+export interface DemandToken {
+    kind: "token";
+    /** Which token, by its `i` address. */
+    currency: string;
+    /** How much, in the token's smallest unit, as a decimal string. */
+    amount: string;
+    /** The address the maker wants paying. */
+    recipient: string;
+}
+
+/** What a maker is asking to be paid. */
+export type Demand = DemandNative | DemandToken;
+
+/** An offer, checked against the chain rather than against the maker's word. */
+export interface OfferTerms {
+    /** The transaction holding the output the offer spends. */
+    fundingTxid: string;
+    /** Which output of it. */
+    fundingVout: number;
+    /**
+     * What that output really holds, in satoshis — read from the chain, not
+     * from the maker's message.
+     */
+    offered: string;
+    /** The address that controls the funding output: the maker. */
+    control: string;
+    /** What the maker wants in return. */
+    demand: Demand;
+    /** Height after which this can no longer be completed. Zero means never. */
+    expiryHeight: number;
+    /**
+     * Confirmations on the funding **transaction** — not proof the output is
+     * still unspent, which the public node cannot answer. Zero means mempool.
+     */
+    confirmations: number;
+}
+
+/** What a taker supplies to complete an offer. */
+export interface TakeOfferRequest {
+    /** The maker's signed half-transaction, hex. */
+    offer: string;
+    /**
+     * The outputs paying what the maker demands, plus the miner fee. Named
+     * rather than discovered, because paying a token demand means spending
+     * reserve outputs and `getaddressutxos` does not say which token an output
+     * carries.
+     */
+    utxos: Utxo[];
+    /** Where what the maker is giving should land — an `R…` address. */
+    recipient: string;
+    /** Where change returns. */
+    changeAddress: string;
+    /** The miner fee, in satoshis, as a decimal string. */
+    fee: string;
+}
+
+/** A completed offer, built and signed. **Not broadcast.** */
+export interface Taken {
+    /** The raw transaction, hex — what `sendrawtransaction` takes. */
+    hex: string;
+    /** Its txid in display order, computed from `hex` before anything is sent. */
+    txid: string;
+    /** The terms this was completed against, as read from the chain. */
+    terms: OfferTerms;
+}
+
+/** @see planOffers */
+export type OffersStep = PlanStep<Listing[]>;
+/** @see planOfferTerms */
+export type OfferTermsStep = PlanStep<OfferTerms>;
+/** @see Key.planTakeOffer */
+export type TakeOfferStep = PlanStep<Taken>;
