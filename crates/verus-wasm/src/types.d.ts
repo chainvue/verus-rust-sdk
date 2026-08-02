@@ -814,7 +814,14 @@ export interface TakeOfferRequest {
     recipient: string;
     /** Where change returns. */
     changeAddress: string;
-    /** The miner fee, in satoshis, as a decimal string. */
+    /**
+     * The miner fee, in satoshis, as a decimal string.
+     *
+     * Capped at one coin. This is the only place in the API where a caller
+     * names an absolute fee, and therefore the only place a transposed digit
+     * goes straight to a miner — `"2900000000"` reads as a plausible number
+     * and is twenty-nine coins.
+     */
     fee: string;
 }
 

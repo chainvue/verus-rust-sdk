@@ -703,6 +703,13 @@ impl PlanPublishRequest {
     };
 }
 
+/// The largest miner fee a plan will accept where the caller names one outright.
+///
+/// One coin, which is orders of magnitude above any real fee on this chain. Not
+/// a consensus rule and not advice — a bar below which a number cannot be a
+/// mistake and above which it almost certainly is.
+const MAX_ABSOLUTE_FEE: u64 = verus_tx::SATS_PER_COIN;
+
 /// What is standing on the marketplace against a currency or an identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1167,9 +1174,14 @@ pub fn plan_content_history(
 /// The half of the marketplace that used to be missing: making and taking an
 /// offer both worked, and there was no way to *discover* one.
 ///
-/// Costs one round. The offers and the tip are read together, and the tip is
-/// therefore never older than the listings — an offer expiring in the gap is
-/// judged dead rather than alive, which is the safe direction.
+/// Costs **two** rounds, and deliberately so: the offers are read first and the
+/// tip only after. That order is the whole safety argument — the tip is then
+/// never older than the listings, so an offer expiring in the gap is judged
+/// dead rather than alive.
+///
+/// Reading them together would save a round trip and flip that the unsafe way.
+/// It is not an optimisation waiting to be made, and a test pins the count to
+/// say so.
 ///
 /// # Errors
 ///
@@ -1214,6 +1226,25 @@ pub fn plan_offers(
 /// Refuses anything that is not a well-formed offer over a genuine funding
 /// output — including one spending an ordinary coin, which would mean the
 /// maker's signature covers something other than what the offer claims.
+///
+/// # What it can read, which is narrower than what the marketplace lists
+///
+/// Worth stating plainly, because a refusal here reads like "this offer is
+/// broken" and usually means "this SDK does not model that shape yet":
+///
+/// * the funding output must be a **native** offer funding output;
+/// * the demand must be native coins, or a single token, paid to an `R…`
+///   address.
+///
+/// So a demand paid to an `i` address is refused even though the transaction
+/// builder underneath supports it, and an **identity sale** — which
+/// [`planOffers`](plan_offers) will happily list, and which
+/// `OfferSide::Identity` exists to display — cannot be read or completed at
+/// all, because its funding output is not an offer funding output.
+///
+/// Of the four offers in this repo's own recorded VRSCTEST capture, one is
+/// completable through here. Listing and completing are not the same surface,
+/// and a browser wallet should expect to display more than it can take.
 #[wasm_bindgen(js_name = planOfferTerms)]
 pub fn plan_offer_terms(
     request: OfferTermsRequestValue,
@@ -1475,6 +1506,26 @@ impl Key {
         let change: verus_keys::Address =
             dto::pubkey_hash_address("changeAddress", &request.change_address)?;
         let fee = dto::sats(&request.fee)?.to_sat();
+        // The one absolute-satoshi fee in this API, and therefore the one place
+        // a transposed digit goes straight to a miner. `2900000000` reads as a
+        // plausible number and is twenty-nine coins.
+        //
+        // This binding takes the *offered* value away from the caller for
+        // exactly that reason; leaving the fee unbounded next to that would be
+        // inconsistent. Not a policy about what a fee should be — a bar for
+        // what cannot be meant, matching `MAX_FEE_PER_KB` in
+        // [`send`](crate::send).
+        if fee > MAX_ABSOLUTE_FEE {
+            return Err(WasmError::new(
+                "FeeTooLarge",
+                format!(
+                    "a miner fee of {} coins is almost certainly a unit mistake; the ceiling \
+                     here is {}",
+                    verus_tx::Amount::from_sat(fee).to_coins_string(),
+                    verus_tx::Amount::from_sat(MAX_ABSOLUTE_FEE).to_coins_string()
+                ),
+            ));
+        }
         let offer = request.offer;
 
         let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {

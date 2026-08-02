@@ -261,11 +261,11 @@ mod tests {
         use crate::decode::TokenAmount;
         use crate::dto::{JsOutpoint, JsRecipient, JsSignedTransaction, JsUtxo};
         use crate::flows::{
-            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry,
-            JsListing, JsLoggedIn, JsOfferTerms, JsPlannedTransaction,
-            JsPlannedUpdate, JsTaken, LoginRequest, OfferTermsRequest, OffersRequest,
-            PlanPublishRequest, PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest,
-            PlanStep, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            ContentRequest, HistoryRequest, JsContentValue, JsFunding, JsHistoryEntry, JsListing,
+            JsLoggedIn, JsOfferTerms, JsPlannedTransaction, JsPlannedUpdate, JsTaken, LoginRequest,
+            OfferTermsRequest, OffersRequest, PlanPublishRequest, PlanSendFromIdentityRequest,
+            PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
+            VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};

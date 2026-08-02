@@ -1345,21 +1345,24 @@ console.log("\nflows, driven with no network");
 
     const a = new Answers();
     let listings;
-    let rounds = 0;
+    const asked = [];
     for (;;) {
       const s = planOffers({ target: VRSCTEST, isCurrency: true, withOfferBytes: true }, a);
       if (s.kind === "ready") { listings = s.value; break; }
-      rounds += 1;
+      asked.push(s.ask.map((body) => JSON.parse(body).method));
       for (const body of s.ask) a.record(body, offerPost(body));
     }
     a.free();
 
-    // **Two rounds, and deliberately so.** `browse` reads the offers and only
-    // then the tip, which means the tip is never older than the listings — an
-    // offer expiring in the gap is judged dead rather than alive. Issuing both
-    // together would save a round trip and flip that the unsafe way, so this
-    // number is pinned to stop the optimisation.
-    assert.equal(rounds, 2, "offers first, then the tip");
+    // **Two rounds, in this order, and deliberately so.** `browse` reads the
+    // offers and only then the tip, which means the tip is never older than the
+    // listings — an offer expiring in the gap is judged dead rather than alive.
+    //
+    // Both halves are asserted. A count alone would catch someone batching the
+    // two reads into one round, but not someone swapping them: reading the tip
+    // first is still two rounds and is unsafe in exactly the way this ordering
+    // exists to prevent.
+    assert.deepEqual(asked, [["getoffers"], ["getblockcount"]]);
     assert.ok(listings.length > 0);
 
     const listing = listings[0];
@@ -1414,7 +1417,95 @@ console.log("\nflows, driven with no network");
     b.free();
     assert.ok(refusal, "an ordinary coin is not an offer funding output");
     assert.equal(refusal.name, "Offer");
+    // The *reason*, not just the category: `Offer` covers malformed hex and a
+    // missing vout too, and this test is named for one specific refusal.
+    assert.match(refusal.message, /not an offer funding output/);
     ok("an offer over an ordinary output is refused, not completed");
+  }
+
+  // -- completing an offer, all the way to signed bytes ---------------------
+  //
+  // The only new binding that moves money, so it is driven to `"ready"` and the
+  // outputs are read back. The offer is built offline by `verus_tx::make_offer`
+  // from a derived key: a maker giving 5 coins and wanting 2, expiring at
+  // 1_200_000.
+  {
+    const MAKER = "RVS1YahJsGq32HW11q7DaU5KyTMyAwaunK";
+    const OFFER_FUNDING_TXID =
+      "7777777777777777777777777777777777777777777777777777777777777777";
+    const OFFER_FUNDING_SCRIPT =
+      "1a040300010114dd0d776ec425b31c9738deba8fa2c4821d6177bdcc3b040311010114dd0d776ec425b31c9738deba8fa2c4821d6177bd20000000000000000000000000000000000000000000000000000000000000000075";
+    const OFFER =
+      "0400008085202f8901777777777777777777777777777777777777777777777777777777777777777700000000694c670183010121029c5530e4385ebc41cdaf8257edf9a2baaf8506a4099103211e6ed7382103ed6740bf96bb60e5aa5e73f0dcb88f6f0ac664a262fe984b50da2a48703a813da2039b3e7917612865e7c639b79cdc6e774f0c7eab7b2869bd337b8a67741a58c3d91cffffffff0100c2eb0b000000001976a914dd0d776ec425b31c9738deba8fa2c4821d6177bd88ac00000000804f12000000000000000000000000";
+    const OFFERED = 5_00000000n;
+    const DEMANDED = 2_00000000n;
+
+    const takeReplies = {
+      getblockcount: JSON.stringify({ result: TIP }),
+      getrawtransaction: JSON.stringify({
+        result: {
+          confirmations: 12,
+          vout: [{
+            valueSat: Number(OFFERED),
+            scriptPubKey: { hex: OFFER_FUNDING_SCRIPT },
+          }],
+        },
+      }),
+    };
+    const takePost = (b) => {
+      const reply = takeReplies[JSON.parse(b).method];
+      assert.ok(reply, `nothing recorded for ${JSON.parse(b).method}`);
+      return reply;
+    };
+
+    const drive = (request) => {
+      const a = new Answers();
+      try {
+        for (;;) {
+          const s = key.planTakeOffer(request, a);
+          if (s.kind === "ready") return s.value;
+          for (const body of s.ask) a.record(body, takePost(body));
+        }
+      } finally { a.free(); }
+    };
+
+    const request = {
+      offer: OFFER,
+      utxos: [{ txid: TXID, vout: 1, satoshis: String(SATS), scriptPubKey: SCRIPT }],
+      recipient: address,
+      changeAddress: address,
+      fee: "20000",
+    };
+    const taken = drive(request);
+
+    // The offered value came from the chain, not from the offer or the caller.
+    assert.equal(taken.terms.offered, String(OFFERED));
+    assert.equal(taken.terms.control, MAKER);
+    assert.equal(taken.terms.fundingTxid, OFFER_FUNDING_TXID);
+    assert.equal(taken.terms.demand.kind, "native");
+    assert.equal(taken.terms.demand.amount, String(DEMANDED));
+    assert.equal(taken.terms.demand.recipient, MAKER);
+    assert.equal(taken.terms.confirmations, 12);
+
+    // And the transaction pays what it should, where it should. Output 0 is
+    // the maker's demand and must be untouched — appending to a
+    // SIGHASH_SINGLE|ANYONECANPAY offer is only valid while output 0 stands.
+    const outs = outputScripts(taken.hex).map((s) => decodeOutput(s));
+    assert.equal(outs[0].kind, "pubKeyHash");
+    assert.equal(outs[0].address, MAKER);
+    assert.ok(
+      outs.slice(1).some((o) => o.address === address),
+      "what the maker offered has to land at the taker's recipient",
+    );
+    ok("an offer is completed against the value the chain reports");
+
+    // The fee is the one absolute-satoshi figure a caller names here, so a
+    // transposed digit goes straight to a miner. Twenty-nine coins is not a fee.
+    assert.throws(
+      () => drive({ ...request, fee: "2900000000" }),
+      (e) => e.name === "FeeTooLarge",
+    );
+    ok("and an absurd miner fee is refused rather than paid");
   }
 
   // -- the request sanitizer applies here too ------------------------------
