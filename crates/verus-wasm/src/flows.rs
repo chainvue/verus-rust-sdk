@@ -31,7 +31,7 @@
 //! for (;;) {
 //!   const step = key.planSend({ to: "RQr2…", satoshis: parseCoins("1.5") }, answers);
 //!   if (step.kind === "ready") {
-//!     await post(JSON.stringify({ method: "sendrawtransaction", params: [step.transaction.hex] }));
+//!     await post(JSON.stringify({ method: "sendrawtransaction", params: [step.value.hex] }));
 //!     break;
 //!   }
 //!   await Promise.all(step.ask.map(async (body) => answers.record(body, await post(body))));
@@ -45,7 +45,7 @@
 //! **Broadcast.** Not "does not currently"; cannot. The flows were split so
 //! that the re-runnable half takes no broadcaster, and re-running is exactly
 //! what happens here — a send that went out once per round would send a
-//! different transaction each time. So `step.transaction.hex` comes back and
+//! different transaction each time. So `step.value.hex` comes back and
 //! the page posts it, once, deliberately, outside the loop.
 //!
 //! # If that post fails, do not plan again
@@ -65,12 +65,12 @@
 //!
 //! ```js
 //! try {
-//!   await post(sendRawTransaction(step.transaction.hex));
+//!   await post(sendRawTransaction(step.value.hex));
 //! } catch (networkFailure) {
-//!   const seen = await post(getRawTransaction(step.transaction.txid));
+//!   const seen = await post(getRawTransaction(step.value.txid));
 //!   // Absent? It never arrived, and re-posting the identical hex is safe.
 //!   // Present? It is already on the network. Nothing to do.
-//!   if (!JSON.parse(seen).result) await post(sendRawTransaction(step.transaction.hex));
+//!   if (!JSON.parse(seen).result) await post(sendRawTransaction(step.value.hex));
 //! }
 //! ```
 //!
@@ -460,15 +460,28 @@ pub struct JsFunding {
     pub total: String,
     /// The outputs a builder can use.
     pub utxos: Vec<crate::dto::JsUtxo>,
-    /// Value that exists but cannot be spent **yet** — mostly immature
-    /// coinbases. This is the difference between what a balance shows and what
-    /// a payment can use, and a wallet needs it to explain the gap.
+    /// Native value that exists but cannot be spent **yet** — mostly immature
+    /// coinbases.
+    ///
+    /// Part of the gap between a balance and what a payment can use, **not all
+    /// of it**: the outputs counted in `other` carry native value too, and it
+    /// is in neither this figure nor `total`. So `total + notYetSpendable` can
+    /// still fall short of what `getaddressbalance` reports, and by design —
+    /// the remainder is locked in outputs a native send must not touch.
     pub not_yet_spendable: String,
-    /// Outputs that are not plain P2PKH: reserve outputs holding tokens,
+    /// How many outputs are not plain P2PKH: reserve outputs holding tokens,
     /// identity outputs, anything CryptoCondition. Excluded from `utxos`
     /// because the native builders refuse them — a reserve output's value is in
     /// its payload, so spending one as ordinary funding destroys what it
     /// carries.
+    ///
+    /// A **count**, not the outputs. Spending a token means naming the outputs
+    /// that hold it, and this flow cannot identify them: `getaddressutxos`
+    /// reports a reserve output's native value, not which token it carries or
+    /// how much, so recognising them means decoding each script. A wallet that
+    /// tracks its own token outputs already knows them and passes them to the
+    /// token send; this number is here so a balance screen can say "and 3
+    /// outputs this cannot spend" rather than silently omitting them.
     pub other: usize,
 }
 
@@ -588,10 +601,17 @@ pub fn plan_history(
 /// Verify a VerusID login, against the identity **as it stood when the
 /// signature was made**.
 ///
-/// The whole point of resolving at the signature's own height rather than the
-/// tip: an identity that rotated its keys after signing still verifies, and one
-/// that was revoked after signing is still refused. A verifier that looked at
-/// the tip would get both backwards.
+/// Rotation and revocation are treated differently, deliberately:
+///
+/// * a key **rotated** after signing does not invalidate the signature — the
+///   identity is resolved at the signature's own height, and a routine key
+///   change should not log everyone out;
+/// * an identity **revoked** after signing is refused anyway. Revocation is a
+///   break-glass action, so it takes effect now rather than when the signature
+///   ages out — otherwise an attacker holding a signature stamped minutes
+///   before the revocation keeps logging in for another `maxAgeBlocks`.
+///
+/// That costs one extra read, in the same round as the others.
 ///
 /// Key a session on `identityAddress`, not on `name` — a name can be
 /// transferred to someone else, an `i` address cannot.

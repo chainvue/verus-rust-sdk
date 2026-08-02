@@ -178,14 +178,49 @@ pub fn verify_login(
         )));
     }
 
-    // The identity as it was at signing time. This is the whole point.
-    let record = crate::error::look_up_identity_at(reader, identity, signature.block_height)?
-        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
+    // Two views of the identity, and both matter. Issued together, unwrapped
+    // after — neither needs the other's answer, so this is one round rather
+    // than two. See [`crate::drive`].
+    let at_signing = crate::error::look_up_identity_at(reader, identity, signature.block_height);
+    let now = crate::error::look_up_identity(reader, identity);
+    let (at_signing, now) = (at_signing?, now?);
+
+    // The identity as it was at signing time. This is what the signature is
+    // checked against: keys that rotated afterwards must not invalidate a
+    // signature that was good when it was made.
+    let record = at_signing.ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
 
     if record.is_revoked() {
         return Err(FlowError::NotReady(format!(
             "{} was revoked",
             record.fully_qualified_name
+        )));
+    }
+
+    // **Revocation is retroactive, and that is the difference between it and a
+    // key rotation.**
+    //
+    // Checking only the at-height record makes revocation useless in the case
+    // it exists for. An owner whose key is compromised revokes; the attacker
+    // holds a signature stamped a few blocks *before* the revocation; at that
+    // height the identity was still active, so it verifies — and keeps
+    // verifying until the signature ages out of `max_age_blocks`, an hour by
+    // default, after the owner pulled the handle. Revoking is a break-glass
+    // action and has to take effect now.
+    //
+    // A rotation is deliberately the opposite: routine, not a statement that
+    // anything was compromised, and invalidating every outstanding session on
+    // a key change would make key hygiene expensive.
+    let now = now.ok_or_else(|| {
+        FlowError::NoSuchIdentity(format!(
+            "{identity} existed at height {} but the node reports no such identity now",
+            signature.block_height
+        ))
+    })?;
+    if now.is_revoked() {
+        return Err(FlowError::NotReady(format!(
+            "{} has been revoked since this was signed",
+            now.fully_qualified_name
         )));
     }
 
@@ -448,6 +483,83 @@ mod tests {
             Err(FlowError::NotReady(message)) => assert!(message.contains("revoked")),
             other => panic!("expected a revocation refusal, got {other:?}"),
         }
+    }
+
+    /// **Revocation takes effect now, not at the signature's height.**
+    ///
+    /// The case revocation exists for: a key is compromised, the owner revokes,
+    /// and the attacker is holding a signature stamped a few blocks *before*
+    /// the revocation landed. At that height the identity was still active — so
+    /// a verifier that only resolves at the signed height accepts it, and keeps
+    /// accepting it until the signature ages out of `max_age_blocks`. An hour,
+    /// by default, after the owner pulled the handle.
+    ///
+    /// This was reachable, and the scripted node could not express it:
+    /// `identity_at` ignored the height, so "revoked later" and "revoked then"
+    /// were the same answer.
+    #[test]
+    fn revoking_refuses_a_signature_that_was_made_before_it() {
+        let address = key().address().to_string();
+        let node = chain(1_000, record(&[&address], 1, false));
+        let signature = sign_login(&node, &key(), "alice@", &request()).unwrap();
+        assert_eq!(signature.block_height, 1_000);
+
+        // The owner revokes at 1_005 and the chain moves on. The signature is
+        // still well inside the freshness window.
+        let after = ScriptedReader::new(1_010)
+            .with_identity("alice@", record(&[&address], 1, true))
+            .with_identity_at("alice@", 0, record(&[&address], 1, false))
+            .with_identity_at("alice@", 1_005, record(&[&address], 1, true));
+
+        // The identity really was active when the signature was made, so the
+        // at-height check is not what does the work here.
+        assert!(
+            !verus_rpc::ChainReader::identity_at(&after, "alice@", 1_000)
+                .unwrap()
+                .is_revoked()
+        );
+
+        match verify_login(
+            &after,
+            "alice@",
+            &signature,
+            &request(),
+            &LoginPolicy::default(),
+        ) {
+            Err(FlowError::NotReady(message)) => {
+                assert!(message.contains("revoked"), "{message}");
+            }
+            other => panic!("a revoked identity must not log in, got {other:?}"),
+        }
+    }
+
+    /// The other half of the same rule, and why this is not simply "resolve at
+    /// the tip": a **rotation** after signing is routine and must not
+    /// invalidate a signature that was good when it was made.
+    #[test]
+    fn rotating_a_key_after_signing_does_not_invalidate_the_signature() {
+        let address = key().address().to_string();
+        let node = chain(1_000, record(&[&address], 1, false));
+        let signature = sign_login(&node, &key(), "alice@", &request()).unwrap();
+
+        let stranger = PrivateKey::from_bytes(&[0x99; 32], true)
+            .unwrap()
+            .address()
+            .to_string();
+        // The identity now lists a different key entirely, and is not revoked.
+        let rotated = ScriptedReader::new(1_010)
+            .with_identity("alice@", record(&[&stranger], 1, false))
+            .with_identity_at("alice@", 0, record(&[&address], 1, false));
+
+        let logged_in = verify_login(
+            &rotated,
+            "alice@",
+            &signature,
+            &request(),
+            &LoginPolicy::default(),
+        )
+        .expect("a rotation is not a revocation");
+        assert_eq!(logged_in.signed_at, 1_000);
     }
 
     /// Someone who is not an authority on the identity cannot log in as it.

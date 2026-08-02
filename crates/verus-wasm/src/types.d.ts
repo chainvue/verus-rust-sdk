@@ -530,15 +530,22 @@ export interface Funding {
     /** The outputs a builder can use. */
     utxos: Utxo[];
     /**
-     * Value that exists but cannot be spent **yet** — mostly immature
-     * coinbases. This is the gap between a balance and a payment, in satoshis
-     * as a decimal string, and a wallet needs it to explain why the two differ.
+     * Native value that exists but cannot be spent **yet** — mostly immature
+     * coinbases, in satoshis as a decimal string.
+     *
+     * Part of the gap between a balance and a payment, not all of it: the
+     * outputs counted in `other` carry native value too, and it is in neither
+     * this figure nor `total`.
      */
     notYetSpendable: string;
     /**
      * How many outputs are not plain P2PKH: reserve outputs holding tokens,
      * identity outputs, anything CryptoCondition. Excluded from `utxos` because
      * spending one as ordinary funding destroys what it carries.
+     *
+     * A count, not the outputs: `getaddressutxos` does not say which token a
+     * reserve output carries, so this flow cannot identify them. A wallet that
+     * tracks its own token outputs passes them to the token send directly.
      */
     other: number;
 }

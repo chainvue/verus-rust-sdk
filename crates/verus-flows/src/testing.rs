@@ -33,6 +33,10 @@ pub struct ScriptedReader {
     /// What `getidentitycontent` accumulates, which is not what `getidentity`
     /// holds. See the `identity_content` impl.
     identity_content: RefCell<std::collections::BTreeMap<String, Vec<verus_rpc::ContentValue>>>,
+    /// `(name, from_height, record)` — what `identity_at` reports from that
+    /// height onwards. Without this the double has no history, and a flow that
+    /// reads an identity at two different heights cannot be tested at all.
+    identity_history: RefCell<Vec<(String, u32, IdentityRecord)>>,
     policy: RefCell<Option<CurrencyPolicy>>,
     confirmations: RefCell<Vec<(String, u32)>>,
     /// Heights handed out by successive `block_count` calls, consumed in order.
@@ -57,6 +61,7 @@ impl ScriptedReader {
             coinbase_heights: RefCell::new(Vec::new()),
             identities: RefCell::new(Vec::new()),
             identity_content: RefCell::new(std::collections::BTreeMap::new()),
+            identity_history: RefCell::new(Vec::new()),
             policy: RefCell::new(None),
             confirmations: RefCell::new(Vec::new()),
             heights: RefCell::new(Vec::new()),
@@ -175,6 +180,19 @@ impl ScriptedReader {
         self.identities
             .borrow_mut()
             .push((name.to_string(), record));
+        self
+    }
+
+    /// What `getidentity` reports **at a height**, from `from_height` onwards.
+    ///
+    /// The scripted chain otherwise has no history, which quietly makes
+    /// `identity_at` and `identity` the same answer — and a flow whose whole
+    /// point is that they differ then cannot be tested. Script "active until
+    /// 995, revoked from 995" and the difference becomes expressible.
+    pub fn with_identity_at(self, name: &str, from_height: u32, record: IdentityRecord) -> Self {
+        self.identity_history
+            .borrow_mut()
+            .push((name.to_string(), from_height, record));
         self
     }
 
@@ -481,10 +499,22 @@ impl ChainReader for ScriptedReader {
             .map(|record| record.outpoint.0.to_display_hex())
     }
 
-    fn identity_at(&self, name_or_id: &str, _height: u32) -> Result<IdentityRecord, RpcError> {
-        // The scripted chain has no history, so an identity is the same at
-        // every height. Tests that care about rotation script it explicitly.
-        self.identity(name_or_id)
+    fn identity_at(&self, name_or_id: &str, height: u32) -> Result<IdentityRecord, RpcError> {
+        // The latest scripted state at or before `height`, if any was scripted.
+        // Falling through to `identity` keeps every existing test working: an
+        // identity with no history is the same at every height.
+        let history = self.identity_history.borrow();
+        let at = history
+            .iter()
+            .filter(|(name, from, _)| name == name_or_id && *from <= height)
+            .max_by_key(|(_, from, _)| *from);
+        match at {
+            Some((_, _, record)) => {
+                self.count();
+                Ok(record.clone())
+            }
+            None => self.identity(name_or_id),
+        }
     }
 
     fn raw_transaction(&self, txid: &str) -> Result<serde_json::Value, RpcError> {
