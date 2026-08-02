@@ -1646,20 +1646,55 @@ console.log("\nflows, driven with no network");
     assert.equal(typeof pending.registrationFee, "string");
     ok("a name commitment is planned before anything is spent");
 
-    // The same name, key and salt must give the same commitment — that is what
-    // lets a page that lost its state re-derive rather than lose the fee.
-    const again = drive((a) => key.planRegistration({ name: "browsertest", salt: SALT }, a));
-    assert.equal(again.commitmentTxid, pending.commitmentTxid);
-    ok("and a chosen salt makes it reproducible");
+    // What a chosen salt reproduces is the **reservation**, and that is what
+    // lets a page which lost its state re-derive its claim and go looking for
+    // the commitment output on chain.
+    //
+    // It does not reproduce the commitment *transaction*: that spends whichever
+    // outputs were available and expires relative to the tip. So this drives
+    // the second plan against a **moved chain**, which is the situation
+    // recovery actually happens in — and asserting equal txids there would be
+    // asserting something false. An earlier version of this test fed identical
+    // replies both times and "proved" reproducibility that does not hold.
+    const later = { ...regReplies, getblockcount: JSON.stringify({ result: TIP + 500 }) };
+    const again = drive(
+      (a) => key.planRegistration({ name: "browsertest", salt: SALT }, a),
+      (b) => later[JSON.parse(b).method] ?? regPost(b),
+    );
+    assert.notEqual(
+      again.commitmentTxid,
+      pending.commitmentTxid,
+      "a different tip means different bytes, even for the same claim",
+    );
+    // The claim itself is identical, which is the part that matters.
+    assert.deepEqual(
+      JSON.parse(again.pending).reservation,
+      JSON.parse(pending.pending).reservation,
+    );
+    ok("and a chosen salt reproduces the reservation, not the transaction");
+
+    // A salt that is not a secret defeats the point of having one.
+    assert.throws(
+      () => drive((a) => key.planRegistration({ name: "x", salt: "00".repeat(32) }, a)),
+      (e) => e.name === "InvalidArgument",
+    );
+    ok("an all-zero salt is refused");
 
     // Persist. This is the step whose absence costs the fee.
     const persisted = JSON.stringify(pending);
     pending = JSON.parse(persisted);
 
     // Anchor, persist again, then the page would post `commitmentHex`.
+    const beforeAnchor = JSON.parse(pending.pending).anchoredAt ?? null;
     pending = drive((a) => key.planCommitmentAnchor({ pending }, a));
     pending = JSON.parse(JSON.stringify(pending));
     assert.equal(pending.state, "awaitingCommitment");
+    // The anchor has to actually land, or a reorg under this registration goes
+    // unnoticed. Asserting only the state would pass with the anchor dropped.
+    assert.equal(beforeAnchor, null);
+    const anchor = JSON.parse(pending.pending).anchored_at;
+    assert.ok(Array.isArray(anchor), "the anchor must be recorded");
+    assert.equal(anchor[0], TIP);
     ok("the reorg anchor is recorded before the commitment goes out");
 
     // Step two is not reachable yet, and that has to be enforced rather than
@@ -1686,6 +1721,39 @@ console.log("\nflows, driven with no network");
     assert.equal(waiting.kind, "waiting");
     assert.equal(waiting.confirmations, 0);
     ok("an unconfirmed commitment reports waiting, not ready");
+
+    // Confirmed: the commitment output has to be *found*, by matching the
+    // script the reservation derives, rather than assumed to be output zero.
+    const commitmentScript = outputScripts(pending.commitmentHex)[0];
+    const confirmedPost = (b) => {
+      const { method } = JSON.parse(b);
+      if (method === "getrawtransaction") {
+        return JSON.stringify({
+          result: {
+            confirmations: 1,
+            vout: [{ valueSat: 0, scriptPubKey: { hex: commitmentScript } }],
+          },
+        });
+      }
+      return regPost(b);
+    };
+    const ready = drive((a) => planCommitmentStatus({ pending }, a), confirmedPost);
+    assert.equal(ready.kind, "ready");
+    assert.equal(ready.pending.state, "readyToRegister");
+    ok("and a confirmed one moves to readyToRegister");
+
+    // Step two, through storage like everything else.
+    const readyPending = JSON.parse(JSON.stringify(ready.pending));
+    const registered = drive(
+      (a) => key.planRegistrationComplete({ pending: readyPending }, a),
+      confirmedPost,
+    );
+    assert.match(registered.hex, /^[0-9a-f]+$/);
+    assert.equal(registered.name, "browsertest");
+    assert.match(registered.identityAddress, /^i/);
+    assert.equal(typeof registered.feePaid, "string");
+    assert.ok(BigInt(registered.feePaid) > 0n);
+    ok("the registration itself is built and signed, salt intact through storage");
   }
 
   // -- the request sanitizer applies here too ------------------------------

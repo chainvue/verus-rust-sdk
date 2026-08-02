@@ -466,6 +466,13 @@ const nameClaim: PlanRegistrationRequest = { name: "alice" };
 const pending: Pending | undefined = key.planRegistration(nameClaim, answers).value;
 const restored: Pending = JSON.parse(JSON.stringify(pending));
 
+// The blob is a string, not an object: a page stores it, it does not read it.
+// Typing it as an object would invite parsing and re-encoding, and a
+// re-encoded blob is one whose salt nobody checked.
+const blob: string | undefined = pending?.pending;
+// @ts-expect-error the stored state is opaque text, not a structure
+const peeked: { reservation: unknown } | undefined = pending?.pending;
+
 // The step is a closed set, so a typo in a comparison is caught rather than
 // silently never matching.
 // @ts-expect-error "confirmed" is not one of the two steps
@@ -498,7 +505,7 @@ const paid: string | undefined = registered?.feePaid;
 const numericPin: PlanRegistrationRequest = { name: "alice", pinFee: 10000000000 };
 
 void [numericAmount, misspelled, stringHeight];
-void [pending, restored, badState, status, registered, paid, numericPin];
+void [pending, restored, blob, peeked, badState, status, registered, paid, numericPin];
 void [converted, burnAsKind, mintAsKind, typoKind, numericFloor];
 void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];
 void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];

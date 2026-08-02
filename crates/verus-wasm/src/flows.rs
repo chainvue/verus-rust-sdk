@@ -939,10 +939,20 @@ impl PlanMintRequest {
 /// confirmed cannot be handed to the registration step, because it does not
 /// type-check. A JSON blob crossing into JavaScript has no such property, so
 /// the guarantee becomes a runtime one — `state` records which step this is at,
-/// and `planRegistrationComplete` refuses a value that is not `"readyToRegister"`.
+/// and `planRegistrationComplete` refuses a value that is not
+/// `"readyToRegister"`.
 ///
-/// That is a real weakening and worth naming: the mistake it prevents costs a
-/// commitment fee, and here it is caught by a check rather than by the compiler.
+/// That is a real weakening and worth naming precisely. `state` is the **only**
+/// thing distinguishing the two steps: the inner blob serializes identically
+/// either way, so editing the string is enough to get past the check. What
+/// stops it there is the chain rather than this crate — a registration built
+/// against a commitment that has not confirmed spends an input the chain will
+/// not accept, so the transaction is rejected rather than mined. Nothing
+/// further is lost; the commitment fee went when the commitment did.
+///
+/// So the check catches the mistake, not an attack, and the attack it does not
+/// catch costs the person making it. Both halves of that are worth knowing
+/// before building on it.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsPending {
@@ -960,8 +970,17 @@ pub struct JsPending {
     pub commitment_hex: String,
     /// Its txid.
     pub commitment_txid: String,
-    /// The flow's own state, including the salt. Opaque; hand it back unchanged.
-    pub pending: serde_json::Value,
+    /// The flow's own state, including the salt. **Opaque** — a JSON string to
+    /// store and hand back unchanged, not an object to look inside.
+    ///
+    /// A string rather than a nested object deliberately. The request sanitizer
+    /// does not recurse into a leaf, so an object here would reach
+    /// `serde_json::Value` with its nesting bounded only by the stack — the
+    /// module-bricking overflow [`crate::dto::from_js`] documents closing for
+    /// `utxos`. As text it goes through `serde_json::from_str`, whose own
+    /// recursion limit refuses a hostile blob cleanly, and "hand it back
+    /// unchanged" becomes literally true rather than a request.
+    pub pending: String,
 }
 
 /// What to claim, and under what terms.
@@ -986,14 +1005,23 @@ pub struct PlanRegistrationRequest {
     /// Pin it when you know better.
     #[serde(default)]
     pub pin_fee: Option<String>,
-    /// The reservation salt, 32 bytes as hex.
+    /// The reservation salt, 32 bytes as hex. Omit and one is drawn here.
     ///
-    /// Omit and one is drawn here. Supply one and the registration becomes
-    /// **reproducible**: the same name, key and salt always give the same
-    /// commitment, so a page can re-derive it after losing its state rather
-    /// than losing the fee. Whatever you choose, it must be unpredictable —
-    /// the salt is what stops somebody else seeing your name before you claim
-    /// it.
+    /// Supplying one makes the **reservation** reproducible: the same name,
+    /// key and salt always derive the same claim, and therefore the same
+    /// commitment *hash*. That is what lets a page which lost its state
+    /// re-derive the claim and go looking for its commitment output on chain,
+    /// rather than losing the fee.
+    ///
+    /// It does **not** make the commitment *transaction* reproducible. That
+    /// one spends whichever outputs were available and expires relative to the
+    /// tip, so re-planning after the chain has moved gives different bytes and
+    /// a different txid for the same reservation. Recovery means matching the
+    /// commitment script, not the txid.
+    ///
+    /// Whatever you choose must be unpredictable: the salt is what stops
+    /// somebody else seeing your name before you have claimed it. An
+    /// all-zero salt is refused for that reason.
     #[serde(default)]
     pub salt: Option<String>,
 }
@@ -1558,7 +1586,9 @@ where
             ),
         ));
     }
-    serde_json::from_value(stored.pending.clone()).map_err(|e| {
+    // `from_str`, so serde_json's own recursion limit applies: a blob nested
+    // thousands deep is refused here rather than unwound on the wasm stack.
+    serde_json::from_str(&stored.pending).map_err(|e| {
         WasmError::new(
             "InvalidArgument",
             format!("the stored registration could not be read back: {e}"),
@@ -1577,7 +1607,7 @@ where
         registration_fee: dto::sats_string(pending.registration_fee),
         commitment_hex: pending.commitment_hex.clone(),
         commitment_txid: pending.commitment_txid.clone(),
-        pending: serde_json::to_value(pending).map_err(|e| {
+        pending: serde_json::to_string(pending).map_err(|e| {
             WasmError::new("VerusError", format!("the registration did not store: {e}"))
         })?,
     })
@@ -2160,7 +2190,20 @@ impl Key {
             },
         };
         let salt = match &request.salt {
-            Some(text) => Some(dto::fixed_hex::<32>("salt", text)?),
+            Some(text) => {
+                let salt = dto::fixed_hex::<32>("salt", text)?;
+                // Entropy cannot be judged from one value, but the sentinel a
+                // caller reaches for while wiring things up can be. A
+                // predictable salt lets somebody else derive the commitment
+                // hash for a name they can see you are about to claim.
+                if salt == [0u8; 32] {
+                    return Err(WasmError::new(
+                        "InvalidArgument",
+                        "an all-zero salt is not a secret; the salt is what stops somebody                          claiming the name before you do",
+                    ));
+                }
+                Some(salt)
+            }
             None => None,
         };
         let name = request.name;

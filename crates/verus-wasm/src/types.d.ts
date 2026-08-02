@@ -938,8 +938,12 @@ export interface Pending {
     commitmentHex: string;
     /** Its txid. */
     commitmentTxid: string;
-    /** The flow's own state, including the salt. Opaque. */
-    pending: unknown;
+    /**
+     * The flow's own state, including the salt. **Opaque** — store this string
+     * and hand it back unchanged. It is not an object to look inside, and
+     * parsing or re-encoding it is not supported.
+     */
+    pending: string;
 }
 
 /** What to claim, and under what terms. */
@@ -961,10 +965,18 @@ export interface PlanRegistrationRequest {
     /**
      * The reservation salt, 32 bytes as hex. Omit and one is drawn for you.
      *
-     * Supplying one makes the registration reproducible — same name, key and
-     * salt, same commitment — so a page that loses its state can re-derive
-     * rather than lose the fee. It must be unpredictable either way: the salt
-     * is what stops somebody seeing your name before you claim it.
+     * Supplying one makes the **reservation** reproducible: the same name, key
+     * and salt derive the same claim and the same commitment hash, so a page
+     * that lost its state can re-derive the claim and look for its commitment
+     * output on chain rather than lose the fee.
+     *
+     * It does *not* make the commitment transaction reproducible — that spends
+     * whichever outputs were available and expires relative to the tip, so
+     * re-planning after the chain moved gives a different txid for the same
+     * reservation. Recover by matching the commitment script, not the txid.
+     *
+     * It must be unpredictable: the salt is what stops somebody claiming your
+     * name before you do. An all-zero salt is refused.
      */
     salt?: string;
 }
