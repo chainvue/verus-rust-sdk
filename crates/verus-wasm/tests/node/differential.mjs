@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 const wasm = await import(resolve(pkg, "verus_wasm.js"));
 const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
-        planContentHistory, planOffers, planOfferTerms, parseCoins, formatCoins, satsPerCoin, decodeOutput,
+        planContentHistory, planOffers, planOfferTerms, planCommitmentStatus, parseCoins, formatCoins, satsPerCoin, decodeOutput,
         tokenBalances, verifyMessage, signatureBlockHeight, vdxfKey,
         rootNamespace, identityId, validateMnemonic, mnemonicToSeed } = wasm;
 
@@ -1590,6 +1590,102 @@ console.log("\nflows, driven with no network");
       assert.throws(plan, (e) => e.name === "FeeTooLarge");
     }
     ok("an absurd fee is refused by every plan that takes one");
+  }
+
+  // -- a VerusID registration, end to end, driven from JavaScript -----------
+  //
+  // Two transactions with a wait between them, joined by a salt that exists
+  // nowhere else. This drives the whole thing and puts the pending value
+  // through `JSON.stringify`/`parse` between every step — because that is what
+  // a page does, and if the salt did not survive it the fee would be spent for
+  // nothing.
+  {
+    const COMMITMENT_HEIGHT = TIP;
+    const regReplies = {
+      ...replies,
+      getblockcount: JSON.stringify({ result: TIP }),
+      getblockhash: JSON.stringify({ result: "00".repeat(32) }),
+      // The name is free: the daemon's own answer for an identity nobody owns.
+      getidentity: JSON.stringify({ error: { code: -5, message: "Identity not found" } }),
+      getcurrency: readFileSync(
+        resolve(here, "../../../../fixtures/rpc/getcurrency_vrsctest.json"), "utf8"),
+      // VRSCTEST's real registration fee is 100 coins, per the capture above,
+      // so the address has to actually hold that much. Using the capture rather
+      // than pinning a cheap fee keeps the chain-policy read in the path.
+      getaddressutxos: JSON.stringify({
+        result: [{
+          address, blocktime: 1785262420, height: HEIGHT, isspendable: 1,
+          outputIndex: 0, satoshis: 200_00000000, script: SCRIPT, txid: TXID,
+        }],
+      }),
+    };
+    const regPost = (b) => {
+      const { method } = JSON.parse(b);
+      const reply = regReplies[method];
+      assert.ok(reply, `nothing recorded for ${method}`);
+      return reply;
+    };
+    const drive = (call, post = regPost) => {
+      const a = new Answers();
+      try {
+        for (;;) {
+          const s = call(a);
+          if (s.kind === "ready") return s.value;
+          for (const body of s.ask) a.record(body, post(body));
+        }
+      } finally { a.free(); }
+    };
+
+    // Step one, with a salt we choose so the whole thing is reproducible.
+    const SALT = "11".repeat(32);
+    let pending = drive((a) => key.planRegistration({ name: "browsertest", salt: SALT }, a));
+
+    assert.equal(pending.state, "awaitingCommitment");
+    assert.equal(pending.name, "browsertest");
+    assert.match(pending.commitmentHex, /^[0-9a-f]+$/);
+    assert.equal(typeof pending.registrationFee, "string");
+    ok("a name commitment is planned before anything is spent");
+
+    // The same name, key and salt must give the same commitment — that is what
+    // lets a page that lost its state re-derive rather than lose the fee.
+    const again = drive((a) => key.planRegistration({ name: "browsertest", salt: SALT }, a));
+    assert.equal(again.commitmentTxid, pending.commitmentTxid);
+    ok("and a chosen salt makes it reproducible");
+
+    // Persist. This is the step whose absence costs the fee.
+    const persisted = JSON.stringify(pending);
+    pending = JSON.parse(persisted);
+
+    // Anchor, persist again, then the page would post `commitmentHex`.
+    pending = drive((a) => key.planCommitmentAnchor({ pending }, a));
+    pending = JSON.parse(JSON.stringify(pending));
+    assert.equal(pending.state, "awaitingCommitment");
+    ok("the reorg anchor is recorded before the commitment goes out");
+
+    // Step two is not reachable yet, and that has to be enforced rather than
+    // trusted: running it against an unconfirmed commitment spends the
+    // registration fee against an output the chain will not accept. In Rust
+    // these are different types; across JSON it can only be a check.
+    assert.throws(
+      () => drive((a) => key.planRegistrationComplete({ pending }, a)),
+      (e) => e.name === "WrongStep",
+    );
+    ok("and step two is refused until step one has confirmed");
+
+    // Unconfirmed: still waiting.
+    const waiting = drive(
+      (a) => planCommitmentStatus({ pending }, a),
+      (b) => {
+        const { method } = JSON.parse(b);
+        if (method === "getrawtransaction") {
+          return JSON.stringify({ result: { confirmations: 0, vout: [] } });
+        }
+        return regPost(b);
+      },
+    );
+    assert.equal(waiting.kind, "waiting");
+    assert.equal(waiting.confirmations, 0);
+    ok("an unconfirmed commitment reports waiting, not ready");
   }
 
   // -- the request sanitizer applies here too ------------------------------

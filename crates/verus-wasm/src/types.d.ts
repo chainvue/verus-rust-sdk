@@ -915,3 +915,113 @@ export interface PlanMintRequest {
     /** The conversion fee, in satoshis, as a decimal string. Capped at one coin. */
     fee: string;
 }
+
+/**
+ * A registration in progress.
+ *
+ * **Persist this before broadcasting anything.** `pending` carries the
+ * reservation's salt, and the salt is the one value in the whole registration
+ * that cannot be recovered from the chain. Lose it after the commitment is
+ * posted and the fee is gone with no way to redeem it.
+ *
+ * Treat it as opaque and hand it back unchanged. It is JSON so it can be
+ * stored, not so it can be edited.
+ */
+export interface Pending {
+    /** Which step this is at. */
+    state: "awaitingCommitment" | "readyToRegister";
+    /** The name being claimed, without the parent. */
+    name: string;
+    /** What the registration will cost, in satoshis, as a decimal string. */
+    registrationFee: string;
+    /** The commitment transaction, hex. Post this for step one. */
+    commitmentHex: string;
+    /** Its txid. */
+    commitmentTxid: string;
+    /** The flow's own state, including the salt. Opaque. */
+    pending: unknown;
+}
+
+/** What to claim, and under what terms. */
+export interface PlanRegistrationRequest {
+    /** The name to claim, without the parent. */
+    name: string;
+    /** The addresses that will control the identity. Empty means this key's. */
+    primaryAddresses?: string[];
+    /** How many of them must sign. Omit for one. */
+    minSigs?: number;
+    /** An identity to credit as referrer, which reduces the fee. */
+    referral?: string;
+    /**
+     * Override the registration fee read from chain policy, in satoshis. The
+     * node reports that figure and it is spent before it can be checked against
+     * anything, so a wrong one is discovered after the commitment.
+     */
+    pinFee?: string;
+    /**
+     * The reservation salt, 32 bytes as hex. Omit and one is drawn for you.
+     *
+     * Supplying one makes the registration reproducible — same name, key and
+     * salt, same commitment — so a page that loses its state can re-derive
+     * rather than lose the fee. It must be unpredictable either way: the salt
+     * is what stops somebody seeing your name before you claim it.
+     */
+    salt?: string;
+}
+
+/** A registration in progress, handed back for the next step. */
+export interface PendingRequest {
+    /** The value a previous step returned, unchanged. */
+    pending: Pending;
+}
+
+/** Accepted but not yet mined. Poll again. */
+export interface CommitmentWaiting {
+    kind: "waiting";
+    /** How many confirmations it has. Zero means it is in the mempool. */
+    confirmations: number;
+}
+
+/** Confirmed. `pending` has moved to `"readyToRegister"`. */
+export interface CommitmentReady {
+    kind: "ready";
+    /** The value to hand to `planRegistrationComplete`. */
+    pending: Pending;
+}
+
+/** The chain moved under this registration; what was read before is suspect. */
+export interface CommitmentReorged {
+    kind: "reorged";
+    /** What was noticed. */
+    detail: string;
+}
+
+/** The node has never seen the commitment. */
+export interface CommitmentGone {
+    kind: "gone";
+}
+
+/** Where a commitment stands. */
+export type CommitmentStatus =
+    CommitmentWaiting | CommitmentReady | CommitmentReorged | CommitmentGone;
+
+/** A registration transaction, built and signed. **Not broadcast.** */
+export interface Registered {
+    /** The raw transaction, hex — what `sendrawtransaction` takes. */
+    hex: string;
+    /** Its txid in display order, computed before anything is sent. */
+    txid: string;
+    /** The name claimed, without the parent. */
+    name: string;
+    /** The identity's `i` address — computable before the identity exists. */
+    identityAddress: string;
+    /** What the registration cost, in satoshis, as a decimal string. */
+    feePaid: string;
+}
+
+/** @see Key.planRegistration */
+export type RegistrationStep = PlanStep<Pending>;
+/** @see planCommitmentStatus */
+export type CommitmentStatusStep = PlanStep<CommitmentStatus>;
+/** @see Key.planRegistrationComplete */
+export type RegisteredStep = PlanStep<Registered>;
