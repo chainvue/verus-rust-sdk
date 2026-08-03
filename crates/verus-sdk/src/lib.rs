@@ -252,9 +252,9 @@ pub mod network {
 #[cfg(feature = "light")]
 pub mod light {
     pub use verus_flows::shielded::{
-        check_anchor, full_output, plan_spend, scan, scan_after, select_notes, witness_note,
-        Checkpoint, ScanResult, SeenNullifier, SpendPlan, WitnessedNote, MAX_SPEND_NOTES,
-        REORG_CHECKPOINTS,
+        birthday, check_anchor, full_output, plan_spend, received, scan, scan_after, select_notes,
+        witness_note, Checkpoint, Received, ScanResult, SeenNullifier, SpendPlan, WitnessedNote,
+        MAX_SPEND_NOTES, REORG_CHECKPOINTS,
     };
     pub use verus_light::{GrpcWebTransport, LightClient, LightError, LightTransport};
     /// Deriving the account a scan and a spend are about.

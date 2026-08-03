@@ -77,6 +77,7 @@ each says whether running it spends testnet coins.
 | `make_offer_online` | fund and sign a marketplace offer (the hex *is* the offer) |
 | `take_offer_online` | inspect an offer against the chain, then take it at the verified terms |
 | `spend_note_online` | a shielded spend end to end, with the anchor checked against a second source before the prover runs |
+| `receive_online` | the receiving half: record a birthday, scan only what matters, show incoming payments with their memos |
 | `drive_async` | the non-blocking driver: `advance` in an async loop, each round's requests fetched concurrently |
 
 ### In a browser
@@ -429,6 +430,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Incremental scanning — the tail only, proving it is the same chain | ✅ `scan_after` + `absorb`, refusing a reorg rather than shifting note positions |
 | Recovering from a reorg — roll back to a block the live chain still has | ✅ `rewind_to` against kept checkpoints, so too shallow a rollback fails loudly |
 | The shielded fee floor — the rule the daemon actually applies | ✅ `min_relay_fee`, transcribed from `GetMinRelayFeeByOutputs`, not a per-kilobyte guess |
+| Receiving — a birthday, and memos read with a viewing key alone | ✅ **on chain**, `received` + `memo_text`, 3 blocks scanned instead of 1.17 million |
 | Application data on a VerusID — read current, read history, publish | ✅ **on chain**, twice over, with the erase invariant proven |
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
