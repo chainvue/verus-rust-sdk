@@ -106,6 +106,10 @@ required-features = ["prover"]
 name = "spend_note_online"
 required-features = ["light", "prover"]
 
+[[example]]
+name = "receive_online"
+required-features = ["light"]
+
 # The online examples: whole operations through the public node. Each one's
 # header says whether running it spends testnet coins.
 [[example]]

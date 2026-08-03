@@ -816,6 +816,174 @@ pub fn witness_note<T: LightTransport>(
     })
 }
 
+/// What a viewing key can read off an incoming note.
+///
+/// Detection ([`scan`]) works on 52 compact ciphertext bytes — enough to know a
+/// note is yours and what it is worth, and **not** enough to read its memo,
+/// which lives in the full 580-byte `encCiphertext`. [`received`] fetches that
+/// and decrypts it.
+#[derive(Debug, Clone)]
+pub struct Received {
+    /// Value in zatoshi, as the *full* decryption reports it.
+    ///
+    /// Cross-checked against what detection reported. They come from different
+    /// ciphertexts, so a disagreement means the server did not serve the
+    /// transaction the compact block advertised.
+    pub value: u64,
+    /// The address the note pays to — one of this wallet's, possibly a
+    /// diversified one it has not seen before.
+    pub recipient: [u8; 43],
+    /// The raw 512-byte ZIP-302 memo field. Use [`Self::memo_text`] unless you
+    /// have your own encoding.
+    pub memo: [u8; 512],
+}
+
+impl Received {
+    /// The memo as text, when it is text.
+    ///
+    /// ZIP-302 puts the meaning in the first byte: `0x00..=0xF4` is UTF-8 with
+    /// trailing zeros to pad, `0xF6` followed by zeros means "no memo", `0xFF`
+    /// is arbitrary application data, and the rest is reserved.
+    ///
+    /// `None` covers every not-text case together, deliberately: a wallet that
+    /// rendered arbitrary bytes as lossy UTF-8 would be showing a user
+    /// something that was never meant to be read that way. An empty *text*
+    /// memo is `Some("")`, which is a different thing from "no memo" and stays
+    /// distinguishable — and [`Self::memo`] is public for a wallet that wants
+    /// the `0xFF` payload.
+    ///
+    /// Text ending in a zero byte is not representable: the format pads with
+    /// zeros, so a sender's encoder cannot express it either. Interior zeros
+    /// survive.
+    #[must_use]
+    pub fn memo_text(&self) -> Option<&str> {
+        match self.memo[0] {
+            // The not-text classes, stated rather than inferred. Every byte in
+            // this range is also an invalid UTF-8 lead byte — Unicode stops at
+            // U+10FFFF, so 0xF5 and above start nothing — which means the
+            // `from_utf8` below would reject them all on its own and no test
+            // can tell this arm from its absence.
+            //
+            // Kept anyway, because what it encodes is the ZIP-302 rule and not
+            // a coincidence about UTF-8. Anything that later softened the
+            // decode — a lossy fallback, say — would silently start rendering
+            // arbitrary application data as text without this.
+            0xf5..=0xff => None,
+            _ => {
+                let end = self
+                    .memo
+                    .iter()
+                    .rposition(|byte| *byte != 0)
+                    .map_or(0, |last| last + 1);
+                core::str::from_utf8(&self.memo[..end]).ok()
+            }
+        }
+    }
+}
+
+/// Read an incoming note in full: its value, the address it paid, and its memo.
+///
+/// The join between what a scan found and what a wallet shows. A
+/// [`DetectedNote`] carries a value and a position and no memo, because
+/// detection reads only the compact prefix; this fetches the whole output
+/// description and decrypts it with the viewing key. No spending key is
+/// involved — a watch-only wallet displays incoming payments with exactly this.
+///
+/// It costs a round trip per note, so call it for what is being displayed
+/// rather than for everything a scan returned.
+///
+/// That round trip is also the one place this module departs from a uniform
+/// access pattern: a scan asks for every block in a range and reveals nothing,
+/// while this asks for *exactly* the transactions your notes are in. A light
+/// server learns which of them are yours. Unavoidable if you want the memo, and
+/// worth knowing before doing it for a wallet's whole history.
+///
+/// # Errors
+///
+/// [`FlowError::Shielded`] if the server does not serve the transaction the
+/// compact block advertised, if the output does not decrypt under this key, or
+/// if the full decryption disagrees with detection about the value.
+pub fn received<T: LightTransport>(
+    light: &LightClient<T>,
+    dfvk: &DiversifiableFullViewingKey,
+    note: &DetectedNote,
+) -> Result<Received, FlowError> {
+    let output = full_output(light, note)?;
+    let read = verus_sapling::scan::read_note(dfvk, &output, VERUS_ZIP212)
+        .map_err(|e| FlowError::Shielded(format!("decrypting the note: {e}")))?
+        .ok_or_else(|| {
+            FlowError::Shielded(format!(
+                "the output at {}:{} does not decrypt under this viewing key, though the scan \
+                 reported it as ours",
+                note.height, note.output_index
+            ))
+        })?;
+
+    // Belt and braces, and honestly labelled as such: both values are bound to
+    // the note commitment, and `full_output` has already required the compact
+    // and full commitments to match — so reaching either branch below takes a
+    // break in that binding, not a lying server. Kept because it costs a
+    // comparison and because a future change to `full_output` could weaken what
+    // it checks without anyone noticing here.
+    if read.value != note.value {
+        return Err(FlowError::Shielded(format!(
+            "the note at {}:{} decrypts to {} zatoshi but the scan found {}; the transaction \
+             served is not the one the compact block advertised",
+            note.height, note.output_index, read.value, note.value
+        )));
+    }
+    if read.recipient != note.recipient {
+        return Err(FlowError::Shielded(format!(
+            "the note at {}:{} decrypts to a different address than the scan reported",
+            note.height, note.output_index
+        )));
+    }
+
+    Ok(Received {
+        // From the decryption, not from the scan. Indistinguishable while the
+        // check above holds — which is the point of the check — but it is the
+        // ciphertext that is authoritative about what the note is worth.
+        value: read.value,
+        recipient: read.recipient,
+        memo: read.memo,
+    })
+}
+
+/// The height a newly created account can start scanning from.
+///
+/// A wallet that does not record one rescans the whole chain on every restore,
+/// and on Verus there is no shortcut to fall back on: **Sapling activates at
+/// height 1**, so "start at activation" is the same as starting at genesis —
+/// 1.17 million blocks on VRSCTEST as of 2026-08-03, and four times that on
+/// mainnet.
+///
+/// # Record it *before* the address is used
+///
+/// The ordering is the whole trap. A birthday taken after an address has been
+/// given out is a birthday later than the first payment to it, and every note
+/// before it is invisible — a wallet that is quietly missing money, with
+/// nothing to indicate it. Take this the moment the account is derived, and
+/// persist it before showing anyone the address.
+///
+/// # How much slack
+///
+/// [`REORG_CHECKPOINTS`] blocks. This module already argues that 200 is "far
+/// past any reorg a Verus chain has had" and sizes its rollback window to it —
+/// so the same number is the right floor here, and saying "a few" while
+/// budgeting 200 one screen up was an inconsistency worth naming.
+///
+/// The asymmetry decides it. Two hundred blocks of extra scanning is seconds.
+/// A payment that landed in a block the chain later replaced, below a birthday
+/// chosen ten blocks back, is invisible forever — and nothing reports it,
+/// because a scan cannot know what it was never asked to look at.
+///
+/// # Errors
+///
+/// [`FlowError::Rpc`] if the node cannot be reached.
+pub fn birthday(reader: &impl verus_rpc::ChainReader) -> Result<u64, FlowError> {
+    Ok(u64::from(reader.block_count()?))
+}
+
 /// Fetch the complete output description that created a note.
 ///
 /// Detection works on 52 compact ciphertext bytes, which is enough to know a

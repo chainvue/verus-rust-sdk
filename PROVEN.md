@@ -70,6 +70,7 @@ transaction, so it has no row here.
 | **`flows::shielded::spend` — z→z, two notes in one bundle** | `2e2b04df1161e220f6a3dfd80abb821e15723f42fea05dec2dc451da5bcd27f5` | 1173695 |
 | **…and z→t, the change note spent back out, no change** | `2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d` | 1173696 |
 | **…and a z→t that keeps change**, from the second account | `f46ed415cbbdde407ab8d45113b41542246dd3cda52d7526ff6be9903b4056e3` | 1173730 |
+| **Received and read** — a memo'd payment found from a birthday and displayed with a viewing key alone | `17bd096551571ccfa5ed101d67dc7a21a652c3fe47aacabe25195815739c2224` | 1174445 |
 
 All three are the composed path rather than the builder: scan → select →
 witness → **check the anchor against consensus** → prove → sign → broadcast,
@@ -98,6 +99,20 @@ concealing which output is the real recipient is the point — so the change-fre
 spend emitted two dummies and the other emitted one real change note and one
 dummy. The value claim is the one to read: `valueBalance` 0.0497 against a
 0.0497 note is the whole note leaving the pool.
+
+The last row is the receiving half, and it is the one a watch-only wallet
+lives on. A fresh account recorded its birthday **before** its address was
+published, 0.02 VRSCTEST arrived carrying `hello from verus-rust-sdk`, and
+`receive_online` found it and printed the memo — scanning **3 blocks**, not the
+1 174 445 a wallet without a birthday would have walked. Sapling activates at
+height 1 on Verus, so there is no activation floor to fall back on: the
+birthday is the only thing standing between a restore and a full-chain scan.
+
+No spending key was involved. Detection reads 52 compact bytes, which carry a
+value and not a memo; `received` fetches the full 580-byte ciphertext and
+decrypts it with the viewing key. `crates/verus-flows/tests/shielded_memo.rs`
+pins that against the z→z above, from committed bytes, including that the
+sender's own change output does **not** decrypt under the recipient's key.
 
 The anchor check is the part with no offline equivalent. The plan computed
 `db1d7a7d…` from lightwalletd's frontier and commitments; `getblock 1173695` on
