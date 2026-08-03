@@ -41,34 +41,91 @@ pub const MAX_SPEND_NOTES: usize = 10;
 /// Notes chosen, witnessed and anchored — everything a build needs except the
 /// spending key and the prover.
 ///
-/// `#[non_exhaustive]`, so only this crate can build one. That is what makes
-/// [`Self::anchor`]'s claim structural rather than documentary: every
-/// `SpendPlan` in existence came out of [`plan_spend`], which checked its
-/// anchor against consensus before returning. A caller able to write the field
-/// itself could prove against a root the chain never had, and the builder's own
-/// `expected_anchor` guard would not notice — it compares against this same
-/// value.
-#[non_exhaustive]
+/// Read-only from outside this crate, and that is load-bearing rather than
+/// tidy. Every `SpendPlan` in existence came out of [`plan_spend`], which
+/// checked its anchor against consensus before returning — so a plan reaching
+/// the prover has an anchor the chain really had.
+///
+/// The fields are therefore reachable only through the accessors below.
+/// `#[non_exhaustive]` alone would not do it: it blocks *construction* and not
+/// *mutation*, so with public fields `plan.anchor = whatever` would still
+/// compile in a caller's crate, and the builder's own `expected_anchor` guard
+/// would not notice — it compares against this same value. An earlier version
+/// of this doc claimed `#[non_exhaustive]` made the guarantee structural. It
+/// did not.
 pub struct SpendPlan {
     /// The selected notes, each witnessed to [`Self::anchor_height`].
-    pub notes: Vec<WitnessedNote>,
+    pub(crate) notes: Vec<WitnessedNote>,
     /// The anchor every one of them roots to, confirmed against the chain's
     /// own `finalsaplingroot`.
-    pub anchor: [u8; 32],
+    pub(crate) anchor: [u8; 32],
     /// The height that anchor came from.
-    pub anchor_height: u64,
-    /// The light server's tip when the plan was made.
+    pub(crate) anchor_height: u64,
+    /// The chain tip **as the [`ChainReader`] reports it**, when the plan was
+    /// made.
     ///
-    /// Recorded because it is not always the anchor height: a caller may pin a
-    /// deeper anchor deliberately. An expiry counted from the anchor in that
-    /// case would be behind the tip before the transaction was even built.
-    pub tip: u64,
+    /// Recorded because it is not the anchor height: a caller may pin a deeper
+    /// anchor deliberately, and an expiry counted from the anchor would then be
+    /// behind the tip before the transaction was even built.
+    ///
+    /// It comes from the daemon rather than the light server, and that is not
+    /// incidental. Expiry is the only consensus field in a shielded spend
+    /// derived from a *height*, and it decides how long the transaction stays
+    /// minable. A light server that answered `GetLatestBlock` with 499 999 979
+    /// would produce a transaction valid for centuries instead of twenty
+    /// minutes — one that a user watches expire, settles around, and then finds
+    /// mined months later against notes they may have since spent. That is
+    /// value lost rather than a transaction rejected, and it is the one thing
+    /// in this module a hostile light server could otherwise reach. The
+    /// transparent flows have always counted expiry from `funding.tip`, which
+    /// is the same reader; this matches them.
+    pub(crate) tip: u64,
     /// Total value of the selected notes.
-    pub total_in: u64,
+    pub(crate) total_in: u64,
     /// What the notes are worth beyond what the spend costs, and so what has to
     /// come back as change. Shielded value cannot be split at the input: a note
     /// enters a spend whole.
-    pub change: u64,
+    pub(crate) change: u64,
+}
+
+impl SpendPlan {
+    /// The selected notes, each witnessed to [`Self::anchor_height`].
+    #[must_use]
+    pub fn notes(&self) -> &[WitnessedNote] {
+        &self.notes
+    }
+
+    /// The anchor every one of them roots to, confirmed against the chain's own
+    /// `finalsaplingroot` before this plan was returned.
+    #[must_use]
+    pub fn anchor(&self) -> [u8; 32] {
+        self.anchor
+    }
+
+    /// The height that anchor came from.
+    #[must_use]
+    pub fn anchor_height(&self) -> u64 {
+        self.anchor_height
+    }
+
+    /// The chain tip the [`ChainReader`] reported, which the expiry is counted
+    /// from. See the field docs for why it is not the light server's.
+    #[must_use]
+    pub fn tip(&self) -> u64 {
+        self.tip
+    }
+
+    /// Total value of the selected notes.
+    #[must_use]
+    pub fn total_in(&self) -> u64 {
+        self.total_in
+    }
+
+    /// What comes back as change.
+    #[must_use]
+    pub fn change(&self) -> u64 {
+        self.change
+    }
 }
 
 /// Written out rather than derived: a [`WitnessedNote`] carries a Merkle path
@@ -93,14 +150,19 @@ impl core::fmt::Debug for SpendPlan {
 /// fee. Passing the outputs alone builds a plan that cannot pay for itself, and
 /// the builder would then refuse it after the fetches.
 ///
-/// `anchor_height` of `None` uses the light server's tip.
+/// `anchor_height` of `None` uses the lower of the two tips — the light
+/// server's and the daemon's — so the anchor is a height both of them have.
+/// Pin it deeper for reorg safety; the expiry is counted from the chain tip
+/// either way, not from the anchor.
 ///
 /// # Errors
 ///
 /// [`FlowError::InsufficientFunds`] if the notes cannot cover `needed`.
 /// [`FlowError::Shielded`] if `needed` is zero, if the anchor height is below a
 /// selected note's own block, if the witnesses disagree about the anchor, or if
-/// the anchor is not the one the chain committed to.
+/// the anchor is not the one the chain committed to. [`FlowError::Rpc`] if the
+/// daemon cannot be reached — its tip is needed even when the anchor is
+/// pinned.
 pub fn plan_spend<T: LightTransport>(
     light: &LightClient<T>,
     reader: &impl ChainReader,
@@ -120,14 +182,24 @@ pub fn plan_spend<T: LightTransport>(
     }
     let selected = select_notes(notes, needed)?;
 
-    // Asked for even when the anchor is pinned: `prove_spend` sets the expiry
-    // from the tip, and one small call is cheaper than a transaction that
-    // cannot be mined.
-    let tip = light
+    // Two tips, from two parties, for two different jobs.
+    //
+    // The daemon's is the one the expiry is counted from — see `SpendPlan::tip`
+    // for why that must not be the light server's. Asked for even when the
+    // anchor is pinned, because `prove_spend` needs it either way.
+    let tip = u64::from(reader.block_count()?);
+    // The light server's bounds what it can actually witness to.
+    let light_tip = light
         .latest_block()
         .map_err(|e| FlowError::Shielded(format!("light server tip: {e}")))?
         .height;
-    let anchor_height = anchor_height.unwrap_or(tip);
+    // Defaulting to the lower of the two keeps the anchor at a height *both*
+    // sources have. Two honest sources are routinely a block apart, and taking
+    // the light server's alone meant asking the daemon to confirm a
+    // `finalsaplingroot` for a block it had not seen yet — a plan that failed
+    // for no reason but ordinary skew, with an error that named nothing a
+    // caller could act on.
+    let anchor_height = anchor_height.unwrap_or_else(|| tip.min(light_tip));
     // A note cannot be witnessed before it existed. Checked here so the failure
     // names the note, rather than surfacing as a witness error several round
     // trips later.

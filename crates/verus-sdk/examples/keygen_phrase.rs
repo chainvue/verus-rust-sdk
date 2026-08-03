@@ -12,9 +12,15 @@
 //! here, in the application, exactly as `keygen` reads them for a transparent
 //! key. Where they come from is the most security-critical decision a wallet
 //! makes, and a library that quietly picked for you would move it somewhere
-//! nobody reviews. `/dev/urandom` is a CSPRNG; a phrase from a weak source is
-//! not recoverable from later, because it protects the wallet only for as long
-//! as nobody looks.
+//! nobody reviews. A phrase from a weak source is not recoverable from later,
+//! because it protects the wallet only for as long as nobody looks.
+//!
+//! `/dev/urandom` is a CSPRNG and it is **Unix-only** — this example does not
+//! run on Windows, and a desktop wallet has to. The portable answer is the
+//! `getrandom` crate (`getrandom::getrandom(&mut entropy)`) or `rand`'s
+//! `OsRng`, both of which reach the same OS facility on every platform. The
+//! file is opened directly here to keep the example dependency-free and to
+//! make the source of the bytes impossible to miss.
 //!
 //! # Two key schedules, one phrase
 //!

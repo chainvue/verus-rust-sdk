@@ -25,13 +25,28 @@ transparent = ["dep:verus-tx"]
 #   prover    — additionally BUILD t→z / z→z / z→t. Needs the Sapling parameters.
 # A balance-only wallet takes the first and stops.
 shielded = ["dep:verus-sapling"]
-# `verus-flows?/prover` is weak on purpose: it turns the shielded SPEND path
-# on when `light` already pulled the flows in, and stays inert for a build
-# that takes the prover without the network.
+# `verus-flows?/prover` is weak on purpose: it stays inert for an offline build
+# that takes the prover without the network, and turns the shielded SPEND path
+# on once `verus-flows` is in the tree.
+#
+# One wart, because Cargo cannot say "only when `light` is also on": with
+# `network` + `prover` and no `light`, `verus-flows` is present so its `prover`
+# feature fires, which pulls `verus-light` in — while this crate's `light`
+# module, and therefore the whole spend API, stays absent. Dead weight in a
+# configuration nobody wants; add `light` or drop `prover`.
 prover = ["shielded", "verus-sapling/prover", "verus-flows?/prover"]
 # bellman's rayon backend: a large speedup natively, and unavailable on wasm32.
 multicore = ["shielded", "verus-sapling/multicore"]
 # Persist pending state: amounts, UTXOs, identities, partial transactions.
+#
+# The TRANSPARENT half only. Nothing shielded is covered: `DetectedNote`, the
+# nullifiers beside it, and `Unsent<ShieldedSpent>` carry no `Serialize`, even
+# though a wallet has to persist all three — notes and nullifiers to avoid
+# rescanning and to avoid spending money that is gone, and an `Unsent` to avoid
+# repeating tens of seconds of Groth16 after a crash between proving and
+# broadcasting. Their fields are public, so a wallet can persist them by hand;
+# it just is not done for it yet. Said here rather than discovered by enabling
+# this feature and finding half of it missing.
 serde = ["verus-tx?/serde"]
 # The networked half: read chain state and compose lookup → build → sign →
 # broadcast into operations, through `verus-rpc` and `verus-flows`. Off by

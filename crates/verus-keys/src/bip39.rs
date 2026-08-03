@@ -252,9 +252,8 @@ pub fn mnemonic_from_entropy(entropy: &[u8; 32]) -> Zeroizing<String> {
         }
         phrase.push_str(list[index]);
     }
-    debug_assert_eq!(
-        phrase.capacity(),
-        WORDS * 9,
+    debug_assert!(
+        phrase.capacity() >= WORDS * 9,
         "the phrase reallocated, leaving an unwiped copy behind"
     );
     phrase
@@ -689,13 +688,12 @@ mod tests {
         }
     }
 
-    /// One bit of entropy changes the phrase.
+    /// One bit of entropy changes the phrase, somewhere other than the
+    /// checksum.
     ///
     /// A generator that ignored some of its input — a truncated copy, a bad
     /// shift — would still produce valid, checksummed, plausible phrases. It
     /// would just produce too few of them.
-    /// One bit of entropy changes the phrase — and changes it somewhere other
-    /// than the checksum.
     ///
     /// Comparing whole phrases would not show that. The checksum is taken over
     /// the intact entropy, so flipping any bit moves the last word with

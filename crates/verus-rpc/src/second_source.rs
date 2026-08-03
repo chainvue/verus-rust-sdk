@@ -56,12 +56,14 @@
 //!
 //! # What is corroborated
 //!
-//! Four questions, chosen because each has a failure mode that is **not**
+//! Five questions, chosen because each has a failure mode that is **not**
 //! benign and an answer that does not legitimately churn between two healthy
 //! nodes:
 //!
 //! * [`ChainReader::currency`] — the registration and launch fees, the referral
 //!   levels and the proof protocol. The one above.
+//! * [`ChainReader::identity_registration`] — the second step of a referral
+//!   chain, walked once per level above the immediate referrer.
 //! * [`ChainReader::identity_at`] — the trust root of
 //!   `verus_flows::verify_login`, which reads an identity's authority set from
 //!   a node and then verifies the signature locally *against whatever the node
@@ -107,6 +109,19 @@
 //!   that bound into no bound. Not corroborated here because two healthy nodes
 //!   differ by a block routinely, and any comparison would need a tolerance —
 //!   which is a policy threshold, and belongs to the application.
+//! * **[`ChainReader::raw_transaction`] completes a referral chain.**
+//!   [`ChainReader::identity_registration`] is corroborated above, but the
+//!   transaction it names is then decoded through this, on one node. Not
+//!   corroborated because the reply carries `confirmations`, which two healthy
+//!   nodes report differently by construction — comparing it in full would
+//!   disagree on every call. Comparing a subset would be this crate choosing
+//!   which fields matter, which is the policy it declines to ship.
+//! * **[`ChainReader::verify_message`] is served from the primary alone**, and
+//!   is the one uncorroborated read that *looks* like an authentication check.
+//!   It is a cross-check by design — `verus_flows::verify_login` verifies
+//!   locally against the corroborated [`ChainReader::identity_at`] and never
+//!   calls it. A caller reaching for this instead gets exactly the one-lying-node
+//!   bypass corroborating `identity_at` was meant to close.
 //! * **[`ChainReader::block`] carries the `finalsaplingroot`** a shielded spend
 //!   checks its anchor against. Reading both the anchor's inputs and the header
 //!   from the same node would be circular; `verus_flows::shielded` avoids that
@@ -119,6 +134,13 @@
 //! A corroborated question is two requests instead of one, issued
 //! **sequentially** — this crate has no async, so the latency is the sum of
 //! both nodes rather than the slower of them.
+//!
+//! It also doubles what leaks. The crate docs call "sees every address you ask
+//! about" the real price of a public node; a corroborated question pays that
+//! price to *two* operators, and the questions corroborated here are the
+//! identifying ones — which names and which identities this wallet cares
+//! about. Buying integrity with privacy is the right trade for a registration
+//! fee and it is still a trade.
 //!
 //! Two nodes agreeing is not proof. They may share an operator, an upstream, or
 //! a bug. What this defeats is *one* endpoint being wrong — the case the crate
@@ -154,8 +176,9 @@ use crate::types::{
 /// costs money or lets someone in.
 ///
 /// Corroborates [`ChainReader::currency`], [`ChainReader::identity`],
-/// [`ChainReader::identity_at`] and the chain identity half of
-/// [`ChainReader::chain_info`]; everything else is served from the primary.
+/// [`ChainReader::identity_at`], [`ChainReader::identity_registration`] and the
+/// chain identity half of [`ChainReader::chain_info`]; everything else is
+/// served from the primary.
 /// The [module docs](crate::second_source) give the reasoning, the cost, and
 /// the two gaps this deliberately leaves open.
 pub struct SecondSourced<A, B> {
@@ -279,6 +302,28 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
         )
     }
 
+    /// Both nodes.
+    ///
+    /// The second step of a referral chain. `verus_flows::identity` resolves
+    /// the immediate referrer through [`Self::identity`], then walks the levels
+    /// above it through this — so corroborating only the first step leaves the
+    /// deeper payees on one node's word, and `idreferrallevels` is 3 on the
+    /// chains that matter.
+    ///
+    /// A wrong chain here is not theft: consensus checks the payouts against
+    /// the real registrations and rejects the reveal. It is the *other* loss in
+    /// this module's opening paragraph — a commitment paid for, against a
+    /// registration that can now never be completed.
+    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
+        let primary = self.primary.identity_registration(name_or_id);
+        let secondary = self.secondary.identity_registration(name_or_id);
+        agreed(
+            format!("getidentity {name_or_id} (registration txid)"),
+            primary,
+            secondary,
+        )
+    }
+
     // --------------------------------------------------- primary only
 
     fn block_count(&self) -> Result<u32, RpcError> {
@@ -345,10 +390,6 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
 
     fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError> {
         self.primary.identity_content(name_or_id)
-    }
-
-    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
-        self.primary.identity_registration(name_or_id)
     }
 
     fn vdxf_id(&self, name: &str) -> Result<[u8; 20], RpcError> {

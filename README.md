@@ -354,9 +354,11 @@ strings. There is no float in the value path.
 transparent path. That is a security property *and* what makes byte-for-byte
 differential testing possible at all.
 
-**Entropy is always the caller's.** There is no RNG in `verus-keys` and no
-`generate()` anywhere in the library — not for a transparent key, and not for a
-recovery phrase. `bip39::mnemonic_from_entropy` turns 32 bytes you supply into
+**Key material is never generated for you.** There is no RNG in `verus-keys`
+and no `generate()` for a key or a recovery phrase — the bytes are the
+caller's, always. (`verus-flows` does draw one random value of its own: the
+salt joining the two halves of a VerusID registration, which is not key
+material and never leaves the `Pending` it is returned in.) `bip39::mnemonic_from_entropy` turns 32 bytes you supply into
 the 24 words, so where those bytes came from stays visible in the application's
 own code rather than buried in a dependency. `keygen` and `keygen_phrase` show
 one way, four lines apart.

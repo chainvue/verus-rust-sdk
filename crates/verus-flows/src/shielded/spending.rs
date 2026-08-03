@@ -139,10 +139,15 @@ pub struct SpendRequest<'a> {
     pub anchor_height: Option<u64>,
     /// When the transaction stops being minable.
     ///
-    /// `None` is [`DEFAULT_EXPIRY_BLOCKS`] past the anchor height — the same
-    /// policy [`send`](fn@crate::send) applies, and for the same reason: a spend
-    /// that does not confirm should die rather than land months later against
-    /// notes the wallet has since spent elsewhere.
+    /// `None` is [`DEFAULT_EXPIRY_BLOCKS`] past the **chain tip**, as the
+    /// [`ChainReader`] reports it — the same policy [`send`](fn@crate::send)
+    /// applies, and for the same reason: a spend that does not confirm should
+    /// die rather than land months later against notes the wallet has since
+    /// spent elsewhere.
+    ///
+    /// Not past the anchor. A caller pinning a deliberately deep anchor would
+    /// otherwise get an expiry already behind the chain. And not from the light
+    /// server's tip either — see [`SpendPlan::tip`](crate::SpendPlan#structfield.tip).
     pub expiry: Option<Expiry>,
 }
 

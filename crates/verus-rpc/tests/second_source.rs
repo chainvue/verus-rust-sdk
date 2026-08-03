@@ -203,8 +203,11 @@ impl ChainReader for Node {
     fn identity_content(&self, _n: &str) -> Result<verus_rpc::IdentityContent, RpcError> {
         unimplemented!("not asked by these tests")
     }
-    fn identity_registration(&self, _n: &str) -> Result<String, RpcError> {
-        unimplemented!("not asked by these tests")
+    fn identity_registration(&self, name_or_id: &str) -> Result<String, RpcError> {
+        // Keyed off the identity key so a "lying" node names a different
+        // registration, which is what a forged referral chain looks like.
+        let txid = format!("{:0>64}", self.identity_key.to_lowercase());
+        self.record(&format!("getidentity {name_or_id} (registration)"), txid)
     }
     fn vdxf_id(&self, _n: &str) -> Result<[u8; 20], RpcError> {
         unimplemented!("not asked by these tests")
@@ -533,4 +536,33 @@ fn live_two_nodes_agree_about_registration_policy() {
         "corroborated: idregistrationfees {} across {} referral level(s)",
         policy.id_registration_fee, policy.id_referral_levels
     );
+}
+
+/// The second step of a referral chain is corroborated too.
+///
+/// `identity()` resolves the immediate referrer; the levels above it are walked
+/// through `identity_registration()`. Corroborating only the first step leaves
+/// the deeper payees on one node's word — and `idreferrallevels` is 3 on the
+/// chains that matter, so most of the chain would be uncovered.
+#[test]
+fn a_forged_referral_chain_is_caught() {
+    let reader = SecondSourced::new(
+        Node::new("100").with_identity_key("Rhonest"),
+        Node::new("100").with_identity_key("Rattacker"),
+    );
+    match reader.identity_registration("bob@") {
+        Err(RpcError::SourcesDisagree { question, .. }) => {
+            assert!(question.contains("bob@"), "{question}");
+        }
+        other => panic!("expected a disagreement, got {other:?}"),
+    }
+
+    // Two honest nodes still agree, so this is not simply always failing.
+    let honest = SecondSourced::new(
+        Node::new("100").with_identity_key("Rhonest"),
+        Node::new("100").with_identity_key("Rhonest"),
+    );
+    assert!(honest.identity_registration("bob@").is_ok());
+    // And both were consulted.
+    assert_eq!(honest.secondary().asked().len(), 1);
 }

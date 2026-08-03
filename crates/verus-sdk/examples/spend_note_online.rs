@@ -126,19 +126,25 @@ fn main() -> Result<(), Error> {
     // it is tens of seconds per note, so a caller gets to see what it is about
     // to pay for — including the anchor, already checked against the daemon's
     // own block header.
-    let plan = plan_spend(&light, &node, &unspent, amount + fee, None)?;
+    // Checked, because this is the number the plan sets change aside against.
+    // Nothing downstream would be wrong if it wrapped — `prove_spend` refuses a
+    // plan that does not balance — but the shape a wallet copies should be the
+    // one that cannot.
+    let needed = amount.checked_add(fee).ok_or("amount plus fee overflows")?;
+    let plan = plan_spend(&light, &node, &unspent, needed, None)?;
     eprintln!(
         "spending {} note(s) at anchor {} (height {}), {} zatoshi change",
-        plan.notes.len(),
-        hex::encode(plan.anchor),
-        plan.anchor_height,
-        plan.change
+        plan.notes().len(),
+        hex::encode(plan.anchor()),
+        plan.anchor_height(),
+        plan.change()
     );
 
-    let dir = env_or(
-        "VERUS_SAPLING_PARAMS",
-        "~/Library/Application Support/ZcashParams",
-    );
+    // Required rather than defaulted. The obvious default is a `~`-relative
+    // path, and `File::open` does not expand `~` — so the fallback would be
+    // dead code that fails as "no such file" on a path that looks correct.
+    let dir = std::env::var("VERUS_SAPLING_PARAMS")
+        .map_err(|_| "set VERUS_SAPLING_PARAMS to the directory holding sapling-spend.params")?;
     eprintln!("loading Sapling parameters from {dir} …");
     let params = SaplingParams::from_files(
         format!("{dir}/sapling-spend.params"),

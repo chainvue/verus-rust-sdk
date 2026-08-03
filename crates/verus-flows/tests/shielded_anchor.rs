@@ -148,3 +148,24 @@ fn a_root_that_is_not_hex_is_refused() {
         Err(FlowError::Shielded(_))
     ));
 }
+
+/// The scripted chain can serve a mempool, so a wallet can test its own
+/// "is my payment still pending?" logic against it.
+///
+/// Here because `with_mempool` is new public test surface and would otherwise
+/// be used by nothing — a double nobody drives is a double nobody knows works.
+#[test]
+fn the_scripted_chain_can_report_pending_transactions() {
+    use verus_flows::ChainReader;
+
+    let txid = "ab".repeat(32);
+    let reader = ScriptedReader::new(1_167_990).with_mempool(&[&txid]);
+    assert_eq!(reader.mempool().expect("scripted"), vec![txid]);
+
+    // And an unscripted chain has an empty mempool rather than an error:
+    // nothing pending is an answer.
+    assert!(ScriptedReader::new(1_167_990)
+        .mempool()
+        .expect("scripted")
+        .is_empty());
+}
