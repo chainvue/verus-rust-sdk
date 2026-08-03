@@ -3,6 +3,12 @@ resolver = "2"
 members = [
     "crates/verus-wire",
     "crates/verus-keys",
+    "crates/verus-tx-primitives",
+    "crates/verus-tx-transparent",
+    "crates/verus-tx-protocol",
+    "crates/verus-tx-currency",
+    "crates/verus-tx-identity",
+    "crates/verus-tx-market",
     "crates/verus-tx",
     "crates/verus-sapling",
     "crates/verus-rpc",

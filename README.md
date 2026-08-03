@@ -384,7 +384,13 @@ finished bytes; they can never ask a node to sign.
 |---|---|
 | `verus-wire` | v4 transaction serialization and parsing, ZIP-243 sighashes. No keys, no network. |
 | `verus-keys` | WIF, base58check, `R`/`i` addresses, P2PKH scripts, ECDSA |
-| `verus-tx` | transparent transactions: sends, tokens, VerusIDs, offers, conversions, multisig, currency launch |
+| `verus-tx` | transparent transactions: sends, tokens, VerusIDs, offers, conversions, multisig, currency launch — a facade over the six below |
+| `verus-tx-primitives` | money, ids, expiry, errors, CryptoCondition encoding, fee and coin-selection rules. Builds no transaction; depend on this if you only need to talk about an `Amount` |
+| `verus-tx-transparent` | transparent sends, and the assembly every other builder reuses |
+| `verus-tx-protocol` | what an output *means*: identities, VDXF keys, token outputs, reserve transfers, and the decoder that reads them back |
+| `verus-tx-currency` | defining and launching a currency |
+| `verus-tx-identity` | the VerusID lifecycle: commit, register, update, revoke, recover, spend, sign |
+| `verus-tx-market` | offers, partially-signed transactions, script-layer multisig |
 | `verus-sapling` | shielded: note scanning, ZIP-32 derivation, and t→z / z→z / z→t building behind `prover` |
 | `verus-rpc` | typed read-only JSON-RPC client + broadcast; can never ask a node to sign |
 | `verus-flows` | lookup → build → sign → broadcast, composed into operations a wallet calls |

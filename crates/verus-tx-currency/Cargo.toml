@@ -1,0 +1,23 @@
+[package]
+name = "verus-tx-currency"
+description = "Defining and launching a Verus currency: CCurrencyDefinition serialization and the launch transaction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+serde = ["verus-tx-primitives/serde", "verus-tx-transparent/serde", "verus-tx-protocol/serde"]
+
+[dependencies]
+verus-tx-primitives = { path = "../verus-tx-primitives" }
+verus-tx-transparent = { path = "../verus-tx-transparent" }
+verus-tx-protocol = { path = "../verus-tx-protocol" }
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+hex = { workspace = true }

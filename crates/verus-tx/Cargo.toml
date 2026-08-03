@@ -1,6 +1,6 @@
 [package]
 name = "verus-tx"
-description = "Build and sign transparent Verus transactions offline"
+description = "Build and sign transparent Verus transactions offline — the facade over the verus-tx-* crates"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,15 +14,34 @@ workspace = true
 [features]
 # Serialize the types a wallet persists between runs: amounts, outpoints,
 # UTXOs, identities and partially-signed transactions. Off by default so a
-# consumer that does not need it does not carry serde.
-serde = ["dep:serde"]
+# consumer that does not need it does not carry serde. Forwarded to every
+# crate behind the facade, since a caller cannot reach past it to enable them
+# individually.
+serde = [
+    "verus-tx-primitives/serde",
+    "verus-tx-transparent/serde",
+    "verus-tx-protocol/serde",
+    "verus-tx-currency/serde",
+    "verus-tx-identity/serde",
+    "verus-tx-market/serde",
+]
 
+# Nothing but the crates this one re-exports. `src/lib.rs` has no code in it —
+# so if a dependency other than these reappears here, the facade has grown a
+# body, and that is worth a second look.
 [dependencies]
-serde = { version = "1", features = ["derive"], optional = true }
+verus-tx-primitives = { path = "../verus-tx-primitives" }
+verus-tx-transparent = { path = "../verus-tx-transparent" }
+verus-tx-protocol = { path = "../verus-tx-protocol" }
+verus-tx-currency = { path = "../verus-tx-currency" }
+verus-tx-identity = { path = "../verus-tx-identity" }
+verus-tx-market = { path = "../verus-tx-market" }
+
+# The integration tests are the proof that the facade works: they import
+# through `verus_tx::…` exactly as a consumer does, which is why they stayed
+# here rather than moving down into the crates they exercise.
+[dev-dependencies]
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
 serde_json = "1"

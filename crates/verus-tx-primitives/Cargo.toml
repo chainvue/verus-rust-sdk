@@ -1,0 +1,28 @@
+[package]
+name = "verus-tx-primitives"
+description = "The vocabulary every Verus transaction builder shares: money, ids, expiry, errors, CryptoCondition encoding, fee and coin-selection rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Serialize the types a wallet persists between runs: amounts, outpoints and
+# UTXOs. Off by default so a consumer that does not need it does not carry
+# serde.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

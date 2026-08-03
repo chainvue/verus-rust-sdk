@@ -27,12 +27,49 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Scope
+//! # This crate is a facade
 //!
-//! Native VRSC transfers between `R` addresses are complete and proven on chain.
-//! Token outputs are being built up in [`cc`]; conversions, VerusID operations
-//! and identity-held funds are not ported yet, and those inputs are **refused**,
-//! never approximated.
+//! `src/lib.rs` is the whole of it: every name below is re-exported from one
+//! of six crates, and importing through `verus_tx::…` gets all of them. That
+//! is the path to keep using if you do not care how the pieces are arranged.
+//!
+//! | crate | what it holds |
+//! |---|---|
+//! | [`verus_tx_primitives`] | money, ids, expiry, errors, CryptoCondition encoding, fee and coin-selection rules |
+//! | [`verus_tx_transparent`] | transparent sends, and the assembly every other builder reuses |
+//! | [`verus_tx_protocol`] | what an output *means*: identities, VDXF, token outputs, reserve transfers, and the decoder |
+//! | [`verus_tx_currency`] | defining and launching a currency |
+//! | [`verus_tx_identity`] | the VerusID lifecycle, and message signing |
+//! | [`verus_tx_market`] | offers, partially-signed transactions, script multisig |
+//!
+//! Depend on one directly when you want only part of this. Something that
+//! merely needs to *talk about* an [`Amount`] or a [`CurrencyId`] — a price
+//! feed, a balance display, an RPC layer — should take
+//! [`verus_tx_primitives`] and not compile the identity registration builder
+//! to get one.
+//!
+//! # What the split did to this surface
+//!
+//! Every name `verus-tx` exported before the split still resolves, and
+//! `tests/facade_surface.rs` fails the build if one stops. Three things were
+//! *added*, all of them fallout from moving code down rather than choices:
+//!
+//! * [`cc`] gained eleven `EVAL_*` constants. They were scattered across five
+//!   modules — which is what made `cc` depend on `identity`, `decode` on
+//!   `convert`, and `token` on `register` — and they all name a
+//!   CryptoCondition, so they live beside the encoder now. Each old path is
+//!   still a working re-export.
+//! * `identity::identity_id` is a new path to a function that was, and still
+//!   is, reachable as `verus_tx::identity_id` and `register::identity_id`.
+//! * [`fee::check_fee_ceiling`] and [`fee::check_burn_ceiling`] widened from
+//!   `pub(crate)` to `pub` so the assembler could call them across the new
+//!   boundary, and `fee` is re-exported wholesale, so they are reachable.
+//!   Both are `#[doc(hidden)]`: visible, not promised.
+//!
+//! Otherwise the crates behind this one expose more than it does — `assemble`,
+//! `Balances`, `reject_unspendable_reserve` and the rest are `pub` there
+//! because they cross a boundary, and none is re-exported here. Nothing behind
+//! the facade is stable in the way the names below are.
 //!
 //! # Why the fee logic looks the way it does
 //!
@@ -44,74 +81,34 @@
 
 #![doc(html_no_source)]
 
-mod amount;
-mod assemble;
-pub mod balances;
-pub mod cc;
-pub mod convert;
-mod currency;
-pub mod currency_definition;
-pub mod currency_launch;
-pub mod decode;
-mod error;
-mod expiry;
-pub mod fee;
-pub mod identity;
-pub mod identity_spend;
-pub mod multisig;
-pub mod offer;
-pub mod partial;
-pub mod register;
-pub mod revoke;
-mod send;
-pub mod signature;
-mod token;
-mod txid;
-pub mod update;
-pub mod vdxf;
-
-pub use amount::{Amount, SATS_PER_COIN};
-pub use balances::{token_balances, TokenBalances};
-pub use cc::{identity_payment_script, identity_primary_script, Destination};
-pub use convert::{
-    build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,
-    ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
+// Every line below is a re-export, and no name here is new: this file is what
+// makes the split invisible to anything that was already importing from
+// `verus_tx`.
+pub use verus_tx_currency::{currency_definition, currency_launch};
+pub use verus_tx_identity::{
+    build_identity_recovery, build_identity_registration, build_identity_revocation,
+    build_identity_spend, build_identity_update, build_name_commitment, CommitmentParams,
+    IdentitySpendParams, NameReservation, RecoveryParams, RegistrationParams, RevocationParams,
+    SignedRegistration, UpdateParams, CENTRALIZED_PROOF_PROTOCOL,
 };
-pub use currency::CurrencyId;
-pub use decode::{decode_output_script, may_carry_currency, OutputKind, ADVANCED_COMMITMENT_KEY};
-pub use error::TxError;
-pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
-pub use fee::{estimate_fee, select_utxos, Selection};
-pub use identity::{
-    Identity, Timelock, EVAL_IDENTITY_PRIMARY, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
+pub use verus_tx_identity::{identity_spend, register, revoke, signature, update};
+pub use verus_tx_market::{multisig, offer, partial};
+pub use verus_tx_market::{InputKind, PartialTransaction};
+pub use verus_tx_primitives::{cc, fee};
+pub use verus_tx_primitives::{
+    estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,
+    CurrencyId, Destination, Expiry, Selection, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
+    EXPIRY_HEIGHT_THRESHOLD, SATS_PER_COIN,
 };
-pub use identity_spend::{build_identity_spend, IdentitySpendParams};
-pub use partial::{InputKind, PartialTransaction};
-pub use register::{
-    build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
-    NameReservation, RegistrationParams, SignedRegistration, CENTRALIZED_PROOF_PROTOCOL,
+pub use verus_tx_protocol::{balances, convert, decode, identity, vdxf};
+pub use verus_tx_protocol::{
+    build_conversion, build_conversion_transaction, build_token_send, data_key,
+    decode_output_script, identity_id, may_carry_currency, qualified_key, root_namespace,
+    token_balances, ConversionKind, ConversionParams, Identity, OutputKind, ReserveTransfer,
+    Timelock, TokenBalances, TokenRecipient, TokenSendParams, TransferDestination,
+    ADVANCED_COMMITMENT_KEY, EVAL_IDENTITY_PRIMARY, EVAL_RESERVE_TRANSFER, FLAG_LOCKED,
+    FLAG_TOKENIZED_CONTROL, RESERVE_TRANSFER_ADDRESS,
 };
-pub use revoke::{
-    build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
-};
-pub use send::{
+pub use verus_tx_transparent::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
-pub use token::{build_token_send, TokenRecipient, TokenSendParams};
-pub use txid::Txid;
-pub use update::{build_identity_update, UpdateParams};
-pub use vdxf::{data_key, qualified_key, root_namespace};
-
-/// An unspent output available to spend.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Utxo {
-    /// Transaction that created it.
-    pub txid: Txid,
-    /// Index of the output within that transaction.
-    pub vout: u32,
-    /// What it is worth.
-    pub satoshis: Amount,
-    /// The scriptPubKey it pays to. Must be P2PKH for now.
-    pub script_pubkey: Vec<u8>,
-}

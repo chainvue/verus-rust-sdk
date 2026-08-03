@@ -1,0 +1,26 @@
+[package]
+name = "verus-tx-protocol"
+description = "What a Verus output means: identities, VDXF keys, token outputs, reserve transfers, and the decoder that reads them back"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+serde = ["dep:serde", "verus-tx-primitives/serde", "verus-tx-transparent/serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+verus-tx-primitives = { path = "../verus-tx-primitives" }
+verus-tx-transparent = { path = "../verus-tx-transparent" }
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+hex = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

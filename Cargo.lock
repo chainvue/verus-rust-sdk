@@ -2143,10 +2143,89 @@ name = "verus-tx"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "serde_json",
+ "verus-keys",
+ "verus-tx-currency",
+ "verus-tx-identity",
+ "verus-tx-market",
+ "verus-tx-primitives",
+ "verus-tx-protocol",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-currency"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "verus-keys",
+ "verus-tx-primitives",
+ "verus-tx-protocol",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-identity"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "verus-keys",
+ "verus-tx-primitives",
+ "verus-tx-protocol",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-market"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "verus-keys",
+ "verus-tx-primitives",
+ "verus-tx-protocol",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-primitives"
+version = "0.0.0"
+dependencies = [
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "verus-keys",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-protocol"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "verus-keys",
+ "verus-tx-primitives",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-transparent"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "verus-keys",
+ "verus-tx-primitives",
  "verus-wire",
 ]
 
