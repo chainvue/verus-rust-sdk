@@ -25,7 +25,10 @@ transparent = ["dep:verus-tx"]
 #   prover    — additionally BUILD t→z / z→z / z→t. Needs the Sapling parameters.
 # A balance-only wallet takes the first and stops.
 shielded = ["dep:verus-sapling"]
-prover = ["shielded", "verus-sapling/prover"]
+# `verus-flows?/prover` is weak on purpose: it turns the shielded SPEND path
+# on when `light` already pulled the flows in, and stays inert for a build
+# that takes the prover without the network.
+prover = ["shielded", "verus-sapling/prover", "verus-flows?/prover"]
 # bellman's rayon backend: a large speedup natively, and unavailable on wasm32.
 multicore = ["shielded", "verus-sapling/multicore"]
 # Persist pending state: amounts, UTXOs, identities, partial transactions.
@@ -66,6 +69,10 @@ required-features = ["shielded"]
 [[example]]
 name = "spend_note"
 required-features = ["prover"]
+
+[[example]]
+name = "spend_note_online"
+required-features = ["light", "prover"]
 
 # The online examples: whole operations through the public node. Each one's
 # header says whether running it spends testnet coins.

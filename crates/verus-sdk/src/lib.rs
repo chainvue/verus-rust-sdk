@@ -226,7 +226,19 @@ pub mod network {
 /// derivation lives in `verus_sapling::derive`.
 #[cfg(feature = "light")]
 pub mod light {
-    pub use verus_flows::shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};
+    pub use verus_flows::shielded::{
+        check_anchor, full_output, plan_spend, scan, select_notes, witness_note, ScanResult,
+        SpendPlan, WitnessedNote, MAX_SPEND_NOTES,
+    };
     pub use verus_light::{GrpcWebTransport, LightClient, LightError, LightTransport};
     pub use verus_sapling::scan::{DetectedNote, DiversifiableFullViewingKey, FullOutput};
+
+    /// Spending needs the prover as well: selecting, witnessing and checking
+    /// the anchor are cheap and available above, but turning that into a
+    /// transaction is Groth16 and ~50 MB of Sapling parameters.
+    #[cfg(feature = "prover")]
+    pub use verus_flows::shielded::{
+        prepare_spend, prove_spend, spend, ShieldedRecipient, ShieldedSpent, SpendRequest,
+        TransparentRecipient,
+    };
 }

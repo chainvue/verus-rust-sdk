@@ -67,6 +67,34 @@ transaction, so it has no row here.
 | …both spent in a single transaction (multi-note spend) | `35de8a2fdb56ac97b6c374d17475b1fcee56a89c290cb2838329f1ad7a0f23a6` | 1167398 |
 | Note found, valued and witnessed via **lightwalletd** | `5af146d0583f535ece8518a1f3b7abaafae0b65155e4d05a90956367ecc91626` | 1167987 |
 | …and that same note spent, nullifier published | `8f9e0a6b1073349bd6f25433e617de3bd4826ab4afeae68b293d23d6e68a78c8` | 1167995 |
+| **`flows::shielded::spend` — z→z, two notes in one bundle** | `2e2b04df1161e220f6a3dfd80abb821e15723f42fea05dec2dc451da5bcd27f5` | 1173695 |
+| **…and z→t, the change note spent back out, no change** | `2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d` | 1173696 |
+| **…and a z→t that keeps change**, from the second account | `f46ed415cbbdde407ab8d45113b41542246dd3cda52d7526ff6be9903b4056e3` | 1173730 |
+
+The last two are the composed path rather than the builder: scan → select →
+witness → **check the anchor against consensus** → prove → sign → broadcast, all
+of it through `verus-flows`. Both were funded by one shield
+(`98d5a67ef07e528c4811c7a4a7ee8dc1c71f6cc552f48c473f214dc5c90e0db2`, block
+1173691) that created two notes at once, so the z→z is a genuine multi-note
+spend: `vin 0, vout 0`, two shielded spends, two shielded outputs,
+`valueBalance` exactly the 0.0003 fee. Nothing about it is visible on the
+transparent side, and the receiving account then found 0.5 VRSCTEST and its memo
+with a viewing key alone.
+
+The two z→t rows are the two halves of the change question, and both are on
+chain. The first consumed its whole note — 0.0494 delivered, 0.0003 to the
+miner, **no change output at all** — which is the path where an overshoot would
+silently have paid a miner the difference. The second delivered 0.1 and kept
+0.3997 as a shielded change note, because value cannot be split at the input: a
+note enters a spend whole or not at all.
+
+The anchor check is the part with no offline equivalent. The plan computed
+`db1d7a7d…` from lightwalletd's frontier and commitments; `getblock 1173695` on
+`api.verustest.net` reports `finalsaplingroot` `0735f7fc…`, the same 32 bytes in
+header display order. Those two numbers reached the process from different
+machines over different protocols, and the flow refuses to prove when they
+disagree. `crates/verus-flows/tests/shielded_spend_plan.rs` replays exactly that
+comparison from committed bytes.
 
 ## Marketplace and conversions
 

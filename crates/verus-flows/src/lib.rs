@@ -46,10 +46,15 @@
 //! cannot be walked backwards, and public Verus RPC will not serve
 //! `z_gettreestate`. `verus-light` closes that, and this module joins the two.
 //!
-//! What it does **not** yet do is spend. Building the transaction is
-//! `verus_sapling::build_shielded_spend`, which needs the prover and the Sapling
-//! parameters; [`shielded::witness_note`] assembles everything it takes as
-//! input.
+//! Spending is behind a second feature, `prover`, because building the
+//! transaction costs Groth16 and ~50 MB of Sapling parameters that a
+//! balance-only wallet has no use for. With it,
+//! [`shielded::spend`](fn@shielded::spend) is the whole path: select notes,
+//! witness them to a shared anchor, **check that anchor against the block
+//! header's `finalsaplingroot`**, prove, and hand over the bytes. That check is
+//! the reason the spend path takes a [`ChainReader`] as well as a light client
+//! — every input to a witness comes from the light server, so agreeing with
+//! itself proves nothing.
 //!
 //! # A node is untrusted infrastructure
 //!
@@ -112,7 +117,16 @@ pub use vdxf::{
 };
 
 #[cfg(feature = "shielded")]
-pub use shielded::{full_output, scan, witness_note, ScanResult, WitnessedNote};
+pub use shielded::{
+    check_anchor, full_output, plan_spend, scan, select_notes, witness_note, ScanResult, SpendPlan,
+    WitnessedNote,
+};
+
+#[cfg(feature = "prover")]
+pub use shielded::{
+    prepare_spend, prove_spend, spend, ShieldedRecipient, ShieldedSpent, SpendRequest,
+    TransparentRecipient,
+};
 
 // The whole stack, so a consumer takes one dependency rather than three.
 #[cfg(feature = "http")]

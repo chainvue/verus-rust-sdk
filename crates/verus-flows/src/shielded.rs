@@ -55,6 +55,21 @@ use verus_sapling::VERUS_ZIP212;
 
 use crate::error::FlowError;
 
+pub mod planning;
+
+#[cfg(feature = "prover")]
+pub mod spending;
+
+pub use planning::{
+    check_anchor, plan_spend, select_notes, shared_anchor, SpendPlan, MAX_SPEND_NOTES,
+};
+
+#[cfg(feature = "prover")]
+pub use spending::{
+    prepare_spend, prove_spend, spend, transparent_script, ShieldedRecipient, ShieldedSpent,
+    SpendRequest, TransparentRecipient,
+};
+
 /// How many blocks to ask for in one call.
 ///
 /// Under `verus_light::MAX_BLOCK_RANGE`, because a scan chunk also has to fit in

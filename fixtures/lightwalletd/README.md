@@ -44,6 +44,35 @@ nullifier join were broken.
 for that address. It can find and value the note and can spend nothing; the
 spending key was written outside the repository and is not here.
 
+## A spend plan, replayed
+
+A third set covers the plan behind a spend composed through `flows::shielded` on
+**2026-08-03**: one note, witnessed to its own block, anchored, and checked
+against consensus.
+
+| file | call | covers |
+|---|---|---|
+| `spend_latestblock.bin` | `GetLatestBlock` | the tip, 1173724 — recorded separately from the anchor so an expiry cannot land behind the chain |
+| `spend_treestate_before.bin` | `GetTreeState(1173694)` | the frontier that fixes the note's position at 3184 |
+| `spend_block.bin` | `GetBlockRange(1173695, 1173695)` | the note's own block — asked for twice, to witness and to fetch the full output |
+| `spend_transaction.bin` | `GetTransaction` | the z→z transaction, whose 948-byte output description is the note |
+
+```text
+shield  98d5a67ef07e528c4811c7a4a7ee8dc1c71f6cc552f48c473f214dc5c90e0db2  block 1173691
+z→z     2e2b04df1161e220f6a3dfd80abb821e15723f42fea05dec2dc451da5bcd27f5  block 1173695
+z→t     2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d  block 1173696
+```
+
+What makes this set worth committing is that the anchor it produces has an
+**independent** oracle. `crates/verus-flows/tests/shielded_spend_plan.rs`
+computes `db1d7a7d…` from these bytes and checks it against the
+`finalsaplingroot` a Verus daemon reports for block 1173695 — `0735f7fc…`, the
+same 32 bytes in header display order. Every other check in the shielded module
+compares one lightwalletd value against another.
+
+The wallet these notes belonged to is empty: the z→t above spent its whole
+remaining note, change and all. No key material for it is in this repository.
+
 `compact_formats.proto` and `service.proto` are copied unmodified from the
 server's `walletrpc/` directory, MIT-licensed by the Zcash developers. They are
 the authority for every field number in `crates/verus-light/src/messages.rs`;
