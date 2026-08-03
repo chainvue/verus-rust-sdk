@@ -54,6 +54,23 @@ verus-light = { path = "../verus-light", optional = true }
 [dev-dependencies]
 serde_json = "1"
 hex = { workspace = true }
+# For ONE example: `drive_async`, the native non-blocking driver.
+#
+# Justification, because this workspace otherwise keeps a deliberately small
+# tree. `drive::advance` does no I/O and its `Step::Ask` bodies are documented
+# as independent, so a caller *should* fetch them concurrently — and every
+# online example here uses the blocking client, leaving that path shown
+# nowhere. A desktop wallet's UI thread is async, and a template it can copy
+# has to be too.
+#
+# These are dev-dependencies of the facade crate only. Nothing in any library
+# crate gains an async runtime, and `verus-rpc`'s `ureq` remains the only HTTP
+# stack the SDK itself ships. The alternative considered was driving the
+# existing blocking `ureq` from `tokio::task::spawn_blocking`, which needs no
+# new HTTP client — but it teaches the workaround rather than the shape, and a
+# wallet author copying it would carry a thread pool they did not need.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 [[example]]
 name = "shield"
 required-features = ["prover"]
@@ -78,6 +95,10 @@ required-features = ["light", "prover"]
 # header says whether running it spends testnet coins.
 [[example]]
 name = "wallet_balance"
+required-features = ["network"]
+
+[[example]]
+name = "drive_async"
 required-features = ["network"]
 
 [[example]]

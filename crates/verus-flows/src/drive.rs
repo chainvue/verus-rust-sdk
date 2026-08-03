@@ -11,11 +11,15 @@
 //!
 //! # The two callers
 //!
-//! **Native code needs nothing from this module.** It passes an
+//! **Blocking native code needs nothing from this module.** It passes an
 //! `RpcClient<HttpTransport>` as it always did; every request is answered as it
 //! is made, so the operation finishes in one pass and no round machinery
 //! engages. There is deliberately no blocking driver here, because there is
 //! nothing for one to do.
+//!
+//! Native code that cannot block — a wallet with a UI thread — is the other
+//! caller, and it uses [`advance`] exactly as a browser does. See
+//! `verus-sdk/examples/drive_async.rs`.
 //!
 //! [`advance`] is for the other case. It performs **no I/O at all**: it runs
 //! the operation against what is already known and returns either the finished

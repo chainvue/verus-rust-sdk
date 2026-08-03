@@ -73,6 +73,7 @@ each says whether running it spends testnet coins.
 | `make_offer_online` | fund and sign a marketplace offer (the hex *is* the offer) |
 | `take_offer_online` | inspect an offer against the chain, then take it at the verified terms |
 | `spend_note_online` | a shielded spend end to end, with the anchor checked against a second source before the prover runs |
+| `drive_async` | the non-blocking driver: `advance` in an async loop, each round's requests fetched concurrently |
 
 ### In a browser
 
