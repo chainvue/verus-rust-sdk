@@ -39,15 +39,15 @@ prover = ["shielded", "verus-sapling/prover", "verus-flows?/prover"]
 multicore = ["shielded", "verus-sapling/multicore"]
 # Persist pending state: amounts, UTXOs, identities, partial transactions.
 #
-# The TRANSPARENT half only. Nothing shielded is covered: `DetectedNote`, the
-# nullifiers beside it, and `Unsent<ShieldedSpent>` carry no `Serialize`, even
-# though a wallet has to persist all three — notes and nullifiers to avoid
-# rescanning and to avoid spending money that is gone, and an `Unsent` to avoid
-# repeating tens of seconds of Groth16 after a crash between proving and
-# broadcasting. Their fields are public, so a wallet can persist them by hand;
-# it just is not done for it yet. Said here rather than discovered by enabling
-# this feature and finding half of it missing.
-serde = ["verus-tx?/serde"]
+# Covers the shielded half too, when the features that supply it are on:
+# `DetectedNote` and the `ScanResult` holding it (with the nullifiers, which is
+# the pair `unspent` needs), plus `Unsent<T>` and what it carries — so a crash
+# between a tens-of-seconds Groth16 proof and the broadcast does not mean paying
+# for the proof twice.
+#
+# `verus-sapling?/serde` and `verus-flows?/serde` are weak: this feature stays
+# purely transparent for a build that took neither.
+serde = ["verus-tx?/serde", "verus-sapling?/serde", "verus-flows?/serde"]
 # The networked half: read chain state and compose lookup → build → sign →
 # broadcast into operations, through `verus-rpc` and `verus-flows`. Off by
 # default, so the plain build stays socket-free — usable from an air-gapped

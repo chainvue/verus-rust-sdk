@@ -156,6 +156,11 @@ pub struct SpendRequest<'a> {
 /// There are no transparent *inputs* in a shielded spend, so these bytes are
 /// complete the moment they are produced — nothing further to sign.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(crate = "serde")
+)]
 pub struct ShieldedSpent {
     /// The transaction id, computed locally from `hex`.
     pub txid: String,
@@ -168,6 +173,7 @@ pub struct ShieldedSpent {
     pub change: u64,
     /// The anchor every spend proof was built against, checked against the
     /// chain's own `finalsaplingroot` before proving.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
     pub anchor: [u8; 32],
     /// The height that anchor came from.
     pub anchor_height: u64,
@@ -176,6 +182,7 @@ pub struct ShieldedSpent {
     /// A wallet marks these notes spent on seeing them in a block. Recorded
     /// here so it need not re-derive them, and so a spend that is broadcast and
     /// then lost track of can still be reconciled.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex::vec"))]
     pub nullifiers: Vec<[u8; 32]>,
 }
 

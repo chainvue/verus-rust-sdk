@@ -39,6 +39,10 @@ mod error;
 #[cfg(feature = "prover")]
 pub mod params;
 pub mod scan;
+/// Serializing fixed-size byte arrays as hex — past where `serde`'s array
+/// impls stop, and readable where its derive is not.
+#[cfg(feature = "serde")]
+pub mod serde_hex;
 pub mod witness;
 pub mod zaddr;
 

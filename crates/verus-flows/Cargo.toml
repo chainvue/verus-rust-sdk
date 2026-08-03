@@ -25,6 +25,16 @@ shielded = ["dep:verus-light", "dep:verus-sapling"]
 # it drags in bellman and needs the ~50 MB Sapling parameters at runtime, which
 # a balance-only wallet has no use for.
 prover = ["shielded", "verus-sapling/prover"]
+# Persist what a scan found. This crate uses serde unconditionally for the
+# VerusID registration types, so what the feature actually buys is the
+# *shielded* half: `DetectedNote`, the `ScanResult` holding it, and
+# `ShieldedSpent`.
+#
+# Weak, and deliberately does NOT enable `shielded`. Writing it as
+# `["shielded", …]` would mean a transparent networked wallet that persists
+# state pulled the whole Sapling read stack in for nothing — it has no shielded
+# API to use it with.
+serde = ["verus-sapling?/serde"]
 
 [dependencies]
 hex = { workspace = true }
@@ -45,6 +55,6 @@ verus-light = { path = "../verus-light" }
 verus-sapling = { path = "../verus-sapling" }
 verus-wire = { path = "../verus-wire" }
 serde_json = "1"
-verus-flows = { path = ".", features = ["testing", "http", "shielded"] }
+verus-flows = { path = ".", features = ["testing", "http", "shielded", "serde"] }
 verus-keys = { path = "../verus-keys" }
 verus-rpc = { path = "../verus-rpc", features = ["http"] }
