@@ -307,14 +307,32 @@ fn bad(detail: &str) -> TxError {
 }
 
 /// A `CompactSize`-prefixed byte string.
+///
+/// # Why the end is computed with `checked_add`
+///
+/// `length` is a `CompactSize` the script author chose, and on a 64-bit target
+/// `usize::try_from` accepts every `u64` — so a prefix of `0xff` followed by
+/// eight `0xff` bytes gives `usize::MAX`, and `*offset + length` overflows.
+///
+/// In release that wraps to a small number, `get` sees a backwards range and
+/// returns `None`, and the function refuses. Correct, but by accident: the
+/// same expression panics in a debug build. A library that aborts on a
+/// hostile output script is a crash in whatever is embedding it, and "it
+/// happens to be fine with overflow checks off" is not a property to rely on.
+///
+/// Found by `fuzz/fuzz_targets/output_script.rs`, reached through
+/// `ReserveTransferPayload::from_payload`.
 fn read_var_slice<'a>(bytes: &'a [u8], offset: &mut usize) -> Result<&'a [u8], TxError> {
     let length = read_compact_size(bytes, offset)?;
     let length =
         usize::try_from(length).map_err(|_| bad("a length prefix does not fit in memory"))?;
-    let slice = bytes
-        .get(*offset..*offset + length)
+    let end = offset
+        .checked_add(length)
         .ok_or_else(|| bad("a length prefix runs past the end of the payload"))?;
-    *offset += length;
+    let slice = bytes
+        .get(*offset..end)
+        .ok_or_else(|| bad("a length prefix runs past the end of the payload"))?;
+    *offset = end;
     Ok(slice)
 }
 

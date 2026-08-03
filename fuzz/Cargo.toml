@@ -1,0 +1,56 @@
+# Its own workspace, not a member of the root one.
+#
+# `cargo-fuzz` builds with `-Zsanitizer=address` on a nightly toolchain, and
+# the repo pins 1.95.0 stable everywhere else. Keeping this separate means
+# `cargo build --workspace` never tries to compile a libfuzzer target, and the
+# nightly requirement stays contained to one CI job.
+[workspace]
+members = ["."]
+
+[package]
+name = "verus-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+verus-wire = { path = "../crates/verus-wire" }
+verus-keys = { path = "../crates/verus-keys", features = ["fuzzing"] }
+verus-tx-protocol = { path = "../crates/verus-tx-protocol" }
+verus-light = { path = "../crates/verus-light", default-features = false, features = ["fuzzing"] }
+
+[profile.release]
+debug = 1
+
+# Each target is one parser that eats bytes an attacker chooses.
+[[bin]]
+name = "tx_deserialize"
+path = "fuzz_targets/tx_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "output_script"
+path = "fuzz_targets/output_script.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "base58"
+path = "fuzz_targets/base58.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lightwalletd_proto"
+path = "fuzz_targets/lightwalletd_proto.rs"
+test = false
+doc = false
+bench = false

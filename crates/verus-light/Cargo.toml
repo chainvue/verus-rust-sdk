@@ -19,6 +19,13 @@ workspace = true
 default = ["grpc-web"]
 grpc-web = ["dep:ureq"]
 
+# Exposes the protobuf message decoders so a fuzz harness can call them
+# directly. They are `pub(crate)` otherwise, reachable only through a
+# `LightClient` that needs a transport — and a fuzzer wants the parser, not the
+# HTTP. Not part of the API: the module it enables is `#[doc(hidden)]` and only
+# `fuzz/Cargo.toml` turns this on.
+fuzzing = []
+
 [dependencies]
 hex = { workspace = true }
 thiserror = { workspace = true }

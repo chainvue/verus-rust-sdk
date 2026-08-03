@@ -78,3 +78,72 @@ pub use transport::{HttpResponse, LightTransport};
 
 #[cfg(feature = "grpc-web")]
 pub use transport::GrpcWebTransport;
+
+/// The message decoders, reachable by a fuzz harness.
+///
+/// Every one of these eats bytes chosen by whoever is on the other end of the
+/// socket, and none of them is otherwise callable from outside this crate: a
+/// caller reaches them only through [`LightClient`], which needs a transport.
+/// A fuzzer wants the parser and not the HTTP.
+///
+/// Behind a feature, `#[doc(hidden)]`, and not part of the API. Enabled only
+/// by `fuzz/Cargo.toml`.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    use crate::error::LightError;
+
+    /// Parse a `CompactBlock` — the message a wallet scans by the thousand.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn compact_block(bytes: &[u8]) -> Result<crate::CompactBlock, LightError> {
+        crate::CompactBlock::decode(bytes)
+    }
+
+    /// Parse a `TreeState` — the commitment tree a witness is anchored to.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn tree_state(bytes: &[u8]) -> Result<crate::TreeState, LightError> {
+        crate::TreeState::decode(bytes)
+    }
+
+    /// Parse a `RawTransaction`.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn raw_transaction(bytes: &[u8]) -> Result<crate::RawTransaction, LightError> {
+        crate::RawTransaction::decode(bytes)
+    }
+
+    /// Parse a `LightdInfo`.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn server_info(bytes: &[u8]) -> Result<crate::ServerInfo, LightError> {
+        crate::ServerInfo::decode(bytes)
+    }
+
+    /// Parse a `BlockID`.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn block_id(bytes: &[u8]) -> Result<crate::BlockId, LightError> {
+        crate::BlockId::decode(bytes)
+    }
+
+    /// Parse a `SendResponse`.
+    ///
+    /// # Errors
+    ///
+    /// [`LightError`] on any malformed body.
+    pub fn send_response(bytes: &[u8]) -> Result<crate::SendResponse, LightError> {
+        crate::SendResponse::decode(bytes)
+    }
+}

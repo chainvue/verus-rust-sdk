@@ -11,6 +11,14 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes the raw base58check codec so a fuzz harness can call it directly.
+# `base58` is a private module otherwise, reachable only through `Address` and
+# `PrivateKey`, which never hand it anything but a 20- or 32-byte payload. Not
+# part of the API: the module it enables is `#[doc(hidden)]` and only
+# `fuzz/Cargo.toml` turns this on.
+fuzzing = []
+
 [dependencies]
 k256 = { workspace = true }
 sha2 = { workspace = true }

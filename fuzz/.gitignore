@@ -1,0 +1,16 @@
+# Build output and coverage data.
+target
+coverage
+
+# Crash inputs. Deliberately NOT committed: an artifact here is a live bug, and
+# the fix belongs with a deterministic regression test on stable — see the
+# overflow case in `crates/verus-tx/tests/decoder_robustness.rs`. A crash file
+# left lying in the repo is a bug nobody is looking at.
+artifacts
+
+# `corpus/` IS committed. It is ~280 KB of content across ~1,400 files, which
+# is smaller than `fixtures/`, and it is what the CI replay step runs against:
+# a seed that used to pass and now crashes is the cheapest regression signal
+# there is. Run `cargo +nightly fuzz cmin <target>` before committing a grown
+# corpus so it stays a coverage-preserving minimum rather than everything the
+# fuzzer happened to keep.
