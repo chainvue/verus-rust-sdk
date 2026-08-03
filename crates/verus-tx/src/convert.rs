@@ -50,9 +50,7 @@
 use verus_keys::{Address, PrivateKey};
 use verus_wire::TxOut;
 
-use crate::assemble::{assemble, Assembly};
 use crate::decode::{read_compact_size, read_var_int};
-use crate::send::SignedTransaction;
 use verus_tx_primitives::cc::{cc_script, token_output, Destination, OptCcParams, EVAL_NONE};
 use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
 use verus_tx_primitives::Amount;
@@ -60,6 +58,8 @@ use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_transparent::assemble::{assemble, Assembly};
+use verus_tx_transparent::SignedTransaction;
 
 pub use verus_tx_primitives::cc::EVAL_RESERVE_TRANSFER;
 

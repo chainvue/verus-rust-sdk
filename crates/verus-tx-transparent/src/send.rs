@@ -5,12 +5,12 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::{Txid, Utxo};
 use verus_tx_primitives::cc::identity_payment_script;
 use verus_tx_primitives::fee::{select_utxos, DEFAULT_FEE_PER_KB};
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
+use verus_tx_primitives::{Txid, Utxo};
 
 /// Sign every transparent input of `tx` as P2PKH, in order.
 ///

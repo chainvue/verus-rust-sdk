@@ -59,10 +59,8 @@ use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
-use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::identity::Identity;
-use crate::send::SignedTransaction;
 use verus_tx_primitives::cc::{
     cc_script, identity_payment_script, identity_primary_script, reserve_output_script_to,
     OptCcParams, EVAL_RESERVE_OUTPUT,
@@ -74,6 +72,8 @@ use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_transparent::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
+use verus_tx_transparent::SignedTransaction;
 
 pub use verus_tx_primitives::cc::{EVAL_IDENTITY_ADVANCEDRESERVATION, EVAL_IDENTITY_COMMITMENT};
 

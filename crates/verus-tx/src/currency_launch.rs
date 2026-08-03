@@ -545,7 +545,7 @@ pub fn build_currency_launch(
     funding_key: &PrivateKey,
     identity_keys: &[&PrivateKey],
     params: &LaunchParams<'_>,
-) -> Result<crate::send::SignedTransaction, TxError> {
+) -> Result<verus_tx_transparent::SignedTransaction, TxError> {
     let built = build_launch_outputs(params.definition, params.context)?;
 
     // The chain's copy of the identity is the authority on who may spend its
@@ -587,10 +587,10 @@ pub fn build_currency_launch(
     let mut outputs = built.outputs;
     outputs.truncate(6);
 
-    crate::assemble::assemble(
+    verus_tx_transparent::assemble::assemble(
         funding_key,
         identity_keys,
-        crate::assemble::Assembly {
+        verus_tx_transparent::assemble::Assembly {
             leading: core::slice::from_ref(params.identity_output),
             funding: params.utxos,
             outputs,

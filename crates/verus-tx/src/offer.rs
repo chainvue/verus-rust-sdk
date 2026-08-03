@@ -194,17 +194,17 @@ pub fn fund_offer(
     change_address: &verus_keys::Address,
     expiry: Expiry,
     fee_per_kb: u64,
-) -> Result<crate::send::SignedTransaction, TxError> {
+) -> Result<verus_tx_transparent::SignedTransaction, TxError> {
     expiry.check()?;
     if amount == Amount::ZERO {
         return Err(TxError::InvalidOffer(
             "an offer of nothing cannot be taken".into(),
         ));
     }
-    crate::assemble::assemble(
+    verus_tx_transparent::assemble::assemble(
         key,
         &[],
-        crate::assemble::Assembly {
+        verus_tx_transparent::assemble::Assembly {
             leading: &[],
             funding: utxos,
             outputs: vec![TxOut {

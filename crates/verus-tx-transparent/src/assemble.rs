@@ -1,7 +1,7 @@
 //! Assembling and signing a transaction that mixes CryptoCondition and P2PKH
 //! inputs.
 //!
-//! Shared by the VerusID flows in [`crate::register`] and [`crate::update`],
+//! Shared by the VerusID flows in `verus_tx::register` and `verus_tx::update`,
 //! which differ only in what they put in the outputs: both spend a
 //! CryptoCondition output they control, fund the rest from plain P2PKH UTXOs,
 //! and must conserve value exactly.
@@ -22,29 +22,29 @@ use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
 
 /// The shape of a transaction to assemble.
-pub(crate) struct Assembly<'a> {
+pub struct Assembly<'a> {
     /// Inputs spent before the funding ones, in order: CryptoCondition outputs
     /// the caller controls — a name commitment, token inputs, or (only with
     /// [`Assembly::value_bearing_leading`]) identity-held funding.
-    pub(crate) leading: &'a [Utxo],
+    pub leading: &'a [Utxo],
     /// P2PKH UTXOs available to fund the transaction.
-    pub(crate) funding: &'a [Utxo],
+    pub funding: &'a [Utxo],
     /// The declared outputs, before change.
-    pub(crate) outputs: Vec<TxOut>,
+    pub outputs: Vec<TxOut>,
     /// Value that leaves the transaction without an output — the registration
     /// fee. Funded and conserved like any other outlay.
-    pub(crate) burn: Amount,
+    pub burn: Amount,
     /// Output count handed to the fee estimator.
-    pub(crate) fee_output_count: u64,
+    pub fee_output_count: u64,
     /// Where change goes.
-    pub(crate) change_address: &'a Address,
+    pub change_address: &'a Address,
     /// The change output's script, when change must not be plain P2PKH.
     ///
     /// `None` pays change to `change_address` as P2PKH, which is right for
     /// every flow that funds from a key. An identity-funded spend sets this to
     /// the identity's own payment script, so what is not spent **stays under
     /// the identity's authority** instead of quietly migrating to a bare key.
-    pub(crate) change_script: Option<Vec<u8>>,
+    pub change_script: Option<Vec<u8>>,
     /// Permit leading inputs to carry native value, counted exactly.
     ///
     /// Off, the historical invariant holds: a leading input with value is
@@ -58,11 +58,11 @@ pub(crate) struct Assembly<'a> {
     /// This is opt-in per call site on purpose. The flows that assumed
     /// zero-value leading inputs still get the refusal; only a flow built to
     /// spend identity-held funds (a mint, an identity-funded send) asks.
-    pub(crate) value_bearing_leading: bool,
+    pub value_bearing_leading: bool,
     /// When the transaction stops being minable.
-    pub(crate) expiry: Expiry,
+    pub expiry: Expiry,
     /// Fee rate in satoshis per kilobyte.
-    pub(crate) fee_per_kb: u64,
+    pub fee_per_kb: u64,
 }
 
 /// Select coins, assemble, check conservation, sign.
@@ -70,7 +70,7 @@ pub(crate) struct Assembly<'a> {
 /// `funding_key` signs the P2PKH inputs. `leading_keys` sign the CryptoCondition
 /// ones, all of them into a single fulfillment per input — an `m-of-n` condition
 /// wants `m` signatures in one scriptSig, not `m` scriptSigs.
-pub(crate) fn assemble(
+pub fn assemble(
     funding_key: &PrivateKey,
     leading_keys: &[&PrivateKey],
     plan: Assembly<'_>,
@@ -315,11 +315,29 @@ fn sign_inputs(
     Ok(())
 }
 
-pub(crate) fn check_expiry(expiry: Expiry) -> Result<(), TxError> {
+/// Refuse an expiry height consensus would reject.
+///
+/// # Errors
+///
+/// [`TxError::ExpiryHeightTooLarge`] if the height is at or above the
+/// consensus threshold.
+pub fn check_expiry(expiry: Expiry) -> Result<(), TxError> {
     expiry.check()
 }
 
-pub(crate) fn check_p2pkh_funding(utxos: &[Utxo]) -> Result<(), TxError> {
+/// Refuse funding this crate cannot sign.
+///
+/// The builders above take arbitrary UTXOs from a caller, and only plain P2PKH
+/// funding can be signed here — a CryptoCondition output needs an authority
+/// this layer does not model. Refusing is the point: signing whatever decoded
+/// would produce a transaction the network rejects, after the caller has
+/// already committed to it.
+///
+/// # Errors
+///
+/// [`TxError::UnsupportedFundingScript`] naming the first UTXO that is not
+/// P2PKH.
+pub fn check_p2pkh_funding(utxos: &[Utxo]) -> Result<(), TxError> {
     for utxo in utxos {
         if Address::from_p2pkh_script_pubkey(&utxo.script_pubkey).is_none() {
             return Err(TxError::UnsupportedFundingScript {

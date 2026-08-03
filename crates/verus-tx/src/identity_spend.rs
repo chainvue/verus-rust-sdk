@@ -25,14 +25,14 @@
 
 use verus_keys::{Address, AddressKind, PrivateKey};
 
-use crate::assemble::{assemble, Assembly};
-use crate::send::{Recipient, SignedTransaction};
 use verus_tx_primitives::cc::identity_payment_script;
 use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_transparent::assemble::{assemble, Assembly};
+use verus_tx_transparent::{Recipient, SignedTransaction};
 
 /// What to build.
 #[derive(Clone, Debug)]

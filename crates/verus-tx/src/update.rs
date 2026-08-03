@@ -36,17 +36,17 @@
 
 use verus_keys::{Address, PrivateKey};
 
-use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use crate::decode::{decode_output_script, OutputKind};
 use crate::identity::Identity;
 use crate::register::identity_id;
-use crate::send::SignedTransaction;
 use verus_tx_primitives::cc::{identity_primary_script, Destination};
 use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_transparent::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
+use verus_tx_transparent::SignedTransaction;
 use verus_wire::TxOut;
 
 /// What to update, and what to fund it with.

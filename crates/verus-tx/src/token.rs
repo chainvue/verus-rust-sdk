@@ -21,7 +21,6 @@ use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
 use crate::decode::{decode_output_script, OutputKind};
-use crate::send::SignedTransaction;
 use verus_tx_primitives::cc::{fulfillment_script_sig, reserve_output_script};
 use verus_tx_primitives::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use verus_tx_primitives::Amount;
@@ -29,6 +28,7 @@ use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_transparent::SignedTransaction;
 
 /// Refuse a reserve output no transparent key in this crate can sign for.
 ///

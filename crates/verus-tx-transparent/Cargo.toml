@@ -1,0 +1,21 @@
+[package]
+name = "verus-tx-transparent"
+description = "Transparent Verus value transfer: coin selection, change, assembly and P2PKH signing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+serde = ["verus-tx-primitives/serde"]
+
+[dependencies]
+verus-tx-primitives = { path = "../verus-tx-primitives" }
+verus-wire = { path = "../verus-wire" }
+verus-keys = { path = "../verus-keys" }
+hex = { workspace = true }

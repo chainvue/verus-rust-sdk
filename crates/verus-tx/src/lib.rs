@@ -44,7 +44,6 @@
 
 #![doc(html_no_source)]
 
-mod assemble;
 pub mod balances;
 pub mod convert;
 pub mod currency_definition;
@@ -57,7 +56,6 @@ pub mod offer;
 pub mod partial;
 pub mod register;
 pub mod revoke;
-mod send;
 pub mod signature;
 mod token;
 pub mod update;
@@ -71,6 +69,9 @@ pub use verus_tx_primitives::{
     estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,
     CurrencyId, Destination, Expiry, Selection, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
     EXPIRY_HEIGHT_THRESHOLD, SATS_PER_COIN,
+};
+pub use verus_tx_transparent::{
+    build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 
 pub use balances::{token_balances, TokenBalances};
@@ -90,9 +91,6 @@ pub use register::{
 };
 pub use revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
-};
-pub use send::{
-    build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use update::{build_identity_update, UpdateParams};

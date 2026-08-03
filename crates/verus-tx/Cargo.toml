@@ -15,11 +15,12 @@ workspace = true
 # Serialize the types a wallet persists between runs: amounts, outpoints,
 # UTXOs, identities and partially-signed transactions. Off by default so a
 # consumer that does not need it does not carry serde.
-serde = ["dep:serde", "verus-tx-primitives/serde"]
+serde = ["dep:serde", "verus-tx-primitives/serde", "verus-tx-transparent/serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 verus-tx-primitives = { path = "../verus-tx-primitives" }
+verus-tx-transparent = { path = "../verus-tx-transparent" }
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }
