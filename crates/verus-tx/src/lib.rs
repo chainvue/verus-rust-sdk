@@ -44,19 +44,21 @@
 
 #![doc(html_no_source)]
 
-pub mod identity_spend;
 pub mod multisig;
 pub mod offer;
 pub mod partial;
-pub mod register;
-pub mod revoke;
-pub mod signature;
-pub mod update;
 
 // The primitives, re-exported so every path this crate published still
 // resolves. `verus-tx` is becoming a facade over the crates it was split
 // into; nothing here is a new name.
 pub use verus_tx_currency::{currency_definition, currency_launch};
+pub use verus_tx_identity::{
+    build_identity_recovery, build_identity_registration, build_identity_revocation,
+    build_identity_spend, build_identity_update, build_name_commitment, CommitmentParams,
+    IdentitySpendParams, NameReservation, RecoveryParams, RegistrationParams, RevocationParams,
+    SignedRegistration, UpdateParams, CENTRALIZED_PROOF_PROTOCOL,
+};
+pub use verus_tx_identity::{identity_spend, register, revoke, signature, update};
 pub use verus_tx_primitives::{cc, fee};
 pub use verus_tx_primitives::{
     estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,
@@ -66,23 +68,14 @@ pub use verus_tx_primitives::{
 pub use verus_tx_protocol::{balances, convert, decode, identity, vdxf};
 pub use verus_tx_protocol::{
     build_conversion, build_conversion_transaction, build_token_send, data_key,
-    decode_output_script, may_carry_currency, qualified_key, root_namespace, token_balances,
-    ConversionKind, ConversionParams, Identity, OutputKind, ReserveTransfer, Timelock,
-    TokenBalances, TokenRecipient, TokenSendParams, TransferDestination, ADVANCED_COMMITMENT_KEY,
-    EVAL_IDENTITY_PRIMARY, EVAL_RESERVE_TRANSFER, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
-    RESERVE_TRANSFER_ADDRESS,
+    decode_output_script, identity_id, may_carry_currency, qualified_key, root_namespace,
+    token_balances, ConversionKind, ConversionParams, Identity, OutputKind, ReserveTransfer,
+    Timelock, TokenBalances, TokenRecipient, TokenSendParams, TransferDestination,
+    ADVANCED_COMMITMENT_KEY, EVAL_IDENTITY_PRIMARY, EVAL_RESERVE_TRANSFER, FLAG_LOCKED,
+    FLAG_TOKENIZED_CONTROL, RESERVE_TRANSFER_ADDRESS,
 };
 pub use verus_tx_transparent::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 
-pub use identity_spend::{build_identity_spend, IdentitySpendParams};
 pub use partial::{InputKind, PartialTransaction};
-pub use register::{
-    build_identity_registration, build_name_commitment, identity_id, CommitmentParams,
-    NameReservation, RegistrationParams, SignedRegistration, CENTRALIZED_PROOF_PROTOCOL,
-};
-pub use revoke::{
-    build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
-};
-pub use update::{build_identity_update, UpdateParams};

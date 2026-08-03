@@ -54,7 +54,7 @@ use verus_keys::PrivateKey;
 use verus_wire::consensus::{SIGHASH_ALL, SIGHASH_ANYONECANPAY, SIGHASH_SINGLE, VERUS_BRANCH_ID};
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::register::EVAL_IDENTITY_COMMITMENT;
+use verus_tx_identity::register::EVAL_IDENTITY_COMMITMENT;
 use verus_tx_primitives::cc::{
     cc_script, fulfillment_script_sig, Destination, OptCcParams, EVAL_NONE,
 };
