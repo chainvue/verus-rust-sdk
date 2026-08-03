@@ -12,7 +12,7 @@
 //!
 //! Both halves are built here. Step 2 spends a CryptoCondition output, which is
 //! the first thing in this crate that is not unlocked by a P2PKH scriptSig — see
-//! [`crate::cc::fulfillment_script_sig`].
+//! [`verus_tx_primitives::cc::fulfillment_script_sig`].
 //!
 //! # The salt is the whole security property
 //!
@@ -59,23 +59,23 @@ use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
-use crate::amount::Amount;
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
-use crate::cc::{
+use crate::decode::{decode_output_script, OutputKind};
+use crate::identity::Identity;
+use crate::send::SignedTransaction;
+use verus_tx_primitives::cc::{
     cc_script, identity_payment_script, identity_primary_script, reserve_output_script_to,
     OptCcParams, EVAL_RESERVE_OUTPUT,
 };
-use crate::cc::{Destination, EVAL_NONE};
-use crate::currency::CurrencyId;
-use crate::decode::{decode_output_script, OutputKind};
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::DEFAULT_FEE_PER_KB;
-use crate::identity::Identity;
-use crate::send::SignedTransaction;
-use crate::Utxo;
+use verus_tx_primitives::cc::{Destination, EVAL_NONE};
+use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
-pub use crate::cc::{EVAL_IDENTITY_ADVANCEDRESERVATION, EVAL_IDENTITY_COMMITMENT};
+pub use verus_tx_primitives::cc::{EVAL_IDENTITY_ADVANCEDRESERVATION, EVAL_IDENTITY_COMMITMENT};
 
 /// The only parent `proofprotocol` whose fee output this crate has a reference
 /// transaction for: 2, `PROOF_CHAINID`, where the parent's own identity
@@ -225,7 +225,7 @@ impl NameReservation {
     }
 }
 
-/// CompactSize, as used for vector lengths (not the `VARINT` in [`crate::cc`]).
+/// CompactSize, as used for vector lengths (not the `VARINT` in [`verus_tx_primitives::cc`]).
 fn write_compact_size(out: &mut Vec<u8>, value: usize) {
     match value {
         0..=252 => out.push(u8::try_from(value).expect("checked above")),
@@ -954,8 +954,8 @@ pub fn build_identity_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amount;
-    use crate::Txid;
+    use verus_tx_primitives::Amount;
+    use verus_tx_primitives::Txid;
 
     /// `VRSCTEST`, the system id every testnet registration parents to.
     const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
@@ -1226,7 +1226,7 @@ mod tests {
             txid: Txid::from_internal([0x70; 32]),
             vout: 0,
             satoshis: Amount::ZERO,
-            script_pubkey: crate::cc::reserve_output_script(
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script(
                 key.address().hash(),
                 CurrencyId::of_identity(parent),
                 3_00000000,
@@ -1382,7 +1382,7 @@ mod tests {
             txid: Txid::from_internal([0xcc; 32]),
             vout: 0,
             satoshis: Amount::ZERO,
-            script_pubkey: crate::cc::reserve_output_script(
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script(
                 key.address().hash(),
                 CurrencyId::of_identity(parent),
                 2_00000000,

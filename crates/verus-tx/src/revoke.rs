@@ -41,17 +41,17 @@
 use verus_keys::{Address, PrivateKey};
 use verus_wire::TxOut;
 
-use crate::amount::Amount;
 use crate::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
-use crate::cc::identity_primary_script;
 use crate::decode::{decode_output_script, OutputKind};
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::identity::{Identity, FLAG_REVOKED};
 use crate::register::identity_id;
 use crate::send::SignedTransaction;
-use crate::Utxo;
+use verus_tx_primitives::cc::identity_primary_script;
+use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
 /// What a revocation needs.
 #[derive(Clone, Debug)]
@@ -286,8 +286,8 @@ fn republish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cc::Destination;
-    use crate::Txid;
+    use verus_tx_primitives::cc::Destination;
+    use verus_tx_primitives::Txid;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
     const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";

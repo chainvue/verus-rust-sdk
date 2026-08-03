@@ -12,15 +12,15 @@
 //! value gets burned. Only scripts that are genuinely not CryptoCondition
 //! outputs take the native path.
 
-use crate::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
 use crate::convert::EVAL_RESERVE_TRANSFER;
-use crate::currency::CurrencyId;
 use crate::currency_launch::{EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT};
-use crate::error::TxError;
 use crate::identity::{
     Identity, EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
 };
 use crate::register::EVAL_IDENTITY_COMMITMENT;
+use verus_tx_primitives::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::TxError;
 
 /// `OP_CHECKCRYPTOCONDITION`.
 const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;
@@ -704,7 +704,7 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cc::reserve_output_script;
+    use verus_tx_primitives::cc::reserve_output_script;
 
     const GOLDEN_RESERVE_OUTPUT: &str = "1a040300010114a00a0a30a020a4f4708ee28aeb62f14eefc304d9cc34040309010114a00a0a30a020a4f4708ee28aeb62f14eefc304d91901f3ec553634ef174231a14c0a28ef4e72c9ba5fda9288b30075";
     const RECIPIENT: [u8; 20] = [
@@ -833,15 +833,20 @@ mod tests {
     /// carrying content, a private address, or a longish name.
     #[test]
     fn decodes_an_output_whose_payload_needs_pushdata2() {
-        let master =
-            crate::cc::OptCcParams::one_of_one(EVAL_NONE, Destination::PubKeyHash(RECIPIENT));
-        let params = crate::cc::OptCcParams {
+        let master = verus_tx_primitives::cc::OptCcParams::one_of_one(
+            EVAL_NONE,
+            Destination::PubKeyHash(RECIPIENT),
+        );
+        let params = verus_tx_primitives::cc::OptCcParams {
             vdata: vec![vec![0u8; 300]],
             // An eval code this module does not special-case: the point of
             // this test is that the *push* parses, not the payload semantics.
-            ..crate::cc::OptCcParams::one_of_one(200, Destination::PubKeyHash(RECIPIENT))
+            ..verus_tx_primitives::cc::OptCcParams::one_of_one(
+                200,
+                Destination::PubKeyHash(RECIPIENT),
+            )
         };
-        let script = crate::cc::cc_script(&master, &params).unwrap();
+        let script = verus_tx_primitives::cc::cc_script(&master, &params).unwrap();
         assert_eq!(
             decode_output_script(&script).unwrap(),
             OutputKind::UnsupportedCryptoCondition {

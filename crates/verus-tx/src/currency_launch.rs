@@ -37,26 +37,28 @@
 //!   state and the export use fixed-width `int64`. Three encodings again, and
 //!   again chosen per field.
 
-use crate::amount::Amount;
-use crate::cc::{cc_script, identity_primary_script, var_int, Destination, OptCcParams, EVAL_NONE};
-use crate::currency::CurrencyId;
 use crate::currency_definition::{
     currency_definition_script, option, CurrencyDefinition, EVAL_CURRENCY_DEFINITION,
 };
-use crate::error::TxError;
 use crate::identity::{Identity, FLAG_ACTIVE_CURRENCY, FLAG_TOKENIZED_CONTROL};
 use crate::register::identity_id;
+use verus_tx_primitives::cc::{
+    cc_script, identity_primary_script, var_int, Destination, OptCcParams, EVAL_NONE,
+};
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::TxError;
 use verus_wire::compact::write_compact_size;
 use verus_wire::TxOut;
 
-use crate::expiry::Expiry;
-use crate::Utxo;
 use verus_keys::{Address, PrivateKey};
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::Utxo;
 
 /// One satoshi-scaled unit — `SATOSHIDEN`.
 const SATOSHIDEN: u128 = 100_000_000;
 
-pub use crate::cc::{
+pub use verus_tx_primitives::cc::{
     EVAL_ACCEPTEDNOTARIZATION, EVAL_CROSSCHAIN_EXPORT, EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT,
 };
 

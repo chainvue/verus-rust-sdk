@@ -50,7 +50,7 @@ use verus_keys::{Address, PrivateKey, PublicKey};
 use verus_wire::compact::write_compact_size;
 use verus_wire::hash::sha256;
 
-use crate::error::TxError;
+use verus_tx_primitives::TxError;
 
 /// The domain separator Verus prepends before hashing signed data.
 ///

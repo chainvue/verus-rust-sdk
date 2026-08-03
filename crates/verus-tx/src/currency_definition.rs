@@ -59,13 +59,13 @@
 //! token or basket definition ends at `id_import_fees`. That is a genuine
 //! quirk of the source, not an omission here.
 
-use crate::amount::Amount;
-use crate::cc::{cc_script, var_int, Destination, OptCcParams, EVAL_NONE};
-use crate::currency::CurrencyId;
-use crate::error::TxError;
+use verus_tx_primitives::cc::{cc_script, var_int, Destination, OptCcParams, EVAL_NONE};
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::TxError;
 use verus_wire::compact::write_compact_size;
 
-pub use crate::cc::EVAL_CURRENCY_DEFINITION;
+pub use verus_tx_primitives::cc::EVAL_CURRENCY_DEFINITION;
 
 /// `CCurrencyDefinition::VERSION_CURRENT`.
 pub const CURRENCY_DEFINITION_VERSION: u32 = 1;

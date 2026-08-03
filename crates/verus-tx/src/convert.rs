@@ -50,18 +50,18 @@
 use verus_keys::{Address, PrivateKey};
 use verus_wire::TxOut;
 
-use crate::amount::Amount;
 use crate::assemble::{assemble, Assembly};
-use crate::cc::{cc_script, token_output, Destination, OptCcParams, EVAL_NONE};
-use crate::currency::CurrencyId;
 use crate::decode::{read_compact_size, read_var_int};
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::send::SignedTransaction;
-use crate::Utxo;
+use verus_tx_primitives::cc::{cc_script, token_output, Destination, OptCcParams, EVAL_NONE};
+use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
-pub use crate::cc::EVAL_RESERVE_TRANSFER;
+pub use verus_tx_primitives::cc::EVAL_RESERVE_TRANSFER;
 
 /// The address every reserve transfer is paid to.
 ///
@@ -661,9 +661,9 @@ impl ReserveTransfer {
     /// Serialize the `CReserveTransfer` payload.
     pub fn to_payload(&self) -> Result<Vec<u8>, TxError> {
         let mut out = token_output(self.source, self.amount.to_sat());
-        out.extend_from_slice(&crate::cc::var_int(self.kind.flags()));
+        out.extend_from_slice(&verus_tx_primitives::cc::var_int(self.kind.flags()));
         out.extend_from_slice(&self.fee_currency.to_bytes());
-        out.extend_from_slice(&crate::cc::var_int(self.fee.to_sat()));
+        out.extend_from_slice(&verus_tx_primitives::cc::var_int(self.fee.to_sat()));
         out.extend_from_slice(&self.destination.serialize()?);
         out.extend_from_slice(&self.kind.destination_currency(self.source).to_bytes());
         if let Some(second) = self.kind.second_reserve() {
@@ -1273,7 +1273,8 @@ pub fn build_conversion_transaction(
                 "identity funding is only used for a mint".into(),
             ));
         };
-        let identity_script = crate::cc::identity_payment_script(currency.to_bytes())?;
+        let identity_script =
+            verus_tx_primitives::cc::identity_payment_script(currency.to_bytes())?;
         for utxo in params.identity_funding {
             if utxo.script_pubkey != identity_script {
                 return Err(TxError::InvalidConversion(format!(
@@ -1327,7 +1328,7 @@ pub fn build_conversion_transaction(
         if change > 0 {
             outputs.push(TxOut {
                 value: 0,
-                script_pubkey: crate::cc::reserve_output_script(
+                script_pubkey: verus_tx_primitives::cc::reserve_output_script(
                     params.change_address.hash(),
                     transfer.source,
                     change,
@@ -1349,7 +1350,9 @@ pub fn build_conversion_transaction(
         };
         (
             params.identity_funding,
-            Some(crate::cc::identity_payment_script(currency.to_bytes())?),
+            Some(verus_tx_primitives::cc::identity_payment_script(
+                currency.to_bytes(),
+            )?),
         )
     } else {
         (params.token_funding, None)
@@ -1584,8 +1587,8 @@ mod mint_destination_tests {
 #[cfg(test)]
 mod mint_funding_tests {
     use super::*;
-    use crate::cc::identity_payment_script;
-    use crate::Txid;
+    use verus_tx_primitives::cc::identity_payment_script;
+    use verus_tx_primitives::Txid;
     use verus_wire::TxV4;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";

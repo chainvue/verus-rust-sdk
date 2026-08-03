@@ -64,12 +64,12 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::amount::Amount;
-use crate::cc::fulfillment_script_sig;
-use crate::error::TxError;
-use crate::expiry::Expiry;
 use crate::send::SignedTransaction;
 use crate::{Txid, Utxo};
+use verus_tx_primitives::cc::fulfillment_script_sig;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
 
 /// How an input is unlocked, which decides what a signature over it looks like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -702,8 +702,8 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cc::reserve_output_script;
-    use crate::currency::CurrencyId;
+    use verus_tx_primitives::cc::reserve_output_script;
+    use verus_tx_primitives::CurrencyId;
     use verus_wire::consensus::{SIGHASH_ANYONECANPAY, SIGHASH_NONE, SIGHASH_SINGLE};
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";

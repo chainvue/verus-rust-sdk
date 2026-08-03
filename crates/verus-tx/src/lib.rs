@@ -44,18 +44,12 @@
 
 #![doc(html_no_source)]
 
-mod amount;
 mod assemble;
 pub mod balances;
-pub mod cc;
 pub mod convert;
-mod currency;
 pub mod currency_definition;
 pub mod currency_launch;
 pub mod decode;
-mod error;
-mod expiry;
-pub mod fee;
 pub mod identity;
 pub mod identity_spend;
 pub mod multisig;
@@ -66,22 +60,25 @@ pub mod revoke;
 mod send;
 pub mod signature;
 mod token;
-mod txid;
 pub mod update;
 pub mod vdxf;
 
-pub use amount::{Amount, SATS_PER_COIN};
+// The primitives, re-exported so every path this crate published still
+// resolves. `verus-tx` is becoming a facade over the crates it was split
+// into; nothing here is a new name.
+pub use verus_tx_primitives::{cc, fee};
+pub use verus_tx_primitives::{
+    estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,
+    CurrencyId, Destination, Expiry, Selection, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
+    EXPIRY_HEIGHT_THRESHOLD, SATS_PER_COIN,
+};
+
 pub use balances::{token_balances, TokenBalances};
-pub use cc::{identity_payment_script, identity_primary_script, Destination};
 pub use convert::{
     build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,
     ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
 };
-pub use currency::CurrencyId;
 pub use decode::{decode_output_script, may_carry_currency, OutputKind, ADVANCED_COMMITMENT_KEY};
-pub use error::TxError;
-pub use expiry::{Expiry, DEFAULT_EXPIRY_BLOCKS, EXPIRY_HEIGHT_THRESHOLD};
-pub use fee::{estimate_fee, select_utxos, Selection};
 pub use identity::{
     Identity, Timelock, EVAL_IDENTITY_PRIMARY, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
 };
@@ -98,20 +95,5 @@ pub use send::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
-pub use txid::Txid;
 pub use update::{build_identity_update, UpdateParams};
 pub use vdxf::{data_key, qualified_key, root_namespace};
-
-/// An unspent output available to spend.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Utxo {
-    /// Transaction that created it.
-    pub txid: Txid,
-    /// Index of the output within that transaction.
-    pub vout: u32,
-    /// What it is worth.
-    pub satoshis: Amount,
-    /// The scriptPubKey it pays to. Must be P2PKH for now.
-    pub script_pubkey: Vec<u8>,
-}

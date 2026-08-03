@@ -11,15 +11,15 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::amount::Amount;
-use crate::cc::fulfillment_script_sig;
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::{
+use crate::send::{p2pkh_script_sig, SignedTransaction};
+use verus_tx_primitives::cc::fulfillment_script_sig;
+use verus_tx_primitives::fee::{
     check_burn_ceiling, check_fee_ceiling, estimate_fee, select_utxos, DUST_THRESHOLD,
 };
-use crate::send::{p2pkh_script_sig, SignedTransaction};
-use crate::Utxo;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
 /// The shape of a transaction to assemble.
 pub(crate) struct Assembly<'a> {
@@ -334,8 +334,8 @@ pub(crate) fn check_p2pkh_funding(utxos: &[Utxo]) -> Result<(), TxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cc::identity_payment_script;
-    use crate::Txid;
+    use verus_tx_primitives::cc::identity_payment_script;
+    use verus_tx_primitives::Txid;
 
     fn key() -> PrivateKey {
         PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap()
@@ -369,7 +369,7 @@ mod tests {
             change_script,
             value_bearing_leading: true,
             expiry: Expiry::Never,
-            fee_per_kb: crate::fee::DEFAULT_FEE_PER_KB,
+            fee_per_kb: verus_tx_primitives::fee::DEFAULT_FEE_PER_KB,
         }
     }
 

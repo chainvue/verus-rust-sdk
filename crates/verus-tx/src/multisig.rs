@@ -29,8 +29,8 @@
 //! wrong order fail with every key present and correct, which is a confusing way
 //! to lose an afternoon. [`multisig_script_sig`] orders them for you.
 
-use crate::error::TxError;
 use verus_keys::{Address, AddressKind, PublicKey};
+use verus_tx_primitives::TxError;
 
 /// `OP_0`, the extra item `OP_CHECKMULTISIG` consumes.
 const OP_0: u8 = 0x00;

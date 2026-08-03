@@ -5,12 +5,12 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::amount::Amount;
-use crate::cc::identity_payment_script;
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::{select_utxos, DEFAULT_FEE_PER_KB};
 use crate::{Txid, Utxo};
+use verus_tx_primitives::cc::identity_payment_script;
+use verus_tx_primitives::fee::{select_utxos, DEFAULT_FEE_PER_KB};
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
 
 /// Sign every transparent input of `tx` as P2PKH, in order.
 ///
@@ -376,7 +376,7 @@ mod tests {
         let params = SendParams::new(&utxos, &to, address(TEST_ADDRESS), Expiry::Never);
         let signed = build_transparent_send(&key(), &params).expect("build");
 
-        let expected = crate::cc::identity_payment_script([0x11; 20]).unwrap();
+        let expected = verus_tx_primitives::cc::identity_payment_script([0x11; 20]).unwrap();
         assert!(
             signed.hex.contains(&hex::encode(&expected)),
             "the identity payment script is not in the transaction"

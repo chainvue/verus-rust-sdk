@@ -42,8 +42,8 @@
 use verus_keys::hash160;
 use verus_wire::hash::sha256d;
 
-use crate::cc::Destination;
-use crate::error::TxError;
+use verus_tx_primitives::cc::Destination;
+use verus_tx_primitives::TxError;
 
 /// Lowercase the way the C locale does: ASCII only, everything else untouched.
 ///
@@ -142,7 +142,9 @@ mod sapling_addresses {
     }
 }
 
-pub use crate::cc::{EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE};
+pub use verus_tx_primitives::cc::{
+    EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
+};
 
 /// The first version that carries `system_id` and `unlock_after`.
 const IDENTITY_VERSION_VAULT: u32 = 2;
@@ -673,7 +675,8 @@ mod tests {
             Timelock::DelayAfterUnlock(100),
         ] {
             let mut identity = blank();
-            identity.primary_addresses = vec![crate::cc::Destination::PubKeyHash([7; 20])];
+            identity.primary_addresses =
+                vec![verus_tx_primitives::cc::Destination::PubKeyHash([7; 20])];
             timelock.apply_to(&mut identity);
             let bytes = identity.to_bytes().expect("serialize");
             let read = Identity::from_bytes(&bytes).expect("parse");

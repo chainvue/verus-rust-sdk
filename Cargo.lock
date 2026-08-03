@@ -2147,6 +2147,19 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "verus-keys",
+ "verus-tx-primitives",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-primitives"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "verus-keys",
  "verus-wire",
 ]
 

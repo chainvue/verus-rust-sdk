@@ -1,6 +1,6 @@
 [package]
-name = "verus-tx"
-description = "Build and sign transparent Verus transactions offline"
+name = "verus-tx-primitives"
+description = "The vocabulary every Verus transaction builder shares: money, ids, expiry, errors, CryptoCondition encoding, fee and coin-selection rules"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,13 @@ publish.workspace = true
 workspace = true
 
 [features]
-# Serialize the types a wallet persists between runs: amounts, outpoints,
-# UTXOs, identities and partially-signed transactions. Off by default so a
-# consumer that does not need it does not carry serde.
-serde = ["dep:serde", "verus-tx-primitives/serde"]
+# Serialize the types a wallet persists between runs: amounts, outpoints and
+# UTXOs. Off by default so a consumer that does not need it does not carry
+# serde.
+serde = ["dep:serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
-verus-tx-primitives = { path = "../verus-tx-primitives" }
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }

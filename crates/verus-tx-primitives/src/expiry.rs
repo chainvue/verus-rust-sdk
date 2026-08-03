@@ -16,7 +16,7 @@
 //! a diff should prompt the question.
 //!
 //! ```
-//! use verus_tx::Expiry;
+//! use verus_tx_primitives::Expiry;
 //!
 //! // A wallet that knows the chain tip:
 //! let expiry = Expiry::within(1_167_200, 20);

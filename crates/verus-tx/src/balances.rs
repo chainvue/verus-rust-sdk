@@ -62,11 +62,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::amount::Amount;
-use crate::currency::CurrencyId;
 use crate::decode::{decode_output_script, OutputKind};
-use crate::error::TxError;
-use crate::Utxo;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
 /// How much of each currency a set of outputs carries.
 ///
@@ -201,9 +201,9 @@ pub fn token_balances(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cc;
     use crate::{Destination, Txid};
     use verus_keys::{Address, AddressKind};
+    use verus_tx_primitives::cc;
 
     const A: CurrencyId = CurrencyId::from_bytes([0xaa; 20]);
     const B: CurrencyId = CurrencyId::from_bytes([0xbb; 20]);

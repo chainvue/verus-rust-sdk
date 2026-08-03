@@ -47,8 +47,8 @@
 use verus_keys::hash160;
 use verus_wire::hash::sha256d;
 
-use crate::currency::CurrencyId;
-use crate::error::TxError;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::TxError;
 
 /// The literal separator hashed between a namespace and its keys.
 ///

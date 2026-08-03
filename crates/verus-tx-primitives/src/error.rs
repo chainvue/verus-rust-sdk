@@ -290,7 +290,7 @@ pub enum TxError {
     /// `idreferrallevels` far beyond anything a real chain configures.
     ///
     /// It is node-sourced chain policy, like the registration fee it
-    /// multiplies against in [`crate::register::registration_fees`] — this
+    /// multiplies against in `verus_tx::register::registration_fees` — this
     /// crate cannot confirm it, only bound it. A value this large has no
     /// legitimate basis (VRSCTEST pays out 3) and, left unbounded, lets a
     /// caller-uncheckable multiplier reach the point where the fee split

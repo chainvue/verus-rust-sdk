@@ -20,15 +20,15 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::amount::Amount;
-use crate::cc::{fulfillment_script_sig, reserve_output_script};
-use crate::currency::CurrencyId;
 use crate::decode::{decode_output_script, OutputKind};
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use crate::send::SignedTransaction;
-use crate::Utxo;
+use verus_tx_primitives::cc::{fulfillment_script_sig, reserve_output_script};
+use verus_tx_primitives::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
 /// Refuse a reserve output no transparent key in this crate can sign for.
 ///
@@ -43,16 +43,19 @@ use crate::Utxo;
 /// that disappears silently when the thing failing by accident starts working.
 pub(crate) fn reject_unspendable_reserve(
     utxo: &Utxo,
-    destination: &crate::cc::Destination,
+    destination: &verus_tx_primitives::cc::Destination,
 ) -> Result<(), TxError> {
     match destination {
-        crate::cc::Destination::PubKeyHash(_) => Ok(()),
-        crate::cc::Destination::Identity(identity) => Err(TxError::IdentityHeldFunding {
-            txid: utxo.txid.to_display_hex(),
-            vout: utxo.vout,
-            identity: hex::encode(identity),
-        }),
-        crate::cc::Destination::PubKey(_) | crate::cc::Destination::ScriptHash(_) => {
+        verus_tx_primitives::cc::Destination::PubKeyHash(_) => Ok(()),
+        verus_tx_primitives::cc::Destination::Identity(identity) => {
+            Err(TxError::IdentityHeldFunding {
+                txid: utxo.txid.to_display_hex(),
+                vout: utxo.vout,
+                identity: hex::encode(identity),
+            })
+        }
+        verus_tx_primitives::cc::Destination::PubKey(_)
+        | verus_tx_primitives::cc::Destination::ScriptHash(_) => {
             Err(TxError::UnsupportedFundingScript {
                 txid: utxo.txid.to_display_hex(),
                 vout: utxo.vout,

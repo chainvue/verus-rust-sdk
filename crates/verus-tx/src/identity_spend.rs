@@ -25,14 +25,14 @@
 
 use verus_keys::{Address, AddressKind, PrivateKey};
 
-use crate::amount::Amount;
 use crate::assemble::{assemble, Assembly};
-use crate::cc::identity_payment_script;
-use crate::error::TxError;
-use crate::expiry::Expiry;
-use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::send::{Recipient, SignedTransaction};
-use crate::Utxo;
+use verus_tx_primitives::cc::identity_payment_script;
+use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Utxo;
 
 /// What to build.
 #[derive(Clone, Debug)]
@@ -155,8 +155,8 @@ pub fn build_identity_spend(
 mod tests {
     use super::*;
     use crate::decode::{decode_output_script, OutputKind};
-    use crate::fee::{DUST_THRESHOLD, MIN_FEE};
-    use crate::Txid;
+    use verus_tx_primitives::fee::{DUST_THRESHOLD, MIN_FEE};
+    use verus_tx_primitives::Txid;
     use verus_wire::TxV4;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";

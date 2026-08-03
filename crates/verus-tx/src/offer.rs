@@ -54,13 +54,15 @@ use verus_keys::PrivateKey;
 use verus_wire::consensus::{SIGHASH_ALL, SIGHASH_ANYONECANPAY, SIGHASH_SINGLE, VERUS_BRANCH_ID};
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::amount::Amount;
-use crate::cc::{cc_script, fulfillment_script_sig, Destination, OptCcParams, EVAL_NONE};
-use crate::error::TxError;
-use crate::expiry::Expiry;
 use crate::register::EVAL_IDENTITY_COMMITMENT;
-use crate::txid::Txid;
-use crate::Utxo;
+use verus_tx_primitives::cc::{
+    cc_script, fulfillment_script_sig, Destination, OptCcParams, EVAL_NONE,
+};
+use verus_tx_primitives::Amount;
+use verus_tx_primitives::Expiry;
+use verus_tx_primitives::TxError;
+use verus_tx_primitives::Txid;
+use verus_tx_primitives::Utxo;
 
 /// The hash type an offer's input is signed under.
 ///
@@ -97,7 +99,7 @@ pub enum Wanted {
     /// A token, paid to the maker's address as a reserve output.
     Token {
         /// Which token.
-        currency: crate::currency::CurrencyId,
+        currency: verus_tx_primitives::CurrencyId,
         /// How much.
         amount: Amount,
         /// Where it goes.
@@ -124,7 +126,7 @@ impl Wanted {
                 recipient,
             } => TxOut {
                 value: 0,
-                script_pubkey: crate::cc::reserve_output_script(
+                script_pubkey: verus_tx_primitives::cc::reserve_output_script(
                     *recipient,
                     *currency,
                     amount.to_sat(),
@@ -491,7 +493,11 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     for (currency, amount) in balances.change() {
         transaction.outputs.push(TxOut {
             value: 0,
-            script_pubkey: crate::cc::reserve_output_script(change_hash, currency, amount)?,
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script(
+                change_hash,
+                currency,
+                amount,
+            )?,
         });
     }
 
@@ -558,7 +564,7 @@ fn push_data(script: &mut Vec<u8>, data: &[u8]) -> Result<(), TxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::currency::CurrencyId;
+    use verus_tx_primitives::CurrencyId;
 
     fn key() -> PrivateKey {
         PrivateKey::from_wif("UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc").unwrap()
@@ -891,7 +897,7 @@ mod tests {
             txid: Txid::from_internal([0x72; 32]),
             vout: 1,
             satoshis: Amount::from_sat(native),
-            script_pubkey: crate::cc::reserve_output_script(
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script(
                 taker().address().hash(),
                 CurrencyId::from_bytes(TOKEN),
                 amount,
@@ -1049,7 +1055,7 @@ mod tests {
             Amount::from_sat(1_00000000),
             &key().address(),
             Expiry::AtHeight(1_167_992),
-            crate::fee::DEFAULT_FEE_PER_KB,
+            verus_tx_primitives::fee::DEFAULT_FEE_PER_KB,
         )
         .unwrap();
 
