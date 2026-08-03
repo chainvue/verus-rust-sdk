@@ -21,6 +21,12 @@
 //! `prevHash` chaining, and the server's own tree-size counter — rather than
 //! trusting any one of them.
 //!
+//! Those checks run *within* one [`scan`]. A wallet's steady state is not one
+//! scan, though — it is the tail, every few minutes, for years. [`scan_after`]
+//! is that call, and it carries the same guarantee across the boundary: the
+//! first block of the new range must descend from the last block of the old
+//! one, or it refuses.
+//!
 //! # What those checks are, and are not, worth
 //!
 //! They defeat accidental corruption and lazy lying. They do **not** make a
@@ -84,6 +90,11 @@ const SCAN_CHUNK: u64 = 1_000;
 /// Behind the `serde` feature the whole thing round-trips, notes and observed
 /// nullifiers together, which is the pair [`Self::unspent`] needs and the pair
 /// that is wrong in the dangerous direction if they are stored apart.
+///
+/// Then reload it, pass it to [`scan_after`] — which scans only the tail and
+/// proves it continues the same chain — and fold the answer back in with
+/// [`Self::absorb`]. `scan_after` returns the tail alone, so storing its result
+/// *in place of* this one throws the wallet's history away.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScanResult {
@@ -105,15 +116,64 @@ pub struct ScanResult {
     /// Hash of the last block scanned, so the next scan can prove it continues
     /// the same chain rather than a reorged one.
     ///
-    /// Nothing consumes it yet — `scan` takes no prior hash — so until it does,
-    /// a wallet reloading a persisted result must compare this itself. After a
-    /// reorg below [`Self::to`], the positions in it are stale, and a witness
-    /// built from them fails only at the daemon.
+    /// [`scan_after`] is what does that. Hand it a persisted result and the
+    /// first block of the new range has to descend from this hash, or the scan
+    /// is refused as [`FlowError::Reorged`] rather than quietly returning notes
+    /// at positions the chain no longer agrees with.
     #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
     pub tip_hash: [u8; 32],
 }
 
 impl ScanResult {
+    /// Fold a continuation into this result.
+    ///
+    /// [`scan_after`] returns **only the tail** — the notes and nullifiers in
+    /// the blocks it just scanned — in the same type that holds a wallet's
+    /// whole state. Storing that in place of the old one throws the wallet's
+    /// history away; storing the notes but not the nullifiers is worse, because
+    /// a note spent in the old range comes back as spendable. This is the
+    /// merge, so neither is left to be got right by hand.
+    ///
+    /// ```no_run
+    /// # use verus_flows::{scan_after, ScanResult};
+    /// # use verus_light::{LightClient, LightTransport};
+    /// # use verus_sapling::scan::DiversifiableFullViewingKey;
+    /// # fn poll<T: LightTransport>(
+    /// #     light: &LightClient<T>,
+    /// #     dfvk: &DiversifiableFullViewingKey,
+    /// #     wallet: &mut ScanResult,
+    /// #     tip: u64,
+    /// # ) -> Result<(), verus_flows::FlowError> {
+    /// let tail = scan_after(light, dfvk, wallet, tip)?;
+    /// wallet.absorb(tail)?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Shielded`] if `next` does not start exactly where this
+    /// result ended. A gap would mean blocks nobody scanned — and every note
+    /// position after such a gap is derived from a count that skipped them.
+    pub fn absorb(&mut self, next: ScanResult) -> Result<(), FlowError> {
+        if next.from != self.to + 1 {
+            return Err(FlowError::Shielded(format!(
+                "a scan of {}..={} does not continue one that ended at {}; absorbing it would \
+                 leave a gap, and every note position after a gap is wrong",
+                next.from, next.to, self.to
+            )));
+        }
+        // An empty continuation — `scan_after` with nothing new — ends before
+        // it begins and moves nothing.
+        if next.to < next.from {
+            return Ok(());
+        }
+        self.notes.extend(next.notes);
+        self.nullifiers.extend(next.nullifiers);
+        self.to = next.to;
+        self.tip_hash = next.tip_hash;
+        Ok(())
+    }
+
     /// Notes whose nullifiers have not been seen — the ones still spendable.
     ///
     /// `already_spent` carries nullifiers observed *before* this range. A wallet
@@ -157,6 +217,124 @@ pub fn scan<T: LightTransport>(
     from: u64,
     to: u64,
 ) -> Result<ScanResult, FlowError> {
+    scan_following(light, dfvk, from, to, None)
+}
+
+/// Scan the blocks a previous scan did not, and prove they continue the same
+/// chain.
+///
+/// This is the call a wallet actually lives in. The first scan is a one-off;
+/// every scan after it is this one, every few minutes, for the life of the
+/// wallet.
+///
+/// # What it closes
+///
+/// Within one [`scan`] the blocks are checked to chain — heights, `prevHash`,
+/// and the server's own tree-size counter. **Across** calls nothing was
+/// checked, and a wallet's steady state is entirely across calls.
+/// [`ScanResult::tip_hash`] has always been documented "so the next scan can
+/// prove it continues the same chain rather than a reorged one", and until now
+/// no function accepted it.
+///
+/// The gap matters because of what a reorg does here. It does not fail loudly:
+/// it *shifts note positions*, and a note witnessed at the wrong position
+/// produces a proof the daemon rejects only after the prover has been paid for
+/// — which is the failure this whole module is shaped to avoid.
+///
+/// # What to do when it refuses
+///
+/// [`FlowError::Reorged`] means the chain that `previous` described is not the
+/// chain the server is serving now. It is **not transient**: retrying with the
+/// same `previous` fails identically for as long as that fork stands, so a poll
+/// loop that treats it as a hiccup spins forever.
+///
+/// The remedy is to scan again from further back and **discard the notes and
+/// nullifiers at or above the fork**, because their positions are derived from
+/// blocks that no longer exist. How far back is the wallet's call: this crate
+/// does not search for the fork point, since doing so means guessing how deep
+/// to look and re-fetching until it stops being wrong.
+///
+/// Two things to know before choosing that depth. A [`ScanResult`] keeps one
+/// tip hash, for its own last block — so after truncating to some earlier
+/// height you have no hash to seed the next call with, and the scan that
+/// follows is a plain [`scan`] with **no continuity check against the prefix
+/// you kept**. Roll back too little and it will succeed, quietly mixing
+/// positions derived from a dead chain with ones from the live chain — the
+/// silent corruption this function exists to refuse. So overshoot, or keep
+/// your own per-height checkpoints.
+///
+/// # What comes back, and what to do with it
+///
+/// **Only the tail.** The notes and nullifiers in the blocks this call
+/// scanned, in the same type that holds a wallet's whole state — so store it
+/// *in addition to* what you have, with [`ScanResult::absorb`], never in place
+/// of it.
+///
+/// # Nothing new is not an error
+///
+/// A polling wallet asks far more often than blocks arrive. When `to` is the
+/// height `previous` already reached, the answer is an empty range — `from`
+/// one past `to` — carrying the same tip hash, so it can be fed straight back
+/// in or absorbed with no effect.
+///
+/// A `to` *below* that is [`FlowError::NotReady`], not a reorg: a server can be
+/// behind because it is still syncing or because a load balancer moved, and
+/// both serve the same chain with less of it. Retry before rolling anything
+/// back.
+///
+/// # Errors
+///
+/// [`FlowError::Reorged`] if the blocks do not continue `previous`;
+/// [`FlowError::NotReady`] if the server is behind `previous`; and everything
+/// [`scan`] can report.
+pub fn scan_after<T: LightTransport>(
+    light: &LightClient<T>,
+    dfvk: &DiversifiableFullViewingKey,
+    previous: &ScanResult,
+    to: u64,
+) -> Result<ScanResult, FlowError> {
+    if to < previous.to {
+        // Deliberately NOT `Reorged`. A server offering a shorter chain is
+        // usually not lying: a node still syncing after a restart, or a
+        // load-balanced name that rotated to a replica behind the others,
+        // serves the *same* chain and simply has less of it. Every block
+        // already scanned is still on it. Calling that a reorg would push a
+        // wallet into the reorg remedy — discard notes, rescan — for a
+        // condition whose correct response is to wait.
+        return Err(FlowError::NotReady(format!(
+            "the last scan reached block {}, and this server is only at {to}; it is behind, or \
+             the chain was reorged. Retry before rolling anything back — a lagging server \
+             catches up and a reorg does not",
+            previous.to
+        )));
+    }
+    if to == previous.to {
+        // Nothing new. An empty range, spelled the way an empty range is: it
+        // starts one past where the last scan ended and ends before it began.
+        // Claiming `from == to == previous.to` would assert that block was
+        // scanned *by this call* and held nothing — false whenever the previous
+        // scan found a note or a nullifier there, and a wallet reconciling by
+        // range would then drop it.
+        return Ok(ScanResult {
+            notes: Vec::new(),
+            nullifiers: Vec::new(),
+            from: previous.to + 1,
+            to: previous.to,
+            tip_hash: previous.tip_hash,
+        });
+    }
+    scan_following(light, dfvk, previous.to + 1, to, Some(previous.tip_hash))
+}
+
+/// The body of [`scan`], with the option of proving the first block continues
+/// something already scanned.
+fn scan_following<T: LightTransport>(
+    light: &LightClient<T>,
+    dfvk: &DiversifiableFullViewingKey,
+    from: u64,
+    to: u64,
+    follows: Option<[u8; 32]>,
+) -> Result<ScanResult, FlowError> {
     if to < from {
         return Err(FlowError::Shielded(format!(
             "scan range {from}..={to} runs backwards"
@@ -173,7 +351,10 @@ pub fn scan<T: LightTransport>(
     let mut notes = Vec::new();
     let mut nullifiers = Vec::new();
     let mut tip_hash = [0u8; 32];
-    let mut previous_hash: Option<[u8; 32]> = None;
+    // Seeded when this scan continues another: the very first block then has to
+    // chain to the last block of that one, which is the check that was missing
+    // across calls.
+    let mut previous_hash: Option<[u8; 32]> = follows;
 
     let mut chunk_start = from;
     while chunk_start <= to {
@@ -216,9 +397,13 @@ pub fn scan<T: LightTransport>(
         for block in &blocks {
             if let Some(expected) = previous_hash {
                 if block.prev_hash != expected {
-                    return Err(FlowError::Shielded(format!(
-                        "block {} does not follow the previous block; the chain was reorged \
-                         under the scan and every position after it would be wrong",
+                    // `Reorged`, not `Shielded`: a wallet's response is to roll
+                    // back and rescan, and that is the same response whether
+                    // the break is inside this scan or between this one and the
+                    // last. One variant, one arm to match.
+                    return Err(FlowError::Reorged(format!(
+                        "block {} does not follow the block before it; the chain was reorged \
+                         and every note position after the break would be wrong",
                         block.height
                     )));
                 }

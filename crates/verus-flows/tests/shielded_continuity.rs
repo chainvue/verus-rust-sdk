@@ -127,6 +127,11 @@ fn a_scan_over_real_blocks_counts_everything() {
 
 /// A block that does not chain to the one before it means the range spans a
 /// reorg, and every position after the break is wrong.
+///
+/// Reported as [`FlowError::Reorged`] rather than `Shielded`. A wallet's
+/// response to this is to roll back and rescan, and that is the same response
+/// whether the break is inside one scan or between one scan and the next — so
+/// it is one variant and one match arm, not two.
 #[test]
 fn a_broken_chain_is_refused() {
     let first = empty_block(1_156_847, [1u8; 32], [0u8; 32], 3099);
@@ -136,11 +141,12 @@ fn a_broken_chain_is_refused() {
     let client = client(fixture("gettreestate.bin"), body(&[first, second]));
     let err = scan(&client, &stranger(), 1_156_847, 1_156_848).unwrap_err();
     match err {
-        FlowError::Shielded(ref text) => {
+        FlowError::Reorged(ref text) => {
             assert!(text.contains("does not follow"), "{text}");
             assert!(text.contains("reorged"), "{text}");
+            assert!(text.contains("1156848"), "{text}");
         }
-        other => panic!("expected a shielded error, got {other:?}"),
+        other => panic!("expected a reorg, got {other:?}"),
     }
 }
 

@@ -422,6 +422,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Pending transactions — the mempool, which neither a UTXO set nor a delta list reports | ✅ live, and reached through an arity re-probe rather than one guess |
 | Second-sourced policy reads — corroborate the one lie that costs money | ✅ live, across two independent VRSCTEST nodes |
 | Persisting a shielded wallet — the notes a scan found and bytes proved but not sent | ✅ behind `serde`, round-trip tested against a real on-chain note |
+| Incremental scanning — the tail only, proving it is the same chain | ✅ `scan_after` + `absorb`, refusing a reorg rather than shifting note positions |
 | Application data on a VerusID — read current, read history, publish | ✅ **on chain**, twice over, with the erase invariant proven |
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |

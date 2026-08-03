@@ -47,11 +47,16 @@ pub enum FlowError {
 
     /// A shielded lookup could not be trusted to position or witness a note.
     ///
-    /// Almost every case here is a *continuity* failure — a reorg under a scan,
-    /// a chunk that does not chain to the last, a tree size that disagrees with
-    /// the frontier. None of them would fail loudly on their own: they shift
-    /// note positions, and a note witnessed at the wrong position produces a
-    /// proof the daemon rejects only after ~20 seconds of proving.
+    /// Most cases here are *continuity* failures — a tree size that disagrees
+    /// with the frontier, a chunk that does not follow the last one absorbed,
+    /// an anchor the chain never had. None of them would fail loudly on their
+    /// own: they shift note positions, and a note witnessed at the wrong
+    /// position produces a proof the daemon rejects only after ~20 seconds of
+    /// proving.
+    ///
+    /// A chain that does not chain — inside one scan or between two — is
+    /// [`FlowError::Reorged`] instead, because a wallet's response to it is
+    /// different: roll back and rescan, rather than distrust this answer.
     #[cfg(feature = "shielded")]
     #[error("shielded lookup failed: {0}")]
     Shielded(String),
