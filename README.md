@@ -72,6 +72,7 @@ each says whether running it spends testnet coins.
 | `convert_online` | estimate, then convert with the estimate as a floor |
 | `make_offer_online` | fund and sign a marketplace offer (the hex *is* the offer) |
 | `take_offer_online` | inspect an offer against the chain, then take it at the verified terms |
+| `spend_note_online` | a shielded spend end to end, with the anchor checked against a second source before the prover runs |
 
 ### In a browser
 
@@ -292,6 +293,47 @@ same way. The first shield here landed at index 0, the second at index 1. Find
 it by trial decryption; guessing builds a witness for the wrong leaf, which
 proves and serializes happily before failing.
 
+#### And the whole thing composed, not hand-assembled
+
+VRSCTEST txids
+[`2e2b04df1161e220f6a3dfd80abb821e15723f42fea05dec2dc451da5bcd27f5`](https://testex.verus.io/tx/2e2b04df1161e220f6a3dfd80abb821e15723f42fea05dec2dc451da5bcd27f5)
+(z→z, two notes in one bundle) and
+[`2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d`](https://testex.verus.io/tx/2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d)
+(z→t), mined at 1 173 695 and 1 173 696 — and
+[`f46ed415cbbdde407ab8d45113b41542246dd3cda52d7526ff6be9903b4056e3`](https://testex.verus.io/tx/f46ed415cbbdde407ab8d45113b41542246dd3cda52d7526ff6be9903b4056e3)
+at 1 173 730, the same path keeping a shielded change note rather than
+consuming the whole one.
+
+Every piece above was already proven and left unjoined: the builder had done
+z→z, z→t and multi-note spends, and `witness_note` assembled what it took as
+input. What a wallet still had to write for itself was the join — which notes,
+witnessed to which height, and against what. `flows::shielded::spend` is that
+join, and it is one call.
+
+The interesting part is what it refuses. A witness is computed entirely from
+what one light server says: the frontier, the commitments, the tree sizes. Every
+continuity check in the scan compares those values against **each other**, so a
+server that lies consistently passes all of them — the module docs said so
+already. The spend path therefore takes a `ChainReader` as well as a light
+client, and compares the anchor it computed against the `finalsaplingroot` in
+that block's header, which consensus fixed and the light server does not
+control. For the transaction above: `db1d7a7d…` from lightwalletd, and
+`getblock 1173695` on `api.verustest.net` reporting `0735f7fc…` — the same 32
+bytes, header display order being reversed like a txid.
+
+That comparison happens **before the first proof**, which is why
+[`witness_anchor`] exists without the prover feature. A frontier from the wrong
+height fails nowhere else, and finding out from the daemon costs thirty seconds
+of proving to be told `bad-txns-shielded-requirements-not-met`.
+
+Two other things the flow will not do. It will not **estimate the fee** —
+`estimatefee` prices a transaction by serialized size against a transparent
+fee-per-kilobyte, and a shielded transaction is mostly Groth16 proof, so the
+number would be confidently wrong. And it will not **truncate a selection**: if
+covering the amount would take more notes than it will prove in one transaction,
+it says so, because building a transaction that pays less than was asked for is
+the one outcome worse than an error.
+
 The offline gate re-proves the whole shielded path on every opt-in run,
 with no chain and no coins:
 
@@ -363,6 +405,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | VerusID lifecycle — commit, register, referred, token-parent sub-ID, update, 2-of-2 multisig, revoke, recover | ✅ **on chain**, all eight |
 | VerusID message signing / login | ✅ verified live against the daemon, both directions |
 | Shielded — t→z, z→t, z→z, multi-note, via lightwalletd end to end | ✅ **on chain** |
+| Shielded **spend composed through `flows`** — scan → select → witness → anchor-check → prove → broadcast | ✅ **on chain**, z→z and z→t |
 | Marketplace offers — make, inspect against the chain, take | ✅ **on chain**, including a token demand settled from a reserve input |
 | Marketplace discovery — every offer standing against a currency or an identity | ✅ parsed from both public nodes; 54 and 1843 listings |
 | Transaction history — what already happened, which a UTXO set cannot tell you | ✅ live, native and per-currency, signed movements |

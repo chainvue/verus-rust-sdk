@@ -49,6 +49,11 @@ pub struct ScriptedReader {
     deltas: RefCell<Vec<AddressDelta>>,
     offers: RefCell<Vec<OfferListing>>,
     pub(crate) raw_transactions: RefCell<std::collections::HashMap<String, serde_json::Value>>,
+    /// `finalsaplingroot` per height, in the display (reversed) order a block
+    /// header renders it. Empty means every block reports the all-zero root.
+    sapling_roots: RefCell<Vec<(u64, String)>>,
+    /// Serve blocks with the `finalsaplingroot` field absent entirely.
+    omit_sapling_root: RefCell<bool>,
 }
 
 impl ScriptedReader {
@@ -72,6 +77,8 @@ impl ScriptedReader {
             deltas: RefCell::new(Vec::new()),
             offers: RefCell::new(Vec::new()),
             raw_transactions: RefCell::new(std::collections::HashMap::new()),
+            sapling_roots: RefCell::new(Vec::new()),
+            omit_sapling_root: RefCell::new(false),
         }
     }
 
@@ -156,6 +163,28 @@ impl ScriptedReader {
         self.confirmations
             .borrow_mut()
             .push((txid.to_string(), confirmations));
+        self
+    }
+
+    /// Serve blocks that carry no `finalsaplingroot` at all.
+    ///
+    /// A node that omits the field must not read as agreement, and the default
+    /// double *always* supplies one — so without this the refusal for a missing
+    /// field cannot be reached from a test at all.
+    pub fn without_sapling_roots(self) -> Self {
+        *self.omit_sapling_root.borrow_mut() = true;
+        self
+    }
+
+    /// The `finalsaplingroot` block `height` reports, in header display order.
+    ///
+    /// Scripting even one makes every *other* height an error rather than the
+    /// all-zero default: an anchor check that passed because the double
+    /// answered a height it was never told about would be worse than no test.
+    pub fn with_final_sapling_root(self, height: u64, root: &str) -> Self {
+        self.sapling_roots
+            .borrow_mut()
+            .push((height, root.to_string()));
         self
     }
 
@@ -329,9 +358,28 @@ impl ChainReader for ScriptedReader {
         Ok(self.block_hash_at(height))
     }
 
-    fn block(&self, _height_or_hash: &str) -> Result<serde_json::Value, RpcError> {
+    fn block(&self, height_or_hash: &str) -> Result<serde_json::Value, RpcError> {
         self.count();
-        Ok(json!({ "tx": [], "finalsaplingroot": "00".repeat(32) }))
+        if *self.omit_sapling_root.borrow() {
+            return Ok(json!({ "tx": [] }));
+        }
+        let roots = self.sapling_roots.borrow();
+        if roots.is_empty() {
+            return Ok(json!({ "tx": [], "finalsaplingroot": "00".repeat(32) }));
+        }
+        let height: u64 = height_or_hash.parse().map_err(|_| RpcError::Node {
+            code: -8,
+            message: format!("{height_or_hash} is not a block height"),
+        })?;
+        let root = roots
+            .iter()
+            .find(|(at, _)| *at == height)
+            .map(|(_, root)| root.clone())
+            .ok_or_else(|| RpcError::Node {
+                code: -8,
+                message: format!("block height {height} out of range"),
+            })?;
+        Ok(json!({ "tx": [], "finalsaplingroot": root }))
     }
 
     fn address_utxos(&self, addresses: &[&str]) -> Result<Vec<AddressUtxo>, RpcError> {
