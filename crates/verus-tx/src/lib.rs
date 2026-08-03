@@ -44,10 +44,6 @@
 
 #![doc(html_no_source)]
 
-pub mod multisig;
-pub mod offer;
-pub mod partial;
-
 // The primitives, re-exported so every path this crate published still
 // resolves. `verus-tx` is becoming a facade over the crates it was split
 // into; nothing here is a new name.
@@ -59,6 +55,8 @@ pub use verus_tx_identity::{
     SignedRegistration, UpdateParams, CENTRALIZED_PROOF_PROTOCOL,
 };
 pub use verus_tx_identity::{identity_spend, register, revoke, signature, update};
+pub use verus_tx_market::{multisig, offer, partial};
+pub use verus_tx_market::{InputKind, PartialTransaction};
 pub use verus_tx_primitives::{cc, fee};
 pub use verus_tx_primitives::{
     estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,
@@ -77,5 +75,3 @@ pub use verus_tx_protocol::{
 pub use verus_tx_transparent::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
-
-pub use partial::{InputKind, PartialTransaction};

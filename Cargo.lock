@@ -2149,6 +2149,7 @@ dependencies = [
  "verus-keys",
  "verus-tx-currency",
  "verus-tx-identity",
+ "verus-tx-market",
  "verus-tx-primitives",
  "verus-tx-protocol",
  "verus-tx-transparent",
@@ -2176,6 +2177,20 @@ dependencies = [
  "serde_json",
  "verus-keys",
  "verus-tx-currency",
+ "verus-tx-primitives",
+ "verus-tx-protocol",
+ "verus-tx-transparent",
+ "verus-wire",
+]
+
+[[package]]
+name = "verus-tx-market"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "verus-keys",
  "verus-tx-primitives",
  "verus-tx-protocol",
  "verus-tx-transparent",

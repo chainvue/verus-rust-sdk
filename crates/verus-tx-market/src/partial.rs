@@ -64,11 +64,11 @@ use verus_wire::consensus::{SIGHASH_ALL, VERUS_BRANCH_ID};
 use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
-use crate::{Txid, Utxo};
 use verus_tx_primitives::cc::fulfillment_script_sig;
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
+use verus_tx_primitives::{Txid, Utxo};
 use verus_tx_transparent::SignedTransaction;
 
 /// How an input is unlocked, which decides what a signature over it looks like.

@@ -8,6 +8,7 @@ members = [
     "crates/verus-tx-protocol",
     "crates/verus-tx-currency",
     "crates/verus-tx-identity",
+    "crates/verus-tx-market",
     "crates/verus-tx",
     "crates/verus-sapling",
     "crates/verus-rpc",
