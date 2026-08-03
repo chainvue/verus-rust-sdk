@@ -19,3 +19,11 @@ verus-tx-primitives = { path = "../verus-tx-primitives" }
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# Measures the whole spend path: selection, fee, change, assembly, signing.
+[[bench]]
+name = "build_sign"
+harness = false

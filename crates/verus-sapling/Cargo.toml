@@ -43,6 +43,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 serde_json = "1"
+criterion = { workspace = true }
+zcash_note_encryption = { workspace = true }
 # Only the `prove_and_verify` example needs these: it runs the same verifier a
 # consensus node runs over the proofs we just produced. Versions track
 # sapling-crypto 0.7's own graph so no type appears twice.
@@ -62,3 +64,9 @@ required-features = ["prover"]
 [[test]]
 name = "diversified_roundtrip"
 required-features = ["prover"]
+
+# Scanning throughput. The number that decides whether a shielded wallet is
+# usable at all, given Sapling activates at height 1 on Verus.
+[[bench]]
+name = "scan"
+harness = false
