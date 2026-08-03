@@ -49,3 +49,18 @@ pub use bip39::{mnemonic_from_entropy, mnemonic_to_seed, validate_mnemonic, Mnem
 pub use error::KeyError;
 pub use key::{PrivateKey, PublicKey, WIF_VERSION};
 pub use seed::private_key_from_seed_phrase;
+
+/// The base58check codec, reachable by a fuzz harness.
+///
+/// `base58` is a private module: a caller gets at it through [`Address`] or
+/// [`PrivateKey`], which is the right shape for an API and the wrong one for a
+/// fuzzer, because those two only ever hand it 20- and 32-byte payloads. The
+/// raw codec accepts any length, and that is the surface worth fuzzing.
+///
+/// Behind a feature, `#[doc(hidden)]`, and not part of the API. Enabled only
+/// by `fuzz/Cargo.toml`.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use crate::base58::{decode_check, encode_check};
+}

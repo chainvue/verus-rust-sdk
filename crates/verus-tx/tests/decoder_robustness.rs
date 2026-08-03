@@ -9,14 +9,23 @@
 //!
 //! Returning an error is always acceptable. Panicking never is.
 //!
-//! # Why this and not `cargo fuzz`
+//! # This and `cargo fuzz`, not this instead of it
 //!
-//! A libFuzzer harness needs nightly, so CI would not run it and it would rot.
-//! This runs on stable, in CI, on every change, and is deterministic — a failure
-//! reproduces exactly instead of only on the machine that found it. It is a
-//! weaker search than coverage-guided fuzzing, so it is a floor rather than a
-//! ceiling: a real `cargo fuzz` target over the same two entry points is worth
-//! adding for long soak runs.
+//! There is a libFuzzer harness now — `fuzz/fuzz_targets/output_script.rs` —
+//! and CI runs a smoke pass over it. This file used to say such a target
+//! "would rot" because it needs nightly; that is handled by giving it its own
+//! workspace and its own job.
+//!
+//! Both are worth keeping, and the overflow test at the bottom of this file is
+//! the evidence. The fuzzer found a panic in about a second that the mutation
+//! search below never reached, because this corpus is built from
+//! `reserve_output_script` and `commitment_script` and so never constructs a
+//! well-formed `EVAL_RESERVE_TRANSFER`. Coverage-guided mutation goes where a
+//! fixed corpus does not.
+//!
+//! What this has and the fuzzer does not: it runs on stable, on every change,
+//! and it is deterministic — a failure here reproduces exactly, rather than
+//! only on the machine that happened to find it.
 //!
 //! The corpus is built from *valid* scripts, then damaged. Random bytes alone
 //! mostly bounce off the first length check; mutating real structures is what
@@ -379,4 +388,39 @@ fn an_identity_that_parses_round_trips_exactly() {
         parsed > 0,
         "no mutated identity parsed; the corpus is wrong"
     );
+}
+
+/// A `CompactSize` length prefix that overflows `offset + length`.
+///
+/// Found by `fuzz/fuzz_targets/output_script.rs` in about a second, and *not*
+/// found by the mutation search above — which is the point of keeping both.
+/// That search builds its corpus from `reserve_output_script` and
+/// `commitment_script`, so it never produced a well-formed enough
+/// `EVAL_RESERVE_TRANSFER` to reach `TransferDestination::deserialize`, where
+/// the arithmetic lived. Coverage-guided mutation walked in.
+///
+/// The bytes are the artifact libFuzzer wrote, unedited. Before the fix this
+/// panicked with "attempt to add with overflow" at `convert.rs:315` — in a
+/// debug build, which is what `cargo test` is, and what a consumer runs while
+/// developing. In release the addition wrapped, `get` saw a backwards range,
+/// and it refused correctly by accident.
+#[test]
+fn a_length_prefix_that_overflows_the_offset_is_refused() {
+    let script = hex::decode(
+        "1a040300010114258a0f7f651b48ae81e2312c3438deb601e27368cc4c8f040308010114cb8a0f7f\
+         651b484a81e2312c3438deb601e273684c7301a6ef9ea25e8163353224ff3429db9f9e91813ef10e\
+         47ac626d3c87257308b7d25a204c011699143ef1810262ffffffffffffffffffffff1a5a204ce908\
+         e3e5c373389fa7684c7301a6ef9ea25e8163353224ff3429db9f9e9181d25a204ce908e3e5c37338\
+         9fa7ae5d4b22a87ffc204a74ff75",
+    )
+    .expect("the artifact is hex");
+
+    // Any `Err` is fine. A panic is not, and neither is an `Ok` — this script
+    // does not describe a coherent output.
+    let decoded = catch_unwind(AssertUnwindSafe(|| decode_output_script(&script)));
+    match decoded {
+        Ok(Ok(kind)) => panic!("a script with an overflowing length prefix decoded as {kind:?}"),
+        Ok(Err(_)) => {}
+        Err(_) => panic!("a script with an overflowing length prefix panicked"),
+    }
 }

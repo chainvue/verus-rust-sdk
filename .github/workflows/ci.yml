@@ -141,3 +141,72 @@ jobs:
 
       - name: cargo-deny
         run: cargo deny check
+
+  # The parsers that eat bytes an attacker chooses: transaction deserialization,
+  # output-script decoding, base58/WIF, and the hand-written lightwalletd
+  # protobuf reader.
+  #
+  # This is a SMOKE run, not a campaign. Sixty seconds per target against the
+  # committed corpus catches a regression that breaks an existing input or a
+  # shallow new crash; it does not explore. Real coverage comes from running
+  # `cargo fuzz run <target> -- -max_total_time=...` for much longer by hand
+  # and committing whatever the corpus grew — see `fuzz/README.md` for what
+  # has actually been run.
+  #
+  # Nightly, and deliberately quarantined to this job: `cargo-fuzz` needs
+  # `-Zsanitizer=address`, while every other job here pins 1.95.0 to keep the
+  # build reproducible. `fuzz/` is its own workspace so nothing else ever sees
+  # a libfuzzer target.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      # `-runs=0` replays the committed corpus and exits: if a seed that used
+      # to pass now crashes or trips an assertion, that fails here before any
+      # new input is generated. Cheap, and the part most likely to catch a
+      # real regression.
+      - name: Replay the committed corpus
+        working-directory: fuzz
+        run: |
+          for target in tx_deserialize output_script base58 lightwalletd_proto; do
+            echo "::group::replay $target"
+            cargo fuzz run "$target" -- -runs=0
+            echo "::endgroup::"
+          done
+
+      # Then a short exploration on top. `-malloc_limit_mb=512` is the check
+      # that matters beyond panics: a parser that believes a length prefix and
+      # allocates accordingly dies here rather than in a wallet.
+      - name: Smoke
+        working-directory: fuzz
+        run: |
+          for target in tx_deserialize output_script base58 lightwalletd_proto; do
+            echo "::group::fuzz $target"
+            cargo fuzz run "$target" -- \
+              -max_total_time=60 -rss_limit_mb=2048 -malloc_limit_mb=512 -print_final_stats=1
+            echo "::endgroup::"
+          done
+
+      # A crash writes its input to `fuzz/artifacts/`. Without this the job
+      # fails with a stack trace and no way to reproduce it.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
