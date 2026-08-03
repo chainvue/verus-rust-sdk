@@ -37,6 +37,7 @@ pub(crate) enum Method {
     GetVdxfId,
     GetOffers,
     VerifyMessage,
+    GetRawMempool,
     // Transactions
     GetRawTransaction,
     DecodeRawTransaction,
@@ -69,6 +70,7 @@ impl Method {
             Method::GetVdxfId => "getvdxfid",
             Method::GetOffers => "getoffers",
             Method::VerifyMessage => "verifymessage",
+            Method::GetRawMempool => "getrawmempool",
             Method::GetRawTransaction => "getrawtransaction",
             Method::DecodeRawTransaction => "decoderawtransaction",
             Method::SendRawTransaction => "sendrawtransaction",
@@ -118,6 +120,7 @@ impl Method {
             | Method::GetVdxfId
             | Method::GetOffers
             | Method::VerifyMessage
+            | Method::GetRawMempool
             | Method::GetRawTransaction
             | Method::DecodeRawTransaction => false,
         }
@@ -145,6 +148,7 @@ impl Method {
         Method::GetVdxfId,
         Method::GetOffers,
         Method::VerifyMessage,
+        Method::GetRawMempool,
         Method::GetRawTransaction,
         Method::DecodeRawTransaction,
         Method::SendRawTransaction,
@@ -181,7 +185,7 @@ mod tests {
         }
         // Distinctness is checked separately; this is the count, pinned so a
         // variant added to the enum and to `name` but not to `ALL` is caught.
-        assert_eq!(Method::ALL.len(), 23);
+        assert_eq!(Method::ALL.len(), 24);
     }
 
     #[test]

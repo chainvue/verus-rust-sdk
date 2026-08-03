@@ -52,17 +52,51 @@ pub trait ChainReader {
     /// at the height it saw, and a different hash later at that same height
     /// means the chain moved underneath it.
     fn block_hash(&self, height: u32) -> Result<String, RpcError>;
+    /// Transaction ids the node currently holds in its mempool.
+    ///
+    /// The one thing a UTXO set and a delta list both leave out: a payment that
+    /// has been broadcast and not yet mined. Without it, a wallet can only
+    /// learn that its own outgoing transaction is alive by polling
+    /// [`ChainReader::confirmations`] for each txid it is waiting on — one
+    /// request per transaction, forever, against a node that could have
+    /// answered once.
+    ///
+    /// **Asked with no arguments first.** `getrawmempool` takes an optional
+    /// verbosity flag, and `api.verustest.net` refuses the method outright when
+    /// one is present — the same arity-sensitive proxy that refuses `getblock`
+    /// with a verbosity argument, pointing the other way. Only if that is
+    /// refused as `-32601` is `[false]` tried, which is the same question: a
+    /// Verus daemon answers `getrawmempool` and `getrawmempool false`
+    /// identically (measured 2026-08-03). The ids are what a wallet needs
+    /// anyway; the *verbose* form's fee and dependency data is a different
+    /// question and is not asked here.
+    ///
+    /// Ids are lowercased and checked, and a repeated one is refused — see
+    /// [the crate docs](crate) on treating a node's answers as untrusted.
+    ///
+    /// An empty list is a real answer: it means nothing is pending, not that
+    /// the node declined.
+    fn mempool(&self) -> Result<Vec<String>, RpcError>;
     /// A block, by height or by hash.
     ///
     /// Carries the block's transaction ids and its `finalsaplingroot`, which
     /// together are what a shielded witness would be built from.
     ///
-    /// **Always sent with exactly one argument, and that is not cosmetic.** The
-    /// allowlist in front of `api.verustest.net` is arity-sensitive: this method
-    /// with a verbosity argument is refused as `-32601`, which reads as "the
-    /// node does not have it". It does. Adding a second parameter here would
+    /// **Sent with exactly one argument first, and that is not cosmetic.** The
+    /// allowlist in front of `api.verustest.net` is arity-sensitive: this
+    /// method with a verbosity argument is refused as `-32601`, which reads as
+    /// "the node does not have it". It does. Leading with two parameters would
     /// break the call against public infrastructure while working perfectly
     /// against a local daemon.
+    ///
+    /// A `[height_or_hash, 1]` form is sent **only after** the one-argument
+    /// call has been refused as `-32601`, so the call that works against public
+    /// infrastructure is byte-for-byte what it always was. Verbosity 1 is the
+    /// daemon's own default for this method, so the fallback is the same
+    /// question: `getblock <h>` and `getblock <h> 1` were measured
+    /// byte-identical against a VRSCTEST daemon on 2026-08-03. Verbosity **0**
+    /// is a different question — it answers with the block as hex — and is
+    /// deliberately never sent.
     fn block(&self, height_or_hash: &str) -> Result<serde_json::Value, RpcError>;
     /// Unspent outputs at these addresses.
     ///
@@ -344,6 +378,72 @@ impl<T: Transport> RpcClient<T> {
     fn call_raw<P: Serialize>(&self, method: Method, params: P) -> Result<String, RpcError> {
         self.transport.post(&request(method, params)?)
     }
+
+    /// Call `method`, trying each argument list in turn until one is not
+    /// refused as not-found.
+    ///
+    /// # Why this exists
+    ///
+    /// A public endpoint is usually a filtering proxy, and the filter can be
+    /// sensitive to the **number of arguments** rather than the method name.
+    /// So `-32601` is evidence about one *call*, not about the node.
+    ///
+    /// That is not hypothetical and it is not only `getblock`. Measured against
+    /// `api.verustest.net` on 2026-08-03:
+    ///
+    /// ```text
+    /// getrawmempool []       -> {"result":[]}
+    /// getrawmempool [false]  -> {"error":{"code":-32601,"message":"Method not found"}}
+    /// ```
+    ///
+    /// A client that asked the second way and stopped would record a node that
+    /// serves the mempool as one that does not.
+    ///
+    /// So a method with more than one plausible argument list asks each of them
+    /// before concluding anything, and [`RpcError::MethodUnavailable`] then
+    /// means "refused at every arity this crate knows how to ask" instead of
+    /// "refused once".
+    ///
+    /// # What it does not do
+    ///
+    /// Only `-32601` advances to the next arity. Every other outcome is
+    /// returned immediately, which matters most for
+    /// [`RpcError::AnswerNeeded`](crate::RpcError::AnswerNeeded): under a
+    /// [`Cassette`](crate::Cassette) an unanswered request must stop the
+    /// operation, not provoke a second question in the same round. The retry
+    /// then happens across rounds instead, and costs an extra one only when the
+    /// first arity really was refused.
+    ///
+    /// # What may be listed as an alternative arity
+    ///
+    /// Not merely a *plausible* second argument list — an **equivalent
+    /// question**. `getblock <h>` and `getblock <h> 1` are equivalent (verbosity
+    /// 1 is the default, and the two were measured byte-identical against a
+    /// VRSCTEST daemon on 2026-08-03); `getblock <h> 0` is not, because it
+    /// answers with hex. `getrawtransaction [txid]` is a plausible alternative
+    /// to `[txid, 1]` and is likewise **not** equivalent, for the same reason.
+    ///
+    /// Getting that wrong would hand a caller a different shape than it parses,
+    /// only on nodes where the preferred arity happens to be filtered — which
+    /// is the hardest possible place to notice it.
+    ///
+    /// `arities` must not be empty; the first entry is the preferred form.
+    fn call_probing<R>(&self, method: Method, arities: &[serde_json::Value]) -> Result<R, RpcError>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let mut last = RpcError::Unexpected(format!(
+            "{} was called with no argument list to try",
+            method.name()
+        ));
+        for params in arities {
+            match self.call(method, params) {
+                Err(refused @ RpcError::MethodUnavailable { .. }) => last = refused,
+                outcome => return outcome,
+            }
+        }
+        Err(last)
+    }
 }
 
 impl<T: Transport> ChainReader for RpcClient<T> {
@@ -372,6 +472,30 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         check_hash(&hash, "getblockhash")
     }
 
+    fn mempool(&self) -> Result<Vec<String>, RpcError> {
+        // `[]` first because it is what works against the public endpoint; the
+        // explicit `[false]` is there for a node whose filter wants the
+        // argument present. See `call_probing`.
+        let raw: Vec<String> =
+            self.call_probing(Method::GetRawMempool, &[json!([]), json!([false])])?;
+
+        // Checked and lowercased like every other hash this client returns, and
+        // for the reason `check_hash` gives: the whole point of this method is
+        // `pending.contains(&txid)` against a txid from somewhere else —
+        // `send_raw_transaction`'s answer, or one computed locally — and both
+        // of those normalise to lowercase. A node answering in uppercase would
+        // otherwise report a mempool that never matches anything.
+        let ids = raw
+            .iter()
+            .map(|id| check_hash(id, "getrawmempool"))
+            .collect::<Result<Vec<_>, _>>()?;
+        // A repeated id is a node contradicting itself about a set. Refused
+        // rather than deduplicated, which is what this client does everywhere
+        // else it is handed a list that is supposed to be one.
+        refuse_repeats(&ids, |id| id, "getrawmempool")?;
+        Ok(ids)
+    }
+
     fn block(&self, height_or_hash: &str) -> Result<serde_json::Value, RpcError> {
         // A height is sent as a number and a hash as a string; the daemon
         // accepts either, but not a height quoted as a string.
@@ -379,7 +503,21 @@ impl<T: Transport> ChainReader for RpcClient<T> {
             Ok(height) => json!(height),
             Err(_) => json!(height_or_hash),
         };
-        self.call(Method::GetBlock, json!([key]))
+        // One argument is the form the public endpoint serves, and adding a
+        // verbosity argument to it is what makes that endpoint answer -32601.
+        // The two-argument form is tried only after the one-argument form has
+        // already been refused, so the working call is never made worse.
+        //
+        // Verbosity 1 is `getblock`'s own default, so the fallback asks the
+        // same question. Measured rather than assumed, against a VRSCTEST
+        // daemon on 2026-08-03:
+        //
+        //     verus -chain=VRSCTEST getblock 1173695     |
+        //     verus -chain=VRSCTEST getblock 1173695 1   | byte-identical
+        //     verus -chain=VRSCTEST getblock 1173695 0   | the block as hex
+        //
+        // which is why 0 is not in this list.
+        self.call_probing(Method::GetBlock, &[json!([key.clone()]), json!([key, 1])])
     }
 
     fn address_utxos(&self, addresses: &[&str]) -> Result<Vec<AddressUtxo>, RpcError> {

@@ -54,6 +54,8 @@ pub struct ScriptedReader {
     sapling_roots: RefCell<Vec<(u64, String)>>,
     /// Serve blocks with the `finalsaplingroot` field absent entirely.
     omit_sapling_root: RefCell<bool>,
+    /// Transaction ids `getrawmempool` reports.
+    mempool: RefCell<Vec<String>>,
 }
 
 impl ScriptedReader {
@@ -79,6 +81,7 @@ impl ScriptedReader {
             raw_transactions: RefCell::new(std::collections::HashMap::new()),
             sapling_roots: RefCell::new(Vec::new()),
             omit_sapling_root: RefCell::new(false),
+            mempool: RefCell::new(Vec::new()),
         }
     }
 
@@ -163,6 +166,12 @@ impl ScriptedReader {
         self.confirmations
             .borrow_mut()
             .push((txid.to_string(), confirmations));
+        self
+    }
+
+    /// Transaction ids the node reports as pending.
+    pub fn with_mempool(self, txids: &[&str]) -> Self {
+        *self.mempool.borrow_mut() = txids.iter().map(|t| (*t).to_string()).collect();
         self
     }
 
@@ -356,6 +365,11 @@ impl ChainReader for ScriptedReader {
     fn block_hash(&self, height: u32) -> Result<String, RpcError> {
         self.count();
         Ok(self.block_hash_at(height))
+    }
+
+    fn mempool(&self) -> Result<Vec<String>, RpcError> {
+        self.count();
+        Ok(self.mempool.borrow().clone())
     }
 
     fn block(&self, height_or_hash: &str) -> Result<serde_json::Value, RpcError> {

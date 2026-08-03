@@ -205,6 +205,40 @@ fn the_endpoints_allowlist_is_arity_sensitive() {
     );
     eprintln!("getblock: served with 1 argument, -32601 with 2");
 
+    // And the same shape the other way round, which is why the client probes
+    // rather than pinning one arity per method: `getrawmempool` is served with
+    // NO arguments and refused with the verbosity flag the daemon documents.
+    let no_args = probe("getrawmempool", "[]");
+    assert!(
+        no_args["result"].is_array(),
+        "getrawmempool with no arguments should be served: {no_args}"
+    );
+    let verbose = probe("getrawmempool", "[false]");
+    assert_eq!(
+        verbose["error"]["code"].as_i64(),
+        Some(-32601),
+        "getrawmempool with an argument should be refused: {verbose}"
+    );
+    eprintln!("getrawmempool: served with 0 arguments, -32601 with 1");
+
+    // What this endpoint cannot show, because it refuses the second arity: that
+    // the fallback asks the *same question*. Measured against a full VRSCTEST
+    // daemon on 2026-08-03 instead, and reproducible with:
+    //
+    //     verus -chain=VRSCTEST getblock 1173695     |
+    //     verus -chain=VRSCTEST getblock 1173695 1   | byte-identical
+    //     verus -chain=VRSCTEST getblock 1173695 0   | the block as hex
+    //     verus -chain=VRSCTEST getrawmempool        |
+    //     verus -chain=VRSCTEST getrawmempool false  | identical
+    //
+    // which is why verbosity 0 is not among the arities the client will try.
+
+    // The client must reach it regardless, because it asks both ways.
+    let pending = client()
+        .mempool()
+        .expect("the client should find the mempool");
+    eprintln!("getrawmempool via the client: {} pending", pending.len());
+
     // Genuinely absent, at any arity.
     for params in [
         "[1166307]",
