@@ -100,7 +100,10 @@ fn the_spent_note_is_worth_nothing() {
     // The note exists and is still detected...
     assert_eq!(result.notes.len(), 1);
     // ...and its nullifier is right there in the same range.
-    assert!(result.nullifiers.contains(&result.notes[0].nullifier));
+    assert!(result
+        .nullifiers
+        .iter()
+        .any(|seen| seen.nullifier == result.notes[0].nullifier));
 
     assert!(result.unspent(&[]).is_empty());
     assert_eq!(result.balance(&[]), 0);

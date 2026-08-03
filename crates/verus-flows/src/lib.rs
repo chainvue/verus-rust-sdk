@@ -125,7 +125,7 @@ pub use vdxf::{
 #[cfg(feature = "shielded")]
 pub use shielded::{
     check_anchor, full_output, plan_spend, scan, scan_after, select_notes, witness_note,
-    ScanResult, SpendPlan, WitnessedNote,
+    Checkpoint, ScanResult, SeenNullifier, SpendPlan, WitnessedNote, REORG_CHECKPOINTS,
 };
 
 #[cfg(feature = "prover")]

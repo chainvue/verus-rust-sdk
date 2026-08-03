@@ -82,6 +82,49 @@ pub use spending::{
 /// memory as decoded structs, not just as a response body.
 const SCAN_CHUNK: u64 = 1_000;
 
+/// How many recent block hashes a [`ScanResult`] remembers.
+///
+/// These are what makes a reorg *recoverable* rather than merely detectable.
+/// Detecting one is cheap — [`scan_after`] refuses a range that does not
+/// descend from the last — but the wallet then has to roll back, and rolling
+/// back safely means being able to prove the shortened state still describes
+/// the live chain. One tip hash cannot do that: truncate to any earlier height
+/// and there is nothing left to check the next scan against.
+///
+/// Two hundred blocks is far past any reorg a Verus chain has had, and costs
+/// 8 KB. A fork deeper than this is not recoverable from a stored result at
+/// all, and [`ScanResult::rewind_to`] says so rather than guessing.
+pub const REORG_CHECKPOINTS: usize = 200;
+
+/// A nullifier, and the block it was seen in.
+///
+/// The height is not decoration. A reorg can un-spend a note — the transaction
+/// that published its nullifier may simply not be on the new chain — and a
+/// wallet that cannot tell which nullifiers came from the dead blocks has two
+/// bad options: keep them all, and a note that is spendable again stays hidden
+/// until a full rescan; or drop them all, and a note that really is spent
+/// reappears as spendable. Knowing the height makes the rollback exact instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SeenNullifier {
+    /// The block it appeared in.
+    pub height: u64,
+    /// The nullifier itself, from anyone's transaction.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
+    pub nullifier: [u8; 32],
+}
+
+/// A block hash at a height, kept so a rewind can be checked rather than hoped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Checkpoint {
+    /// The height.
+    pub height: u64,
+    /// The hash of the block at it.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
+    pub hash: [u8; 32],
+}
+
 /// Everything one scan of a block range learned.
 ///
 /// **Persist this.** A scan is expensive and its result cannot be recovered
@@ -107,8 +150,7 @@ pub struct ScanResult {
     /// A note is spent exactly when its nullifier appears here or in any earlier
     /// block, which is why a wallet must keep these across scans rather than
     /// only the notes.
-    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex::vec"))]
-    pub nullifiers: Vec<[u8; 32]>,
+    pub nullifiers: Vec<SeenNullifier>,
     /// First block scanned.
     pub from: u64,
     /// Last block scanned, inclusive.
@@ -122,6 +164,12 @@ pub struct ScanResult {
     /// at positions the chain no longer agrees with.
     #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
     pub tip_hash: [u8; 32],
+    /// The most recent [`REORG_CHECKPOINTS`] block hashes, oldest first.
+    ///
+    /// What [`Self::rewind_to`] uses. The last entry is always
+    /// [`Self::to`]/[`Self::tip_hash`]; the rest are how far back a rollback
+    /// can be *verified* rather than guessed.
+    pub checkpoints: Vec<Checkpoint>,
 }
 
 impl ScanResult {
@@ -167,11 +215,145 @@ impl ScanResult {
         if next.to < next.from {
             return Ok(());
         }
+        // A tail this crate produced always ends its window at its own tip.
+        // Every field here is public, though, so a hand-built one need not —
+        // and a window that does not end where the result says it does makes a
+        // later `rewind_to` land on a stale hash. Refused at the boundary
+        // instead of surfacing as a refused scan two calls later.
+        match next.checkpoints.last() {
+            Some(last) if last.height == next.to && last.hash == next.tip_hash => {}
+            _ => {
+                return Err(FlowError::Shielded(format!(
+                    "the continuation's checkpoints do not end at its own tip ({}); absorbing it \
+                     would leave a window that cannot be rewound to",
+                    next.to
+                )))
+            }
+        }
+
         self.notes.extend(next.notes);
         self.nullifiers.extend(next.nullifiers);
+        self.checkpoints.extend(next.checkpoints);
+        trim_checkpoints(&mut self.checkpoints);
         self.to = next.to;
         self.tip_hash = next.tip_hash;
         Ok(())
+    }
+
+    /// Roll back to `height`, dropping exactly what the blocks above it
+    /// contributed.
+    ///
+    /// This is the other half of [`scan_after`]'s refusal. Detecting a reorg is
+    /// cheap; acting on one means shortening the wallet's state to a block the
+    /// live chain still has — and being able to *prove* the shortened state is
+    /// still right, which one tip hash cannot do.
+    ///
+    /// Notes above `height` go, because their tree positions are counted
+    /// through blocks that no longer exist. Nullifiers above `height` go too:
+    /// a reorg can un-spend a note, and keeping a nullifier from a dead block
+    /// would hide a note that is spendable again until the next full rescan.
+    /// Both are recovered by scanning forward, which is the point of stopping
+    /// at a height that can be checked.
+    ///
+    /// # The recovery loop
+    ///
+    /// A reorg's depth is not reported by anything, so finding it is a search —
+    /// but a *verified* one, because each attempt is checked:
+    ///
+    /// ```no_run
+    /// # use verus_flows::{scan_after, FlowError, ScanResult};
+    /// # use verus_light::{LightClient, LightTransport};
+    /// # use verus_sapling::scan::DiversifiableFullViewingKey;
+    /// # fn recover<T: LightTransport>(
+    /// #     light: &LightClient<T>,
+    /// #     dfvk: &DiversifiableFullViewingKey,
+    /// #     wallet: &mut ScanResult,
+    /// #     tip: u64,
+    /// # ) -> Result<(), FlowError> {
+    /// let mut back = 1;
+    /// loop {
+    ///     match scan_after(light, dfvk, wallet, tip) {
+    ///         Ok(tail) => break wallet.absorb(tail)?,
+    ///         Err(FlowError::Reorged(_)) => {
+    ///             // Each rewind is checkable, so going too shallow fails
+    ///             // loudly on the next attempt instead of silently mixing
+    ///             // positions from two chains.
+    ///             wallet.rewind_to(wallet.to.saturating_sub(back))?;
+    ///             back *= 2;
+    ///         }
+    ///         Err(other) => return Err(other),
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// When `rewind_to` runs out of checkpoints it says so, and the answer then
+    /// is a fresh [`scan`] from the wallet's birthday — there is nothing left
+    /// to verify against.
+    ///
+    /// # Between the rewind and the absorb, the state is not to be trusted
+    ///
+    /// A rewind drops the nullifiers the dead blocks carried, and the spends
+    /// they described may well be on the live chain at different heights. Until
+    /// the forward scan re-observes them and [`Self::absorb`] folds them back
+    /// in, [`Self::unspent`] and [`Self::balance`] **overstate**: a note that is
+    /// really spent looks spendable.
+    ///
+    /// It heals — the forward scan collects every nullifier in the range it
+    /// covers — but not until the loop above finishes. So inside it: do not
+    /// show a balance, do not select notes for a spend (the daemon will reject
+    /// the double-spend after the proof has been paid for), and prefer not to
+    /// persist. Recovery is one atomic step from the wallet's point of view,
+    /// even though it takes several calls.
+    ///
+    /// The opposite choice would not heal at all. Keeping the dead blocks'
+    /// nullifiers would hide a note that a reorg made spendable again, with
+    /// nothing to correct it short of a full rescan — understating a balance
+    /// silently and indefinitely, rather than overstating it for the length of
+    /// one recovery.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Shielded`] if `height` is above [`Self::to`] (nothing to
+    /// roll back), or if no checkpoint covers it — either because it is older
+    /// than [`REORG_CHECKPOINTS`] blocks or because this result never reached
+    /// it.
+    pub fn rewind_to(&mut self, height: u64) -> Result<(), FlowError> {
+        if height > self.to {
+            return Err(FlowError::Shielded(format!(
+                "cannot rewind to {height}: this result only reaches {}",
+                self.to
+            )));
+        }
+        let Some(checkpoint) = self
+            .checkpoints
+            .iter()
+            .find(|point| point.height == height)
+            .copied()
+        else {
+            let oldest = self.checkpoints.first().map_or(self.to, |p| p.height);
+            return Err(FlowError::Shielded(format!(
+                "no checkpoint at {height}; this result can be rewound to {oldest} at the \
+                 earliest, and anything older needs a fresh scan because there is nothing left \
+                 to verify the result against"
+            )));
+        };
+
+        self.notes.retain(|note| note.height <= height);
+        self.nullifiers.retain(|seen| seen.height <= height);
+        self.checkpoints.retain(|point| point.height <= height);
+        self.to = height;
+        self.tip_hash = checkpoint.hash;
+        Ok(())
+    }
+
+    /// The earliest height [`Self::rewind_to`] can still verify.
+    ///
+    /// A wallet searching for a fork point needs to know when to stop searching
+    /// and rescan instead.
+    #[must_use]
+    pub fn earliest_rewind(&self) -> Option<u64> {
+        self.checkpoints.first().map(|point| point.height)
     }
 
     /// Notes whose nullifiers have not been seen — the ones still spendable.
@@ -185,7 +367,10 @@ impl ScanResult {
         self.notes
             .iter()
             .filter(|note| {
-                !self.nullifiers.contains(&note.nullifier)
+                !self
+                    .nullifiers
+                    .iter()
+                    .any(|seen| seen.nullifier == note.nullifier)
                     && !already_spent.contains(&note.nullifier)
             })
             .cloned()
@@ -199,6 +384,13 @@ impl ScanResult {
             .iter()
             .map(|note| note.value)
             .sum()
+    }
+}
+
+/// Keep only the most recent [`REORG_CHECKPOINTS`] entries.
+fn trim_checkpoints(checkpoints: &mut Vec<Checkpoint>) {
+    if checkpoints.len() > REORG_CHECKPOINTS {
+        checkpoints.drain(..checkpoints.len() - REORG_CHECKPOINTS);
     }
 }
 
@@ -254,14 +446,11 @@ pub fn scan<T: LightTransport>(
 /// does not search for the fork point, since doing so means guessing how deep
 /// to look and re-fetching until it stops being wrong.
 ///
-/// Two things to know before choosing that depth. A [`ScanResult`] keeps one
-/// tip hash, for its own last block — so after truncating to some earlier
-/// height you have no hash to seed the next call with, and the scan that
-/// follows is a plain [`scan`] with **no continuity check against the prefix
-/// you kept**. Roll back too little and it will succeed, quietly mixing
-/// positions derived from a dead chain with ones from the live chain — the
-/// silent corruption this function exists to refuse. So overshoot, or keep
-/// your own per-height checkpoints.
+/// [`ScanResult::rewind_to`] is how, and it is a *verified* search rather than a
+/// guess: each rewind lands on a block whose hash the result still holds, so
+/// rolling back too little fails loudly on the next `scan_after` instead of
+/// succeeding and quietly mixing positions from two chains. Its own docs carry
+/// the loop.
 ///
 /// # What comes back, and what to do with it
 ///
@@ -321,6 +510,10 @@ pub fn scan_after<T: LightTransport>(
             from: previous.to + 1,
             to: previous.to,
             tip_hash: previous.tip_hash,
+            // No new blocks, so no new checkpoints. Absorbing this leaves the
+            // wallet's own window untouched, which is what keeps a rewind
+            // possible through any number of idle polls.
+            checkpoints: Vec::new(),
         });
     }
     scan_following(light, dfvk, previous.to + 1, to, Some(previous.tip_hash))
@@ -350,6 +543,7 @@ fn scan_following<T: LightTransport>(
 
     let mut notes = Vec::new();
     let mut nullifiers = Vec::new();
+    let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let mut tip_hash = [0u8; 32];
     // Seeded when this scan continues another: the very first block then has to
     // chain to the last block of that one, which is the check that was missing
@@ -409,14 +603,24 @@ fn scan_following<T: LightTransport>(
                 }
             }
             previous_hash = Some(block.hash);
+            checkpoints.push(Checkpoint {
+                height: block.height,
+                hash: block.hash,
+            });
         }
+        // Bounded as we go rather than at the end: a scan of a million blocks
+        // must not hold a million hashes to throw all but two hundred away.
+        trim_checkpoints(&mut checkpoints);
 
         // Flatten to a contiguous run of outputs. Order is the tree's order:
         // by block, then by transaction, then by output.
         let mut outputs = Vec::new();
         for block in &blocks {
             for tx in &block.transactions {
-                nullifiers.extend(tx.nullifiers.iter().copied());
+                nullifiers.extend(tx.nullifiers.iter().map(|nullifier| SeenNullifier {
+                    height: block.height,
+                    nullifier: *nullifier,
+                }));
                 for (index, out) in tx.outputs.iter().enumerate() {
                     outputs.push(CompactOutput {
                         height: block.height,
@@ -453,9 +657,15 @@ fn scan_following<T: LightTransport>(
         chunk_start = chunk_end + 1;
     }
 
+    debug_assert_eq!(
+        checkpoints.last().map(|point| point.hash),
+        Some(tip_hash),
+        "the last checkpoint and the tip hash must be the same block"
+    );
     Ok(ScanResult {
         notes,
         nullifiers,
+        checkpoints,
         from,
         to,
         tip_hash,

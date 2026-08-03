@@ -210,7 +210,7 @@ fn a_note_whose_nullifier_was_seen_is_not_counted() {
     let mut result = scan(&client, &stranger(), 1_156_847, 1_156_850).unwrap();
 
     // Graft a note in, so the spent-filter can be exercised without owning one.
-    let nullifier = result.nullifiers[0];
+    let nullifier = result.nullifiers[0].nullifier;
     result.notes.push(verus_sapling::scan::DetectedNote {
         height: 1_156_847,
         tx_index: 0,

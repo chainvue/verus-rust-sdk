@@ -47,10 +47,17 @@ fn hex_32(text: &str) -> [u8; 32] {
 fn a_scan() -> ScanResult {
     ScanResult {
         notes: vec![the_real_note()],
-        nullifiers: vec![hex_32(&"11".repeat(32))],
+        nullifiers: vec![verus_flows::SeenNullifier {
+            height: 1_173_694,
+            nullifier: hex_32(&"11".repeat(32)),
+        }],
         from: 1_173_691,
         to: 1_173_695,
         tip_hash: hex_32(&"22".repeat(32)),
+        checkpoints: vec![verus_flows::Checkpoint {
+            height: 1_173_695,
+            hash: hex_32(&"22".repeat(32)),
+        }],
     }
 }
 
@@ -114,7 +121,10 @@ fn spendability_survives_a_restart() {
 #[test]
 fn a_nullifier_inside_the_persisted_scan_still_counts() {
     let mut scan = a_scan();
-    scan.nullifiers.push(the_real_note().nullifier);
+    scan.nullifiers.push(verus_flows::SeenNullifier {
+        height: 1_173_695,
+        nullifier: the_real_note().nullifier,
+    });
     assert!(scan.unspent(&[]).is_empty());
 
     let after: ScanResult = serde_json::from_str(&serde_json::to_string(&scan).expect("serialize"))
@@ -157,7 +167,9 @@ fn unsent_bytes_round_trip() {
 ///
 /// This is the only test that would notice, because it is the only one that
 /// reads the keys. It is also the store's compatibility contract: changing it
-/// is changing a file format someone already has on disk.
+/// is changing a file format someone already has on disk — which is precisely
+/// what happened when nullifiers gained a height and `checkpoints` appeared,
+/// and this test is how that was made visible rather than silent.
 #[test]
 fn the_stored_shape_is_exactly_this() {
     // The address is spelled as the decode of the committed `zs…` string rather
@@ -170,9 +182,12 @@ fn the_stored_shape_is_exactly_this() {
             r#"{{"notes":[{{"height":1173695,"tx_index":1,"output_index":1,"position":3184,"#,
             r#""value":4970000,"recipient":"{recipient}","#,
             r#""nullifier":"d4ee6b478c95b36f72c73fe8b9bc1e0271a795bb9a2a6c9abd3d2e0a75901a60"}}],"#,
-            r#""nullifiers":["1111111111111111111111111111111111111111111111111111111111111111"],"#,
+            r#""nullifiers":[{{"height":1173694,"#,
+            r#""nullifier":"1111111111111111111111111111111111111111111111111111111111111111"}}],"#,
             r#""from":1173691,"to":1173695,"#,
-            r#""tip_hash":"2222222222222222222222222222222222222222222222222222222222222222"}}"#,
+            r#""tip_hash":"2222222222222222222222222222222222222222222222222222222222222222","#,
+            r#""checkpoints":[{{"height":1173695,"#,
+            r#""hash":"2222222222222222222222222222222222222222222222222222222222222222"}}]}}"#,
         ),
         recipient = recipient,
     );
