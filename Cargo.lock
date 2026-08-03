@@ -2174,7 +2174,6 @@ dependencies = [
  "serde",
  "serde_json",
  "verus-keys",
- "verus-tx-currency",
  "verus-tx-primitives",
  "verus-tx-protocol",
  "verus-tx-transparent",

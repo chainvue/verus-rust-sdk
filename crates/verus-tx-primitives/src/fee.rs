@@ -81,6 +81,12 @@ pub const MAX_DECLARED_BURN: u64 = 100_000_000_000;
 pub const MAX_TRUSTED_NODE_FEE: u64 = 500 * crate::amount::SATS_PER_COIN;
 
 /// Refuse a derived fee that is implausible on its face.
+///
+/// `pub` only because the assembler that calls it is in another crate now, and
+/// `#[doc(hidden)]` because that is the only reason. Reachable as
+/// `verus_tx::fee::check_fee_ceiling`, but not part of what either crate
+/// promises.
+#[doc(hidden)]
 pub fn check_fee_ceiling(fee: u64) -> Result<(), TxError> {
     if fee > MAX_MINER_FEE {
         return Err(TxError::FeeTooLarge {
@@ -92,6 +98,10 @@ pub fn check_fee_ceiling(fee: u64) -> Result<(), TxError> {
 }
 
 /// Refuse a declared burn that is implausible on its face.
+///
+/// `pub` and `#[doc(hidden)]` for the same reason as
+/// [`check_fee_ceiling`].
+#[doc(hidden)]
 pub fn check_burn_ceiling(burn: u64) -> Result<(), TxError> {
     if burn > MAX_DECLARED_BURN {
         return Err(TxError::FeeTooLarge {

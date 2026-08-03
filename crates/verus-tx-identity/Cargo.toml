@@ -12,14 +12,13 @@ publish.workspace = true
 workspace = true
 
 [features]
-serde = ["dep:serde", "verus-tx-primitives/serde", "verus-tx-transparent/serde", "verus-tx-protocol/serde", "verus-tx-currency/serde"]
+serde = ["dep:serde", "verus-tx-primitives/serde", "verus-tx-transparent/serde", "verus-tx-protocol/serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 verus-tx-primitives = { path = "../verus-tx-primitives" }
 verus-tx-transparent = { path = "../verus-tx-transparent" }
 verus-tx-protocol = { path = "../verus-tx-protocol" }
-verus-tx-currency = { path = "../verus-tx-currency" }
 verus-wire = { path = "../verus-wire" }
 verus-keys = { path = "../verus-keys" }
 hex = { workspace = true }

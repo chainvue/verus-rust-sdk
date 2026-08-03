@@ -48,10 +48,28 @@
 //! [`verus_tx_primitives`] and not compile the identity registration builder
 //! to get one.
 //!
-//! Those crates expose a little more than this facade does: helpers like
-//! `assemble` and `Balances` are `pub` there because they cross a crate
-//! boundary, and are not re-exported here. Nothing behind the facade is
-//! promised to be stable in the way the names below are.
+//! # What the split did to this surface
+//!
+//! Every name `verus-tx` exported before the split still resolves, and
+//! `tests/facade_surface.rs` fails the build if one stops. Three things were
+//! *added*, all of them fallout from moving code down rather than choices:
+//!
+//! * [`cc`] gained eleven `EVAL_*` constants. They were scattered across five
+//!   modules — which is what made `cc` depend on `identity`, `decode` on
+//!   `convert`, and `token` on `register` — and they all name a
+//!   CryptoCondition, so they live beside the encoder now. Each old path is
+//!   still a working re-export.
+//! * `identity::identity_id` is a new path to a function that was, and still
+//!   is, reachable as `verus_tx::identity_id` and `register::identity_id`.
+//! * [`fee::check_fee_ceiling`] and [`fee::check_burn_ceiling`] widened from
+//!   `pub(crate)` to `pub` so the assembler could call them across the new
+//!   boundary, and `fee` is re-exported wholesale, so they are reachable.
+//!   Both are `#[doc(hidden)]`: visible, not promised.
+//!
+//! Otherwise the crates behind this one expose more than it does — `assemble`,
+//! `Balances`, `reject_unspendable_reserve` and the rest are `pub` there
+//! because they cross a boundary, and none is re-exported here. Nothing behind
+//! the facade is stable in the way the names below are.
 //!
 //! # Why the fee logic looks the way it does
 //!
