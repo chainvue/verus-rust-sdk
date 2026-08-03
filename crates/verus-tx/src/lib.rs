@@ -44,8 +44,6 @@
 
 #![doc(html_no_source)]
 
-pub mod currency_definition;
-pub mod currency_launch;
 pub mod identity_spend;
 pub mod multisig;
 pub mod offer;
@@ -58,6 +56,7 @@ pub mod update;
 // The primitives, re-exported so every path this crate published still
 // resolves. `verus-tx` is becoming a facade over the crates it was split
 // into; nothing here is a new name.
+pub use verus_tx_currency::{currency_definition, currency_launch};
 pub use verus_tx_primitives::{cc, fee};
 pub use verus_tx_primitives::{
     estimate_fee, identity_payment_script, identity_primary_script, select_utxos, Amount,

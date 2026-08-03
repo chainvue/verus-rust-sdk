@@ -40,7 +40,6 @@
 use crate::currency_definition::{
     currency_definition_script, option, CurrencyDefinition, EVAL_CURRENCY_DEFINITION,
 };
-use crate::register::identity_id;
 use verus_tx_primitives::cc::{
     cc_script, identity_primary_script, var_int, Destination, OptCcParams, EVAL_NONE,
 };
@@ -48,6 +47,7 @@ use verus_tx_primitives::Amount;
 use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::TxError;
 use verus_tx_protocol::identity::{Identity, FLAG_ACTIVE_CURRENCY, FLAG_TOKENIZED_CONTROL};
+use verus_tx_protocol::identity_id;
 use verus_wire::compact::write_compact_size;
 use verus_wire::TxOut;
 

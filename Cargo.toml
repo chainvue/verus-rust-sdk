@@ -6,6 +6,7 @@ members = [
     "crates/verus-tx-primitives",
     "crates/verus-tx-transparent",
     "crates/verus-tx-protocol",
+    "crates/verus-tx-currency",
     "crates/verus-tx",
     "crates/verus-sapling",
     "crates/verus-rpc",
