@@ -43,9 +43,13 @@
 //!
 //! # Scope
 //!
-//! English wordlist only, and no generation. Generating a phrase belongs with
-//! the vault that will store it, which is the same reason this crate offers no
-//! `PrivateKey::generate` — see `verus-sdk`'s `keygen` example.
+//! English wordlist only. [`mnemonic_from_entropy`] produces a 24-word phrase
+//! from 32 bytes the **caller** supplies: there is no RNG in this crate and
+//! this does not add one, for the same reason it offers no
+//! `PrivateKey::generate` — where the bytes came from is the most
+//! security-critical decision a wallet makes, and a library that quietly picks
+//! for you moves it somewhere nobody reviews. See `verus-sdk`'s `keygen_phrase`
+//! example for one way to supply them.
 //!
 //! [`private_key_from_seed_phrase`]: crate::private_key_from_seed_phrase
 
@@ -169,6 +173,91 @@ pub fn mnemonic_to_seed(
         seed.as_mut(),
     );
     Ok(seed)
+}
+
+/// Turn 32 bytes of entropy into a 24-word mnemonic.
+///
+/// The other half of this module: it has been able to check a phrase and turn
+/// one into a seed since it was written, and not to produce one — so every
+/// wallet that wanted to *create* a shielded account had to reimplement the
+/// wordlist and the checksum, which is exactly the code you do not want three
+/// copies of.
+///
+/// 24 words because 32 bytes is 256 bits, the only size this takes. A fixed
+/// width means there is no length to get wrong and no error to return.
+///
+/// # The entropy is the caller's
+///
+/// There is no RNG in this crate and this does not add one. `verus-keys`
+/// offers no `PrivateKey::generate` for the same reason: where the bytes came
+/// from is the single most security-critical decision in a wallet, and a
+/// library that quietly picks for you moves it somewhere nobody reviews. An
+/// application passes `getrandom`, a hardware source, or dice — and the choice
+/// stays visible in its own code. `verus-sdk`'s `keygen_phrase` example spells
+/// out one way, and `keygen` does the same for a transparent key.
+///
+/// **Whatever produces those 32 bytes must be a CSPRNG.** A phrase generated
+/// from a weak source is not recoverable from later: it protects the wallet for
+/// as long as nobody looks.
+///
+/// # It is a secret from the moment it exists
+///
+/// Returned in a [`Zeroizing`] so the string is wiped when dropped. That is as
+/// far as this can go — anything the caller does with it afterwards (printing
+/// it, formatting it, putting it in a `String`) is outside this crate's reach.
+///
+/// ```
+/// use verus_keys::bip39::{mnemonic_from_entropy, validate_mnemonic};
+///
+/// // The all-zero entropy from the official BIP-39 suite. Real entropy comes
+/// // from a CSPRNG.
+/// let phrase = mnemonic_from_entropy(&[0u8; 32]);
+/// assert_eq!(phrase.split_whitespace().count(), 24);
+/// assert!(phrase.ends_with(" art"));
+/// assert!(validate_mnemonic(&phrase).is_ok());
+/// ```
+#[must_use]
+pub fn mnemonic_from_entropy(entropy: &[u8; 32]) -> Zeroizing<String> {
+    // 256 bits of entropy plus a 8-bit checksum is 264 bits, which is exactly
+    // 24 words of 11 bits. Nothing here can be short or ragged.
+    const WORDS: usize = 24;
+    const CHECKSUM_BITS: usize = 8;
+
+    let mut bits = Zeroizing::new([0u8; 33]);
+    bits[..32].copy_from_slice(entropy);
+    // The checksum is the top `CHECKSUM_BITS` of SHA-256 over the entropy —
+    // here a whole byte, so it lands on a byte boundary. `checked_words` reads
+    // it back with a mask for the narrower cases.
+    bits[32] = Sha256::digest(entropy)[0];
+
+    let list: Vec<&str> = ENGLISH.lines().collect();
+    debug_assert_eq!(list.len(), 2048, "the wordlist must hold 2048 words");
+    debug_assert_eq!(32 * 8 + CHECKSUM_BITS, WORDS * 11);
+
+    // Sized so the string never reallocates. A realloc would leave a copy of
+    // the phrase on the heap, outside the `Zeroizing` that wipes this one. The
+    // longest word in the list is 8 characters, so the worst case is
+    // 24 * 8 + 23 separators = 215 bytes.
+    let mut phrase = Zeroizing::new(String::with_capacity(WORDS * 9));
+    for word in 0..WORDS {
+        // Eleven bits starting at `word * 11`, big-endian across the buffer.
+        let mut index = 0usize;
+        for offset in 0..11 {
+            let bit = word * 11 + offset;
+            let set = (bits[bit / 8] >> (7 - bit % 8)) & 1;
+            index = (index << 1) | usize::from(set);
+        }
+        if word > 0 {
+            phrase.push(' ');
+        }
+        phrase.push_str(list[index]);
+    }
+    debug_assert_eq!(
+        phrase.capacity(),
+        WORDS * 9,
+        "the phrase reallocated, leaving an unwiped copy behind"
+    );
+    phrase
 }
 
 /// The words of a valid mnemonic, in order.
@@ -503,6 +592,168 @@ mod tests {
             mnemonic_to_seed(OFFICIAL[0].0, "café"),
             Err(MnemonicError::NonAsciiPassphrase),
         );
+    }
+
+    /// Every 24-word vector in the official suite, generated from its entropy.
+    ///
+    /// `(entropy, mnemonic)`. The mnemonics are the ones already in
+    /// [`OFFICIAL`] above, transcribed from `trezor/python-mnemonic`'s
+    /// `vectors.json`; the entropies were recovered from them by a BIP-39
+    /// decoder written separately in Python, which shares no code with this
+    /// implementation. So the oracle for generation is the reference suite's
+    /// own output, not this crate's.
+    const FROM_ENTROPY: [(&str, &str); 8] = [
+        (
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+        ),
+        (
+            "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+            "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title",
+        ),
+        (
+            "8080808080808080808080808080808080808080808080808080808080808080",
+            "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
+        ),
+        (
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+        ),
+        (
+            "68a79eaca2324873eacc50cb9c6eca8cc68ea5d936f98787c60c7ebc74e6ce7c",
+            "hamster diagram private dutch cause delay private meat slide toddler razor book happy fancy gospel tennis maple dilemma loan word shrug inflict delay length",
+        ),
+        (
+            "9f6a2878b2520799a44ef18bc7df394e7061a224d2c33cd015b157d746869863",
+            "panda eyebrow bullet gorilla call smoke muffin taste mesh discover soft ostrich alcohol speed nation flash devote level hobby quick inner drive ghost inside",
+        ),
+        (
+            "066dca1a2bb7e8a1db2832148ce9933eea0f3ac9548d793112d9a95c9407efad",
+            "all hour make first leader extend hole alien behind guard gospel lava path output census museum junior mass reopen famous sing advance salt reform",
+        ),
+        (
+            "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f",
+            "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
+        ),
+    ];
+
+    fn entropy32(hex_str: &str) -> [u8; 32] {
+        hex::decode(hex_str)
+            .expect("hex")
+            .try_into()
+            .expect("32 bytes")
+    }
+
+    /// Generation reproduces the reference implementation, byte for byte.
+    #[test]
+    fn generation_reproduces_the_official_vectors() {
+        for (entropy, expected) in FROM_ENTROPY {
+            assert_eq!(
+                *mnemonic_from_entropy(&entropy32(entropy)),
+                expected,
+                "entropy {entropy}"
+            );
+        }
+    }
+
+    /// And the phrases it produces reach the seeds the suite publishes.
+    ///
+    /// This is the part that matters to a wallet: a generated phrase has to
+    /// derive the same shielded account every other implementation derives, or
+    /// it is a phrase that restores nowhere.
+    #[test]
+    fn a_generated_phrase_reaches_the_published_seed() {
+        for (entropy, mnemonic) in FROM_ENTROPY {
+            let generated = mnemonic_from_entropy(&entropy32(entropy));
+            let seed = mnemonic_to_seed(&generated, "TREZOR").expect("a valid phrase");
+            let published = OFFICIAL
+                .iter()
+                .find(|(m, _)| *m == mnemonic)
+                .map(|(_, seed)| *seed)
+                .expect("every one of these is in the official table");
+            assert_eq!(hex::encode(*seed), published, "entropy {entropy}");
+        }
+    }
+
+    /// Whatever is generated validates, including the checksum.
+    ///
+    /// The two halves of this module have to agree, and they are written
+    /// independently: generation packs bits and appends a checksum byte,
+    /// validation unpacks them and re-derives it under a mask.
+    #[test]
+    fn everything_generated_validates() {
+        for byte in 0..=255u8 {
+            let phrase = mnemonic_from_entropy(&[byte; 32]);
+            assert_eq!(phrase.split_whitespace().count(), 24);
+            validate_mnemonic(&phrase).unwrap_or_else(|e| panic!("entropy {byte:#04x}: {e}"));
+        }
+    }
+
+    /// One bit of entropy changes the phrase.
+    ///
+    /// A generator that ignored some of its input — a truncated copy, a bad
+    /// shift — would still produce valid, checksummed, plausible phrases. It
+    /// would just produce too few of them.
+    /// One bit of entropy changes the phrase — and changes it somewhere other
+    /// than the checksum.
+    ///
+    /// Comparing whole phrases would not show that. The checksum is taken over
+    /// the intact entropy, so flipping any bit moves the last word with
+    /// probability 255/256 whether or not that bit ever reached a word — which
+    /// means a packing bug that read bit *k* as zero would sail through. So the
+    /// last word is dropped before comparing, leaving only the 253 bits that
+    /// the first 23 words carry.
+    ///
+    /// The three bits the last word alone carries (253..=255) are covered by
+    /// the `ff…ff` official vector instead, where every bit is set.
+    #[test]
+    fn every_bit_of_entropy_reaches_the_phrase() {
+        let without_checksum = |phrase: &str| {
+            phrase
+                .split_whitespace()
+                .take(23)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        let base = without_checksum(&mnemonic_from_entropy(&[0u8; 32]));
+        let mut seen = std::collections::HashSet::new();
+        for bit in 0..253 {
+            let mut entropy = [0u8; 32];
+            entropy[bit / 8] = 0x80 >> (bit % 8);
+            let flipped = without_checksum(&mnemonic_from_entropy(&entropy));
+            assert_ne!(flipped, base, "bit {bit} reached no word but the last");
+            assert!(seen.insert(flipped), "bit {bit} collided");
+        }
+        assert_eq!(seen.len(), 253);
+    }
+
+    /// The checksum is over the entropy rather than a constant.
+    ///
+    /// The bit to flip has to be one the final word does **not** otherwise
+    /// carry. Word 23 spans bits 253..=263 — three entropy bits and the whole
+    /// checksum byte — so flipping bit 255 changes the last word through its
+    /// own entropy bits and proves nothing: an earlier version of this test did
+    /// exactly that and still passed with the checksum replaced by a constant.
+    ///
+    /// Bit 0 is in word 0. If the last word still moves, only the checksum can
+    /// have moved it.
+    #[test]
+    fn the_checksum_is_over_the_entropy() {
+        let last = |p: &str| p.split_whitespace().last().expect("24 words").to_string();
+
+        let base = mnemonic_from_entropy(&[0u8; 32]);
+        let mut flipped = [0u8; 32];
+        flipped[0] = 0x80;
+        let other = mnemonic_from_entropy(&flipped);
+
+        // The first word changed, as it must — that is where bit 0 lives.
+        assert_ne!(
+            base.split_whitespace().next(),
+            other.split_whitespace().next()
+        );
+        // And so did the last, which bit 0 reaches only through SHA-256.
+        assert_ne!(last(&base), last(&other));
     }
 
     /// The wordlist is a constant, and one changed word would quietly change

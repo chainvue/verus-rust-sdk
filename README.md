@@ -354,6 +354,13 @@ strings. There is no float in the value path.
 transparent path. That is a security property *and* what makes byte-for-byte
 differential testing possible at all.
 
+**Entropy is always the caller's.** There is no RNG in `verus-keys` and no
+`generate()` anywhere in the library — not for a transparent key, and not for a
+recovery phrase. `bip39::mnemonic_from_entropy` turns 32 bytes you supply into
+the 24 words, so where those bytes came from stays visible in the application's
+own code rather than buried in a dependency. `keygen` and `keygen_phrase` show
+one way, four lines apart.
+
 **Keys are handled deliberately.** Transparent private key material zeroizes on
 drop, with an opaque `Debug` and no `PartialEq`. Shielded key handling is
 bounded by the upstream `sapling-crypto` types, which do not zeroize — their

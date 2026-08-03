@@ -131,6 +131,10 @@ required-features = ["network"]
 name = "keygen"
 required-features = ["transparent"]
 
+# Only needs `verus-keys`, which is unconditional — no feature required.
+[[example]]
+name = "keygen_phrase"
+
 [[example]]
 name = "send"
 required-features = ["transparent"]
