@@ -411,6 +411,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Marketplace discovery — every offer standing against a currency or an identity | ✅ parsed from both public nodes; 54 and 1843 listings |
 | Transaction history — what already happened, which a UTXO set cannot tell you | ✅ live, native and per-currency, signed movements |
 | Pending transactions — the mempool, which neither a UTXO set nor a delta list reports | ✅ live, and reached through an arity re-probe rather than one guess |
+| Second-sourced policy reads — corroborate the one lie that costs money | ✅ live, across two independent VRSCTEST nodes |
 | Application data on a VerusID — read current, read history, publish | ✅ **on chain**, twice over, with the erase invariant proven |
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |

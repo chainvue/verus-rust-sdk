@@ -214,7 +214,7 @@ pub mod network {
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,
         ContentValue, ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary,
         HttpTransport, IdentityContent, IdentityRecord, OfferListing, OfferSide, RpcClient,
-        RpcError, SignedAmount,
+        RpcError, SecondSourced, SignedAmount,
     };
 }
 

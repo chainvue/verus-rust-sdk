@@ -34,7 +34,9 @@
 //!   the transaction is rejected rather than misdirected.
 //! * **Can** misreport chain policy, and this one has teeth: a wrong
 //!   `idregistrationfees` is discovered *after* a name commitment has been
-//!   spent. Cross-check it against a second source before a registration.
+//!   spent. Cross-check it against a second source before a registration —
+//!   [`SecondSourced`] is that check, and returns
+//!   [`RpcError::SourcesDisagree`] before anything is paid for.
 //! * **Can** misreport a Sapling frontier, costing a proof. Compare the anchor
 //!   against the block header's `finalsaplingroot` first — `verus-sapling`
 //!   exposes that check without the prover for exactly this reason.
@@ -89,6 +91,7 @@ mod envelope;
 mod error;
 mod json;
 mod method;
+pub mod second_source;
 mod transport;
 mod types;
 
@@ -96,6 +99,7 @@ pub use cassette::Cassette;
 pub use client::{content_multimap, registration_cost, Broadcaster, ChainReader, RpcClient};
 pub use error::RpcError;
 pub use method::{callable_methods, CallableMethod};
+pub use second_source::SecondSourced;
 #[cfg(feature = "http")]
 pub use transport::HttpTransport;
 pub use transport::{RequestBody, Transport};
