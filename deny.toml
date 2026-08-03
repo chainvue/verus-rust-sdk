@@ -21,8 +21,10 @@ allow = [
     # data, and no attribution requirement beyond keeping the notice. It imposes
     # nothing on a consumer of this SDK.
     #
-    # It only enters the tree through `verus-rpc`, the one crate that opens a
-    # socket. The offline crates do not reach it, and a test asserts that.
+    # It enters only through crates that open sockets — `verus-rpc` and
+    # `verus-light` via `ureq`, and `verus-sdk`'s dev-dependency on `reqwest`
+    # for the `drive_async` example. The offline crates do not reach it, and a
+    # test asserts that.
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
