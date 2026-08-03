@@ -130,8 +130,8 @@ pub use shielded::{
 
 #[cfg(feature = "prover")]
 pub use shielded::{
-    prepare_spend, prove_spend, spend, ShieldedRecipient, ShieldedSpent, SpendRequest,
-    TransparentRecipient,
+    min_relay_fee, prepare_spend, prove_spend, serialized_size, spend, ShieldedRecipient,
+    ShieldedSpent, SpendRequest, TransparentRecipient,
 };
 
 // The whole stack, so a consumer takes one dependency rather than three.

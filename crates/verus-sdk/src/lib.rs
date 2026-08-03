@@ -281,8 +281,9 @@ pub mod light {
     /// re-exported.
     #[cfg(feature = "prover")]
     pub use verus_flows::shielded::{
-        prepare_spend, prove_spend, spend, ShieldedRecipient, ShieldedSpent, SpendRequest,
-        TransparentRecipient,
+        min_relay_fee, prepare_spend, prove_spend, serialized_size, spend, ShieldedRecipient,
+        ShieldedSpent, SpendRequest, TransparentRecipient, DEFAULT_TRANSACTION_FEE,
+        P2PKH_OUTPUT_BYTES, SHIELDED_OUTPUT_BYTES, SHIELDED_OVERHEAD_BYTES, SHIELDED_SPEND_BYTES,
     };
     #[cfg(feature = "prover")]
     pub use verus_sapling::build::MEMO_SIZE;

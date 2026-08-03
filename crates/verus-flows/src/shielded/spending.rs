@@ -11,16 +11,51 @@
 //! against consensus all run without the prover, and [`prepare_spend`] runs
 //! them before the first proof.
 //!
-//! # There is no fee estimator here
+//! # There is no fee estimator here — but the floor is not a guess either
 //!
-//! [`SpendRequest::fee`] is required, and nothing in this crate will guess it.
-//! `estimatefee` prices a transaction by its serialized size against a
-//! transparent fee-per-kilobyte, and a shielded transaction's size is dominated
-//! by Groth16 proofs — a spend description is 384 bytes of which the caller
-//! chose none. Applying the transparent heuristic would produce a confidently
-//! wrong number, and the failure is asymmetric: `build_shielded_spend` refuses
-//! an overshoot, but only because a bundle that overshoots is otherwise a
-//! perfectly valid transaction that hands the difference to a miner.
+//! [`SpendRequest::fee`] is required, and nothing in this crate will guess what
+//! to pay. That is a policy question — how fast you want to confirm, what your
+//! users expect — and a library answering it would answer it wrong for
+//! somebody.
+//!
+//! The *minimum* is not a policy question, though, and leaving a caller to
+//! discover it was the other mistake. [`min_relay_fee`] transcribes the rule a
+//! Verus daemon actually applies.
+//!
+//! # What that rule is, and what it is not
+//!
+//! It is **not** a fee per kilobyte. That is the reflex from Bitcoin, and
+//! `getinfo` even reports a `relayfee` of 100 satoshis per kilobyte on both
+//! public endpoints — but that number does not gate relay on Verus. The gate is
+//! `GetMinRelayFeeByOutputs` (`pbaas/reserves.cpp`), which counts **outputs**
+//! and never looks at the size: a flat `DEFAULT_TRANSACTION_FEE` of 10 000
+//! satoshis (`wallet/wallet.h`), plus another 10 000 for each output past a
+//! shape-dependent allowance.
+//!
+//! An earlier version of this module computed a floor from size × `relayfee`
+//! and would have told a wallet that 241 satoshis was enough for a 2 407-byte
+//! spend. The real floor for that transaction is 10 000 — forty times more.
+//!
+//! And below the floor a transaction is not cleanly refused: it drops into the
+//! daemon's free-relay rate limiter (`-limitfreerelay`, 15 KB/minute by
+//! default) and propagates as charity until that budget is gone. So underpaying
+//! looks like it works, intermittently, which is worse than failing.
+//!
+//! The three spends in `PROVEN.md` each paid 30 000 against a floor of 10 000,
+//! and confirmed in the next block.
+//!
+//! # Size is still a fact, just not this one
+//!
+//! [`serialized_size`] gives the bytes a spend will occupy, which is knowable
+//! before building because a shielded transaction is almost entirely proof. It
+//! is useful for bandwidth and for sanity-checking what you built. It does
+//! **not** determine the fee on this chain.
+//!
+//! The failure is asymmetric, which is worth knowing before choosing: paying
+//! too little means a transaction that relays unreliably and may never be
+//! mined, and `build_shielded_spend` refuses an overshoot only because a bundle
+//! that overshoots is otherwise a perfectly valid transaction handing the
+//! difference to a miner.
 //!
 //! # A note is worth what it is worth
 //!
@@ -40,7 +75,7 @@ use verus_sapling::build::{
 use verus_sapling::params::SaplingParams;
 use verus_sapling::scan::DetectedNote;
 use verus_sapling::VERUS_ZIP212;
-use verus_tx::{identity_payment_script, Expiry, DEFAULT_EXPIRY_BLOCKS};
+use verus_tx::{identity_payment_script, Amount, Expiry, DEFAULT_EXPIRY_BLOCKS};
 use verus_wire::consensus::VERUS_BRANCH_ID;
 use verus_wire::hash::txid_display;
 use verus_wire::TxOut;
@@ -50,7 +85,145 @@ use crate::error::FlowError;
 
 use super::planning::{plan_spend, SpendPlan};
 
-/// One shielded recipient.
+/// Bytes one Sapling spend description serializes to.
+///
+/// `cv` 32 + `anchor` 32 + `nullifier` 32 + `rk` 32 + `zkproof` 192 +
+/// `spendAuthSig` 64. Consensus-fixed, so this is arithmetic rather than an
+/// estimate.
+pub const SHIELDED_SPEND_BYTES: usize = 384;
+
+/// Bytes one Sapling output description serializes to.
+///
+/// `cv` 32 + `cmu` 32 + `ephemeralKey` 32 + `encCiphertext` 580 +
+/// `outCiphertext` 80 + `zkproof` 192 — the same 948 that
+/// [`parse_full_output`](super::full_output) requires of one.
+pub const SHIELDED_OUTPUT_BYTES: usize = 948;
+
+/// Everything a shielded spend serializes that is not a description.
+///
+/// Header, version group, `lock_time`, `expiry_height`, `valueBalance`, the
+/// five empty-or-counted vectors, and the 64-byte binding signature.
+///
+/// Measured, not derived: the z→z in `PROVEN.md` (`2e2b04df…`, two spends, two
+/// outputs, nothing transparent) is 2757 bytes against 2664 of descriptions.
+pub const SHIELDED_OVERHEAD_BYTES: usize = 93;
+
+/// Bytes a P2PKH output serializes to: 8 value + 1 length + 25 script.
+pub const P2PKH_OUTPUT_BYTES: usize = 34;
+
+/// What a shielded spend of this shape will serialize to, before it is built.
+///
+/// The point of knowing it early is that a fee has to be chosen *before* the
+/// transaction exists, and a per-kilobyte relay rate is useless without a size.
+/// A shielded transaction is almost entirely proof, so the size follows from
+/// the shape alone — no amount, address or memo changes it.
+///
+/// `transparent_output_bytes` is the sum of the serialized transparent outputs;
+/// use [`P2PKH_OUTPUT_BYTES`] each for ordinary addresses. A pay-to-identity
+/// output is a CryptoCondition and is larger — build it and measure if you are
+/// paying one.
+///
+/// **A Sapling bundle is padded to two outputs.** Concealing which output is
+/// the real recipient is the point, so a spend with one recipient and no change
+/// still carries two. Count what will be there, not what you asked for.
+///
+/// Checked against all three shielded spends in `PROVEN.md`:
+///
+/// ```
+/// use verus_flows::shielded::spending::{serialized_size, P2PKH_OUTPUT_BYTES};
+///
+/// // 2e2b04df… — z→z, two notes in one bundle, nothing transparent.
+/// assert_eq!(serialized_size(2, 2, 0), 2757);
+/// // 2db1cc11… and f46ed415… — z→t, one note, one P2PKH output.
+/// assert_eq!(serialized_size(1, 2, P2PKH_OUTPUT_BYTES), 2407);
+/// ```
+#[must_use]
+pub fn serialized_size(
+    spends: usize,
+    shielded_outputs: usize,
+    transparent_output_bytes: usize,
+) -> usize {
+    SHIELDED_OVERHEAD_BYTES
+        + spends * SHIELDED_SPEND_BYTES
+        + shielded_outputs * SHIELDED_OUTPUT_BYTES
+        + transparent_output_bytes
+}
+
+/// The flat fee a Verus daemon charges before any per-output additions.
+///
+/// `DEFAULT_TRANSACTION_FEE` in `wallet/wallet.h`: `0.0001 * COIN`.
+pub const DEFAULT_TRANSACTION_FEE: u64 = 10_000;
+
+/// The least a shielded spend of this shape can pay and still relay normally.
+///
+/// **Transcribed, not derived.** This is `GetMinRelayFeeByOutputs`
+/// (`pbaas/reserves.cpp`) for the ordinary case, branch for branch — the same
+/// discipline the transparent fee code follows, and for the same reason: a
+/// number that disagrees with the daemon's is worse than no number.
+///
+/// Counted in **outputs**, never in bytes. A shielded spend gets an allowance
+/// of three outputs — one recipient, one native change, one token change — and
+/// pays another [`DEFAULT_TRANSACTION_FEE`] for each beyond it.
+///
+/// # What it does not model
+///
+/// The identity cases (`EVAL_IDENTITY_RESERVATION` and its advanced form) widen
+/// the allowance by the currency's referral levels, and imports, exports and
+/// notary-prioritised transactions are exempt from the check entirely. None of
+/// those is a shielded spend, which is the only thing this module builds. The
+/// daemon also charges extra for unusually large output scripts; a shielded
+/// spend's transparent outputs are ordinary payments, well under the threshold.
+///
+/// # It is a floor, not a recommendation
+///
+/// Paying it exactly is legal and unremarkable. Everything in `PROVEN.md` paid
+/// three times it and confirmed in the next block.
+///
+/// ```
+/// use verus_flows::shielded::spending::min_relay_fee;
+///
+/// // The three spends in `PROVEN.md`: two shielded outputs, and at most one
+/// // transparent one. All inside the allowance, so all the flat fee.
+/// assert_eq!(min_relay_fee(2, 0).to_sat(), 10_000); // z→z
+/// assert_eq!(min_relay_fee(2, 1).to_sat(), 10_000); // z→t
+///
+/// // Past the allowance, each further output costs another flat fee.
+/// assert_eq!(min_relay_fee(2, 4).to_sat(), 30_000);
+/// ```
+#[must_use]
+pub fn min_relay_fee(shielded_outputs: usize, transparent_outputs: usize) -> Amount {
+    // `identityFeeFactor` is zero for anything this module builds, so the
+    // daemon's `if (!minFee) minFee = DEFAULT_TRANSACTION_FEE` applies.
+    let mut fee = DEFAULT_TRANSACTION_FEE;
+
+    // `idExtraLimit` is zero without an identity reservation output.
+    let shielded = i64::try_from(shielded_outputs).unwrap_or(i64::MAX);
+    let transparent = i64::try_from(transparent_outputs).unwrap_or(i64::MAX);
+
+    // The daemon's three branches, in its order. Saturating throughout: these
+    // counts come from a caller, and the daemon works in `int64_t` where an
+    // overflow is undefined — a floor that wrapped to something small is the
+    // one direction that matters here.
+    let extra = if transparent > 3 {
+        shielded
+            .saturating_sub(1)
+            .max(0)
+            .saturating_add(transparent.saturating_sub(3).max(0))
+    } else if transparent > 2 {
+        shielded.saturating_sub(2).max(0)
+    } else {
+        shielded.saturating_sub(3).max(0)
+    };
+
+    fee = fee.saturating_add(
+        u64::try_from(extra)
+            .unwrap_or(0)
+            .saturating_mul(DEFAULT_TRANSACTION_FEE),
+    );
+    Amount::from_sat(fee)
+}
+
+/// One shielded recipient./// One shielded recipient.
 pub struct ShieldedRecipient {
     /// Raw 43-byte Sapling payment address. Decode a `zs…` string with
     /// [`verus_sapling::zaddr::decode`] first.
@@ -515,6 +688,40 @@ mod tests {
         // function has to dispatch rather than reach for the P2PKH script
         // every time.
         assert!(identity.p2pkh_script_pubkey().is_err());
+    }
+
+    /// The daemon's branches, at their boundaries.
+    ///
+    /// Transcribed code has to be checked against the thing it was transcribed
+    /// from, and the interesting part is where the branches change — an
+    /// off-by-one in the allowance is a floor that is a whole flat fee wrong.
+    #[test]
+    fn the_relay_floor_follows_the_daemons_branches() {
+        let sats = |z, t| min_relay_fee(z, t).to_sat();
+
+        // Inside the allowance: the flat fee, whatever the mix.
+        for (z, t) in [(0, 0), (1, 0), (2, 0), (3, 0), (2, 1), (2, 2), (0, 3)] {
+            assert_eq!(sats(z, t), 10_000, "{z} shielded, {t} transparent");
+        }
+
+        // `transparent > 2` branch: shielded outputs past two now cost.
+        assert_eq!(sats(2, 3), 10_000);
+        assert_eq!(sats(3, 3), 20_000);
+        assert_eq!(sats(4, 3), 30_000);
+
+        // `transparent > 3` branch: shielded past ONE cost, plus transparent
+        // past three.
+        assert_eq!(sats(2, 4), 30_000);
+        assert_eq!(sats(1, 4), 20_000);
+        assert_eq!(sats(0, 4), 20_000);
+        assert_eq!(sats(2, 5), 40_000);
+    }
+
+    /// A shape no wallet should build must not wrap into something cheap.
+    #[test]
+    fn absurd_output_counts_do_not_wrap_the_floor() {
+        assert!(min_relay_fee(usize::MAX, usize::MAX).to_sat() >= 10_000);
+        assert!(min_relay_fee(0, usize::MAX).to_sat() >= 10_000);
     }
 
     #[test]
