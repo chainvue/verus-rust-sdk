@@ -160,6 +160,16 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # `rust-toolchain.toml` at the repo root pins 1.95.0, and rustup honours it
+    # for anything run inside the checkout — including `fuzz/`, and including
+    # the `rustc` that cargo-fuzz shells out to. Installing nightly is not
+    # enough: without this the job dies on "the option `Z` is only accepted on
+    # the nightly compiler", having quietly selected the pinned stable.
+    #
+    # `RUSTUP_TOOLCHAIN` overrides the file. It does the job of writing
+    # `+nightly` on every invocation, and cannot be forgotten on one of them.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
