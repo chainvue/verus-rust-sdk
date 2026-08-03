@@ -27,7 +27,7 @@
 
 use verus_sdk::money::Amount;
 use verus_sdk::network::{
-    Answers, ChainInfo, FlowError, Funding, HttpTransport, RpcClient, RpcError, Step,
+    Answers, ChainInfo, FlowError, Funding, HttpTransport, RpcClient, RpcError, SecondSourced, Step,
 };
 use verus_sdk::verus_keys::{Address, PrivateKey};
 use verus_sdk::verus_tx::{SignedTransaction, Utxo};
@@ -55,6 +55,12 @@ fn the_types_a_wallet_holds_can_cross_threads() {
     // The networked client, shared: a wallet with a balance poller and a send
     // action holds one of these behind an `Arc`.
     assert_send_sync::<RpcClient<HttpTransport>>();
+
+    // A corroborating reader is held exactly like a plain one: behind an `Arc`,
+    // by a poller and a sender at once. Asserted separately from `RpcClient`
+    // because this file was written two PRs before `SecondSourced` existed —
+    // the assertions do not learn about new types on their own.
+    assert_send_sync::<SecondSourced<RpcClient<HttpTransport>, RpcClient<HttpTransport>>>();
 
     // Moved, not shared — see the module docs.
     assert_send::<Answers>();

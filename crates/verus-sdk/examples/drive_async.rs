@@ -129,6 +129,12 @@ async fn main() -> Result<(), Error> {
             tasks.spawn(async move { (index, post(&http, &endpoint, body).await) });
         }
 
+        // A wallet must not copy this error path. One failed request aborts the
+        // whole operation, with no retry and no partial recording — which is
+        // right for an example (nothing is left half-done) and wrong for a
+        // wallet, where a single flaky response should be retried rather than
+        // discarding the rounds already paid for. Recording is deliberately
+        // after the join, so `Answers` can never hold a partial round.
         let mut replies: Vec<Option<String>> = vec![None; bodies.len()];
         while let Some(joined) = tasks.join_next().await {
             let (index, reply) = joined?;

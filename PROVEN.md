@@ -71,22 +71,33 @@ transaction, so it has no row here.
 | **…and z→t, the change note spent back out, no change** | `2db1cc11c74dc72b9e4e174659404ac58c16599a8442cf9e93e6a23c2c06ae3d` | 1173696 |
 | **…and a z→t that keeps change**, from the second account | `f46ed415cbbdde407ab8d45113b41542246dd3cda52d7526ff6be9903b4056e3` | 1173730 |
 
-The last two are the composed path rather than the builder: scan → select →
-witness → **check the anchor against consensus** → prove → sign → broadcast, all
-of it through `verus-flows`. Both were funded by one shield
+All three are the composed path rather than the builder: scan → select →
+witness → **check the anchor against consensus** → prove → sign → broadcast,
+every step through `verus-flows`.
+
+They chain. One shield
 (`98d5a67ef07e528c4811c7a4a7ee8dc1c71f6cc552f48c473f214dc5c90e0db2`, block
-1173691) that created two notes at once, so the z→z is a genuine multi-note
-spend: `vin 0, vout 0`, two shielded spends, two shielded outputs,
-`valueBalance` exactly the 0.0003 fee. Nothing about it is visible on the
-transparent side, and the receiving account then found 0.5 VRSCTEST and its memo
-with a viewing key alone.
+1173691) created two notes at once; the z→z spent **both of them together**,
+which is what makes it a genuine multi-note spend — `vin 0, vout 0`, two
+shielded spends, two shielded outputs, `valueBalance` exactly the 0.0003 fee.
+Nothing about it is visible on the transparent side, and the receiving account
+then found 0.5 VRSCTEST and its memo with a viewing key alone. The first z→t
+then spent the change note that z→z produced; the second spent the 0.5 note it
+delivered.
 
 The two z→t rows are the two halves of the change question, and both are on
 chain. The first consumed its whole note — 0.0494 delivered, 0.0003 to the
-miner, **no change output at all** — which is the path where an overshoot would
-silently have paid a miner the difference. The second delivered 0.1 and kept
-0.3997 as a shielded change note, because value cannot be split at the input: a
-note enters a spend whole or not at all.
+miner, **no change output of its own** — which is the path where an overshoot
+would silently have paid a miner the difference. The second delivered 0.1 and
+kept 0.3997 as a shielded change note, because value cannot be split at the
+input: a note enters a spend whole or not at all.
+
+Both still show `vShieldedOutput: 2` on an explorer, and that is not a
+contradiction. A Sapling bundle is padded to two outputs whatever it carries —
+concealing which output is the real recipient is the point — so the change-free
+spend emitted two dummies and the other emitted one real change note and one
+dummy. The value claim is the one to read: `valueBalance` 0.0497 against a
+0.0497 note is the whole note leaving the pool.
 
 The anchor check is the part with no offline equivalent. The plan computed
 `db1d7a7d…` from lightwalletd's frontier and commitments; `getblock 1173695` on

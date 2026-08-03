@@ -14,6 +14,21 @@
 //! light                   + scan and witness shielded notes via lightwalletd
 //! ```
 //!
+//! # Where the wallet-shaped pieces are
+//!
+//! Not everything a wallet needs is in an obviously-named module, so:
+//!
+//! * **A recovery phrase** — [`verus_keys::bip39::mnemonic_from_entropy`],
+//!   from 32 bytes you supply. There is no RNG in this crate; see the
+//!   `keygen_phrase` example.
+//! * **A shielded account, and spending from it** — [`light`], which carries
+//!   the whole path from `derive_account` through `plan_spend` and
+//!   `prove_spend`.
+//! * **Pending payments** — `network::ChainReader::mempool`, the one thing a
+//!   UTXO set and a delta list both leave out.
+//! * **A second opinion on a node** — [`network::SecondSourced`], for the reads
+//!   where one lying node costs money or lets someone in.
+//!
 //! `shielded` on its own deliberately cannot build a shielded transaction — it
 //! is the light half a balance-only wallet wants, with no bellman in the
 //! dependency graph. Ask for `prover` when you need to spend.
@@ -218,12 +233,18 @@ pub mod network {
     };
 }
 
-/// Shielded notes over the network: scan, value and witness via lightwalletd.
+/// Shielded notes over the network: derive, scan, value, witness and spend.
 ///
-/// Balances come off a [`light::ScanResult`]: `scan(..).balance(&spent)`.
-/// [`light::DetectedNote`] is what a wallet persists between scanning and
-/// spending; [`light::DiversifiableFullViewingKey`] is what scanning takes —
-/// derivation lives in `verus_sapling::derive`.
+/// The whole wallet path is here, in the order a wallet walks it: derive an
+/// account from a BIP-39 seed ([`light::derive_account`] — the phrase itself
+/// comes from [`verus_keys::bip39`]), [`light::scan`] for notes, take a balance
+/// off a [`light::ScanResult`] with `scan(..).balance(&spent)`, then
+/// [`light::plan_spend`] and [`light::prove_spend`].
+///
+/// [`light::DetectedNote`] and the nullifiers alongside it are what a wallet
+/// persists between runs. **Neither carries a `serde` implementation yet** —
+/// see the `serde` feature's note in `Cargo.toml`. The fields are public, so
+/// persisting them is possible; it is just not done for you.
 #[cfg(feature = "light")]
 pub mod light {
     pub use verus_flows::shielded::{
@@ -231,14 +252,35 @@ pub mod light {
         SpendPlan, WitnessedNote, MAX_SPEND_NOTES,
     };
     pub use verus_light::{GrpcWebTransport, LightClient, LightError, LightTransport};
-    pub use verus_sapling::scan::{DetectedNote, DiversifiableFullViewingKey, FullOutput};
+    /// Deriving the account a scan and a spend are about.
+    pub use verus_sapling::derive::{
+        derive_account, DerivedAccount, COIN_TYPE_MAINNET, COIN_TYPE_TESTNET,
+    };
+    pub use verus_sapling::scan::{
+        dfvk_from_bytes, dfvk_from_extsk, read_note, DetectedNote, DiversifiableFullViewingKey,
+        FullOutput,
+    };
+    /// `zs…` addresses, which every shielded recipient is decoded from.
+    pub use verus_sapling::zaddr;
+    /// Note-plaintext encoding — always this on Verus, and a parameter of
+    /// [`read_note`].
+    pub use verus_sapling::VERUS_ZIP212;
 
     /// Spending needs the prover as well: selecting, witnessing and checking
     /// the anchor are cheap and available above, but turning that into a
     /// transaction is Groth16 and ~50 MB of Sapling parameters.
+    ///
+    /// [`SaplingParams`] is re-exported here because it appears in the
+    /// signatures of the functions beside it — a re-exported function whose
+    /// argument type a caller has to go and find somewhere else is only half
+    /// re-exported.
     #[cfg(feature = "prover")]
     pub use verus_flows::shielded::{
         prepare_spend, prove_spend, spend, ShieldedRecipient, ShieldedSpent, SpendRequest,
         TransparentRecipient,
     };
+    #[cfg(feature = "prover")]
+    pub use verus_sapling::build::MEMO_SIZE;
+    #[cfg(feature = "prover")]
+    pub use verus_sapling::params::SaplingParams;
 }

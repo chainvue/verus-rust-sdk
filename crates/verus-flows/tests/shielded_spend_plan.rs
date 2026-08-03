@@ -66,7 +66,18 @@ fn hex_32(text: &str) -> [u8; 32] {
 }
 
 /// The light server's tip at the time the fixtures were captured.
-const TIP: u64 = 1_173_724;
+///
+/// Deliberately *ahead* of the daemon's, which is the ordinary case and used to
+/// be enough to break a default-anchor plan.
+const LIGHT_TIP: u64 = 1_173_724;
+
+/// What the daemon reports, and therefore what the expiry is counted from.
+const CHAIN_TIP: u64 = 1_173_700;
+
+/// The fixtures only exercise skew if the light server really is ahead.
+/// Checked at compile time, because both sides are constants.
+const _: () = assert!(LIGHT_TIP > CHAIN_TIP);
+const _: () = assert!(LIGHT_TIP > ANCHOR);
 
 /// Serves the responses this plan drew, keyed by method.
 ///
@@ -98,7 +109,8 @@ impl LightTransport for Server {
 }
 
 fn node() -> ScriptedReader {
-    ScriptedReader::new(1_173_700).with_final_sapling_root(ANCHOR, ROOT)
+    ScriptedReader::new(u32::try_from(CHAIN_TIP).expect("a height"))
+        .with_final_sapling_root(ANCHOR, ROOT)
 }
 
 /// The whole plan, against the chain's own root.
@@ -113,17 +125,20 @@ fn the_plan_reaches_the_anchor_the_chain_committed_to() {
     )
     .expect("the plan the live spend used");
 
-    assert_eq!(hex::encode(plan.anchor), ANCHOR_BYTES);
-    assert_eq!(plan.anchor_height, ANCHOR);
+    assert_eq!(hex::encode(plan.anchor()), ANCHOR_BYTES);
+    assert_eq!(plan.anchor_height(), ANCHOR);
     // The tip is recorded separately from the anchor, because a caller pinning
-    // a deeper anchor must not get an expiry behind the chain.
-    assert_eq!(plan.tip, TIP);
-    assert!(plan.tip > plan.anchor_height);
-    assert_eq!(plan.notes.len(), 1);
-    assert_eq!(plan.total_in, 4_970_000);
+    // a deeper anchor must not get an expiry behind the chain — and it comes
+    // from the DAEMON, not from the light server, which reports a different
+    // number here on purpose.
+    assert_eq!(plan.tip(), CHAIN_TIP);
+    assert_ne!(plan.tip(), LIGHT_TIP);
+    assert!(plan.tip() > plan.anchor_height());
+    assert_eq!(plan.notes().len(), 1);
+    assert_eq!(plan.total_in(), 4_970_000);
     // 0.0494 out and 0.0003 to the miner is the whole note, so the live spend
     // carried no change output at all.
-    assert_eq!(plan.change, 0);
+    assert_eq!(plan.change(), 0);
 }
 
 /// Change is what the notes are worth beyond the spend, and it has to come back
@@ -138,7 +153,7 @@ fn anything_the_spend_does_not_use_becomes_change() {
         Some(ANCHOR),
     )
     .expect("a plan");
-    assert_eq!(plan.change, 4_970_000 - 1_000_000);
+    assert_eq!(plan.change(), 4_970_000 - 1_000_000);
 }
 
 /// The anchor check is wired into the plan, not merely available beside it.
@@ -224,5 +239,88 @@ fn exactly_what_the_notes_hold_is_affordable() {
         Some(ANCHOR),
     )
     .expect("the note covers itself exactly");
-    assert_eq!(plan.change, 0);
+    assert_eq!(plan.change(), 0);
+}
+
+/// The expiry basis is the daemon's tip, so a lying light server cannot reach
+/// it.
+///
+/// Expiry is the only consensus field in a shielded spend derived from a
+/// height, and it decides how long the transaction stays minable. A light
+/// server answering `GetLatestBlock` with a wild number would otherwise produce
+/// a transaction valid for centuries instead of twenty minutes — one a user
+/// watches expire, settles around, and finds mined months later. That is value
+/// lost, not a transaction rejected.
+#[test]
+fn a_lying_light_server_cannot_reach_the_expiry() {
+    /// Serves the ordinary fixtures, but claims the chain is near the expiry
+    /// ceiling.
+    struct LiesAboutTheTip;
+    impl LightTransport for LiesAboutTheTip {
+        fn call(&self, path: &str, request: &[u8]) -> Result<HttpResponse, LightError> {
+            if path.ends_with("GetLatestBlock") {
+                // BlockID { height: 499_999_979 }
+                let mut message = vec![0x08];
+                let mut value = 499_999_979u64;
+                loop {
+                    let byte = u8::try_from(value & 0x7f).expect("7 bits");
+                    value >>= 7;
+                    if value == 0 {
+                        message.push(byte);
+                        break;
+                    }
+                    message.push(byte | 0x80);
+                }
+                let mut body = vec![0];
+                body.extend_from_slice(&u32::try_from(message.len()).expect("len").to_be_bytes());
+                body.extend_from_slice(&message);
+                let trailer = "grpc-status: 0\r\n";
+                body.push(0x80);
+                body.extend_from_slice(&u32::try_from(trailer.len()).expect("len").to_be_bytes());
+                body.extend_from_slice(trailer.as_bytes());
+                return Ok(HttpResponse { status: None, body });
+            }
+            Server.call(path, request)
+        }
+    }
+
+    let plan = plan_spend(
+        &LightClient::new(LiesAboutTheTip),
+        &node(),
+        &[the_change_note()],
+        4_970_000,
+        Some(ANCHOR),
+    )
+    .expect("the witnesses are still honest, so the plan is still made");
+
+    // The lie reached nothing. `prove_spend` counts the expiry from this.
+    assert_eq!(plan.tip(), CHAIN_TIP);
+}
+
+/// A light server ahead of the daemon does not break a default-anchor plan.
+///
+/// Two honest sources are routinely a block apart. Anchoring at the light
+/// server's tip alone meant asking the daemon to confirm a `finalsaplingroot`
+/// for a block it had not seen — a plan that failed for nothing but ordinary
+/// skew.
+#[test]
+fn a_light_server_ahead_of_the_daemon_still_plans() {
+    // The daemon knows only up to ANCHOR; the fixture light server is 29 blocks
+    // ahead of it.
+    let reader = ScriptedReader::new(u32::try_from(ANCHOR).expect("a height"))
+        .with_final_sapling_root(ANCHOR, ROOT);
+
+    let plan = plan_spend(
+        &LightClient::new(Server),
+        &reader,
+        &[the_change_note()],
+        4_970_000,
+        None,
+    )
+    .expect("the lower of the two tips is a height both sources have");
+
+    // The anchor is the daemon's tip, not the light server's — the lower of
+    // the two, and the only one both sources have.
+    assert_eq!(plan.anchor_height(), ANCHOR);
+    assert_eq!(plan.tip(), ANCHOR);
 }
