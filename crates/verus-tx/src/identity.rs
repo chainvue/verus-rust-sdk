@@ -39,8 +39,72 @@
 //! `tests/identity_decode.rs`. The daemon is the oracle; the source is only the
 //! map.
 
+use verus_keys::hash160;
+use verus_wire::hash::sha256d;
+
 use crate::cc::Destination;
 use crate::error::TxError;
+
+/// Lowercase the way the C locale does: ASCII only, everything else untouched.
+///
+/// Rust's `to_lowercase` is Unicode-aware and would fold characters the daemon
+/// leaves alone, deriving a different id for the same name. Names are restricted
+/// to ASCII by the registration builder's `validate_name` anyway; this keeps the
+/// derivation honest for anything that slips past a caller building ids
+/// directly.
+fn to_lower_c_locale(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Derive a VerusID's 20-byte id from its name and parent.
+///
+/// ```text
+/// id_hash = SHA256d(lowercase(name))
+/// id_hash = SHA256d(parent || id_hash)      when there is a parent
+/// id      = RIPEMD160(SHA256(id_hash))
+/// ```
+///
+/// Note the parent goes in as its raw 20-byte hash, so an `R` address and an `i`
+/// address with the same hash derive the same child — which is why callers must
+/// pass a real parent identity and not merely something that decoded.
+///
+/// A root identity on a chain has that chain's system id as its parent: on
+/// VRSCTEST every ordinary registration is a child of `VRSCTEST` itself.
+/// # An all-zero parent is *no* parent
+///
+/// Folding twenty zero bytes in anyway gives a different id from the one
+/// consensus assigns. `CIdentity::GetID` skips the combine when
+/// `parent.IsNull()`; this combined unconditionally, and did not.
+///
+/// Established against the chain rather than against the source. `vrsc@`
+/// carries a null parent, and its id on mainnet is `1af5b801…`, which is
+/// exactly `hash160(sha256d("vrsc"))` — the uncombined form. Combining with
+/// zeros yields `c980a9f6…`, an address nothing is at.
+///
+/// Only zero-parent identities were affected, which is why it went unnoticed:
+/// every identity registered on a chain has that chain as its parent, so the
+/// eight golden VerusID transactions and every registration flow are unchanged
+/// by the fix. Chain roots — `vrsc@`, `vrsctest@` — are the exception, and an
+/// identity update built for one would have published its output under an id
+/// nobody holds.
+pub fn identity_id(name: &str, parent: Option<[u8; 20]>) -> [u8; 20] {
+    let mut id_hash = sha256d(to_lower_c_locale(name).as_bytes());
+    if let Some(parent) = parent.filter(|parent| parent != &[0u8; 20]) {
+        let mut combined = Vec::with_capacity(52);
+        combined.extend_from_slice(&parent);
+        combined.extend_from_slice(&id_hash);
+        id_hash = sha256d(&combined);
+    }
+    hash160(&id_hash)
+}
 
 /// A Sapling payment address is 43 bytes, and serde only implements its traits
 /// for arrays up to 32. Rather than pull in a dependency for one field, this
@@ -78,12 +142,7 @@ mod sapling_addresses {
     }
 }
 
-/// `EVAL_IDENTITY_PRIMARY` — the output that holds a VerusID.
-pub const EVAL_IDENTITY_PRIMARY: u8 = 14;
-/// `EVAL_IDENTITY_REVOKE` — the condition letting the revocation authority spend.
-pub const EVAL_IDENTITY_REVOKE: u8 = 15;
-/// `EVAL_IDENTITY_RECOVER` — the condition letting the recovery authority spend.
-pub const EVAL_IDENTITY_RECOVER: u8 = 16;
+pub use crate::cc::{EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE};
 
 /// The first version that carries `system_id` and `unlock_after`.
 const IDENTITY_VERSION_VAULT: u32 = 2;

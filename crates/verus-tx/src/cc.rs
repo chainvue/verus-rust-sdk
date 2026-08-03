@@ -28,12 +28,52 @@
 
 use crate::currency::CurrencyId;
 use crate::error::TxError;
-use crate::identity::{EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE};
+
+// The eval codes all live here.
+//
+// Every one of them names a CryptoCondition, so they belong beside the encoder
+// that writes them rather than beside whichever builder happened to need one
+// first. They were spread across five modules, and that spread is what made
+// `cc` depend on `identity`, `decode` on `convert` and `currency_launch`, and
+// `token` on `register` — dependencies between feature groups carrying nothing
+// but a `u8`. Each module still re-exports the codes it is about, so no import
+// path changed.
 
 /// `EVAL_NONE` — the master params of every CC output.
 pub const EVAL_NONE: u8 = 0;
+/// `EVAL_CURRENCY_DEFINITION`.
+pub const EVAL_CURRENCY_DEFINITION: u8 = 2;
+/// `EVAL_ACCEPTEDNOTARIZATION`.
+pub const EVAL_ACCEPTEDNOTARIZATION: u8 = 5;
+/// `EVAL_RESERVE_TRANSFER` — an output requesting a conversion, export or burn.
+pub const EVAL_RESERVE_TRANSFER: u8 = 8;
 /// `EVAL_RESERVE_OUTPUT` — an output holding token (reserve) value.
 pub const EVAL_RESERVE_OUTPUT: u8 = 9;
+/// `EVAL_IDENTITY_ADVANCEDRESERVATION` — the revealed name, spent into the
+/// registration.
+///
+/// **Not** `EVAL_IDENTITY_RESERVATION` (18), which goes with the older
+/// `CNameReservation` layout. The eval code and the payload travel together: a
+/// current daemon writes the advanced reservation under eval 10, and a
+/// registration that pairs the advanced bytes with eval 18 is rejected as
+/// `bad-txns-failed-precheck` — with the name commitment already spent.
+/// Confirmed by diffing a `registeridentity` transaction the daemon built on
+/// VRSCTEST against one this crate built for the same name.
+pub const EVAL_IDENTITY_ADVANCEDRESERVATION: u8 = 10;
+/// `EVAL_RESERVE_DEPOSIT`.
+pub const EVAL_RESERVE_DEPOSIT: u8 = 11;
+/// `EVAL_CROSSCHAIN_EXPORT`.
+pub const EVAL_CROSSCHAIN_EXPORT: u8 = 12;
+/// `EVAL_CROSSCHAIN_IMPORT`.
+pub const EVAL_CROSSCHAIN_IMPORT: u8 = 13;
+/// `EVAL_IDENTITY_PRIMARY` — the output that holds a VerusID.
+pub const EVAL_IDENTITY_PRIMARY: u8 = 14;
+/// `EVAL_IDENTITY_REVOKE` — the condition letting the revocation authority spend.
+pub const EVAL_IDENTITY_REVOKE: u8 = 15;
+/// `EVAL_IDENTITY_RECOVER` — the condition letting the recovery authority spend.
+pub const EVAL_IDENTITY_RECOVER: u8 = 16;
+/// `EVAL_IDENTITY_COMMITMENT` — the hidden half of a name claim.
+pub const EVAL_IDENTITY_COMMITMENT: u8 = 17;
 
 /// `OP_CHECKCRYPTOCONDITION`, from the Verus fork of `bitcoin-ops`.
 const OP_CHECKCRYPTOCONDITION: u8 = 0xcc;

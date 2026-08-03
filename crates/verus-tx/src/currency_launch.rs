@@ -56,14 +56,9 @@ use verus_keys::{Address, PrivateKey};
 /// One satoshi-scaled unit — `SATOSHIDEN`.
 const SATOSHIDEN: u128 = 100_000_000;
 
-/// `EVAL_CROSSCHAIN_IMPORT`.
-pub const EVAL_CROSSCHAIN_IMPORT: u8 = 13;
-/// `EVAL_ACCEPTEDNOTARIZATION`.
-pub const EVAL_ACCEPTEDNOTARIZATION: u8 = 5;
-/// `EVAL_CROSSCHAIN_EXPORT`.
-pub const EVAL_CROSSCHAIN_EXPORT: u8 = 12;
-/// `EVAL_RESERVE_DEPOSIT`.
-pub const EVAL_RESERVE_DEPOSIT: u8 = 11;
+pub use crate::cc::{
+    EVAL_ACCEPTEDNOTARIZATION, EVAL_CROSSCHAIN_EXPORT, EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT,
+};
 
 /// The daemon's fixed destination pubkey for accepted-notarization outputs.
 const NOTARIZATION_PUBKEY: &str =

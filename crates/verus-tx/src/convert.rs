@@ -61,8 +61,7 @@ use crate::fee::DEFAULT_FEE_PER_KB;
 use crate::send::SignedTransaction;
 use crate::Utxo;
 
-/// `EVAL_RESERVE_TRANSFER` — an output requesting a conversion, export or burn.
-pub const EVAL_RESERVE_TRANSFER: u8 = 8;
+pub use crate::cc::EVAL_RESERVE_TRANSFER;
 
 /// The address every reserve transfer is paid to.
 ///

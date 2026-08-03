@@ -65,8 +65,7 @@ use crate::currency::CurrencyId;
 use crate::error::TxError;
 use verus_wire::compact::write_compact_size;
 
-/// `EVAL_CURRENCY_DEFINITION`.
-pub const EVAL_CURRENCY_DEFINITION: u8 = 2;
+pub use crate::cc::EVAL_CURRENCY_DEFINITION;
 
 /// `CCurrencyDefinition::VERSION_CURRENT`.
 pub const CURRENCY_DEFINITION_VERSION: u32 = 1;
