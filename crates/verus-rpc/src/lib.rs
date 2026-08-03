@@ -49,11 +49,37 @@
 //! `-32601` — "method not found" — for the same method with a verbosity
 //! argument.
 //!
-//! So [`RpcError::MethodUnavailable`] means "refused as not-found", which is
-//! weaker than "this node cannot do that". Before recording a method as
-//! unavailable, re-probe it at a different arity; an availability table built
-//! from careless probes will be wrong. That is not hypothetical — the table this
-//! crate was designed against had `getblock` listed as absent, and it is not.
+//! It is not one method's quirk, and it does not point one way. Measured
+//! against the same endpoint on 2026-08-03:
+//!
+//! ```text
+//! getblock      [1166308]    -> served        getrawmempool []       -> served
+//! getblock      [1166308,1]  -> -32601        getrawmempool [false]  -> -32601
+//! ```
+//!
+//! One method wants an argument, the other refuses one, and a client that
+//! guessed either rule would be wrong about the other.
+//!
+//! So this crate does not guess. A method with a second argument list that asks
+//! the *same question* is tried both ways before anything is concluded, and
+//! [`RpcError::MethodUnavailable`] therefore means **"refused at every arity
+//! this crate knows how to ask"** rather than "refused once". The preferred
+//! form still goes first and a served call still costs exactly one request; the
+//! second is sent only after a refusal.
+//!
+//! Anything that is not `-32601` stops there. A node error is an answer, and
+//! re-asking would turn one failure into two requests.
+//!
+//! "Same question" is the load-bearing word. `getblock <h>` and
+//! `getblock <h> 1` qualify — verbosity 1 is the daemon's default, and the two
+//! were measured byte-identical against a VRSCTEST daemon on 2026-08-03.
+//! `getblock <h> 0` does not: it answers with the block as hex. Listing an
+//! arity that asks something else would hand a caller a shape it does not
+//! parse, and only on the nodes where the preferred arity happens to be
+//! filtered — the hardest possible place to notice it.
+//!
+//! That is not hypothetical — the availability table this crate was designed
+//! against had `getblock` listed as absent, and it is not.
 
 #![doc(html_no_source)]
 
