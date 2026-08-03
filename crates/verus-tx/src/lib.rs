@@ -27,12 +27,31 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Scope
+//! # This crate is a facade
 //!
-//! Native VRSC transfers between `R` addresses are complete and proven on chain.
-//! Token outputs are being built up in [`cc`]; conversions, VerusID operations
-//! and identity-held funds are not ported yet, and those inputs are **refused**,
-//! never approximated.
+//! `src/lib.rs` is the whole of it: every name below is re-exported from one
+//! of six crates, and importing through `verus_tx::…` gets all of them. That
+//! is the path to keep using if you do not care how the pieces are arranged.
+//!
+//! | crate | what it holds |
+//! |---|---|
+//! | [`verus_tx_primitives`] | money, ids, expiry, errors, CryptoCondition encoding, fee and coin-selection rules |
+//! | [`verus_tx_transparent`] | transparent sends, and the assembly every other builder reuses |
+//! | [`verus_tx_protocol`] | what an output *means*: identities, VDXF, token outputs, reserve transfers, and the decoder |
+//! | [`verus_tx_currency`] | defining and launching a currency |
+//! | [`verus_tx_identity`] | the VerusID lifecycle, and message signing |
+//! | [`verus_tx_market`] | offers, partially-signed transactions, script multisig |
+//!
+//! Depend on one directly when you want only part of this. Something that
+//! merely needs to *talk about* an [`Amount`] or a [`CurrencyId`] — a price
+//! feed, a balance display, an RPC layer — should take
+//! [`verus_tx_primitives`] and not compile the identity registration builder
+//! to get one.
+//!
+//! Those crates expose a little more than this facade does: helpers like
+//! `assemble` and `Balances` are `pub` there because they cross a crate
+//! boundary, and are not re-exported here. Nothing behind the facade is
+//! promised to be stable in the way the names below are.
 //!
 //! # Why the fee logic looks the way it does
 //!
@@ -44,9 +63,9 @@
 
 #![doc(html_no_source)]
 
-// The primitives, re-exported so every path this crate published still
-// resolves. `verus-tx` is becoming a facade over the crates it was split
-// into; nothing here is a new name.
+// Every line below is a re-export, and no name here is new: this file is what
+// makes the split invisible to anything that was already importing from
+// `verus_tx`.
 pub use verus_tx_currency::{currency_definition, currency_launch};
 pub use verus_tx_identity::{
     build_identity_recovery, build_identity_registration, build_identity_revocation,
