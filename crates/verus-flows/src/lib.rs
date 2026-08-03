@@ -124,8 +124,8 @@ pub use vdxf::{
 
 #[cfg(feature = "shielded")]
 pub use shielded::{
-    check_anchor, full_output, plan_spend, scan, select_notes, witness_note, ScanResult, SpendPlan,
-    WitnessedNote,
+    check_anchor, full_output, plan_spend, scan, scan_after, select_notes, witness_note,
+    ScanResult, SpendPlan, WitnessedNote,
 };
 
 #[cfg(feature = "prover")]

@@ -33,8 +33,12 @@
 //!
 //! **It will not remember your notes.** The scan here starts from
 //! `VERUS_SCAN_FROM` every run, which is fine for a demo and wrong for a
-//! wallet: a real one persists `DetectedNote`s and the nullifiers it has seen,
-//! and rescans only the tail. Note that a spend is reported through
+//! wallet: a real one persists its whole `ScanResult` (behind the `serde`
+//! feature — notes and observed nullifiers together), then calls `scan_after`,
+//! which covers only the tail and refuses if the chain moved underneath it,
+//! and folds the answer back in with `ScanResult::absorb`. That last step is
+//! not optional: `scan_after` returns the tail alone, so storing its result in
+//! place of the old one throws every note away. Note that a spend is reported through
 //! `ShieldedSpent::nullifiers` precisely so the wallet can mark its own notes
 //! spent without waiting to see them in a block.
 

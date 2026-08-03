@@ -244,12 +244,16 @@ pub mod network {
 /// [`light::ScanResult`] is what a wallet persists between runs — the notes and
 /// the nullifiers together, which is the pair [`light::ScanResult::unspent`]
 /// needs and the pair that is wrong in the dangerous direction if they are
-/// stored apart. Turn on the `serde` feature and it round-trips.
+/// stored apart. Turn on the `serde` feature and it round-trips; hand it back
+/// to [`light::scan_after`] and the next scan covers only the tail, and proves
+/// it is the same chain — then fold that tail back in with
+/// [`light::ScanResult::absorb`], which is what keeps the history rather than
+/// replacing it.
 #[cfg(feature = "light")]
 pub mod light {
     pub use verus_flows::shielded::{
-        check_anchor, full_output, plan_spend, scan, select_notes, witness_note, ScanResult,
-        SpendPlan, WitnessedNote, MAX_SPEND_NOTES,
+        check_anchor, full_output, plan_spend, scan, scan_after, select_notes, witness_note,
+        ScanResult, SpendPlan, WitnessedNote, MAX_SPEND_NOTES,
     };
     pub use verus_light::{GrpcWebTransport, LightClient, LightError, LightTransport};
     /// Deriving the account a scan and a spend are about.
