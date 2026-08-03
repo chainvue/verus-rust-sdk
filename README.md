@@ -8,6 +8,10 @@
 > [!WARNING]
 > **Early development. Nothing here is ready for mainnet funds.** The crates are
 > unpublished and the API will change without notice. See [Status](#status).
+>
+> The persisted shielded wallet format changed with reorg recovery: nullifiers
+> gained the height they were seen at, and a `checkpoints` window was added. A
+> store written before that will not load — the loss is a rescan, not funds.
 
 ## Why
 
@@ -423,6 +427,7 @@ accepted by VRSCTEST — every txid is in [`PROVEN.md`](./PROVEN.md).
 | Second-sourced policy reads — corroborate the one lie that costs money | ✅ live, across two independent VRSCTEST nodes |
 | Persisting a shielded wallet — the notes a scan found and bytes proved but not sent | ✅ behind `serde`, round-trip tested against a real on-chain note |
 | Incremental scanning — the tail only, proving it is the same chain | ✅ `scan_after` + `absorb`, refusing a reorg rather than shifting note positions |
+| Recovering from a reorg — roll back to a block the live chain still has | ✅ `rewind_to` against kept checkpoints, so too shallow a rollback fails loudly |
 | Application data on a VerusID — read current, read history, publish | ✅ **on chain**, twice over, with the erase invariant proven |
 | Conversions | ✅ **on chain**, exactly the estimate; burns byte-verified |
 | Currency launch — fractional basket and centralized token, preconvert | ✅ **on chain** |
