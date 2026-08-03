@@ -44,12 +44,8 @@
 
 #![doc(html_no_source)]
 
-pub mod balances;
-pub mod convert;
 pub mod currency_definition;
 pub mod currency_launch;
-pub mod decode;
-pub mod identity;
 pub mod identity_spend;
 pub mod multisig;
 pub mod offer;
@@ -57,9 +53,7 @@ pub mod partial;
 pub mod register;
 pub mod revoke;
 pub mod signature;
-mod token;
 pub mod update;
-pub mod vdxf;
 
 // The primitives, re-exported so every path this crate published still
 // resolves. `verus-tx` is becoming a facade over the crates it was split
@@ -70,19 +64,19 @@ pub use verus_tx_primitives::{
     CurrencyId, Destination, Expiry, Selection, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
     EXPIRY_HEIGHT_THRESHOLD, SATS_PER_COIN,
 };
+pub use verus_tx_protocol::{balances, convert, decode, identity, vdxf};
+pub use verus_tx_protocol::{
+    build_conversion, build_conversion_transaction, build_token_send, data_key,
+    decode_output_script, may_carry_currency, qualified_key, root_namespace, token_balances,
+    ConversionKind, ConversionParams, Identity, OutputKind, ReserveTransfer, Timelock,
+    TokenBalances, TokenRecipient, TokenSendParams, TransferDestination, ADVANCED_COMMITMENT_KEY,
+    EVAL_IDENTITY_PRIMARY, EVAL_RESERVE_TRANSFER, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
+    RESERVE_TRANSFER_ADDRESS,
+};
 pub use verus_tx_transparent::{
     build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
 };
 
-pub use balances::{token_balances, TokenBalances};
-pub use convert::{
-    build_conversion, build_conversion_transaction, ConversionKind, ConversionParams,
-    ReserveTransfer, TransferDestination, EVAL_RESERVE_TRANSFER, RESERVE_TRANSFER_ADDRESS,
-};
-pub use decode::{decode_output_script, may_carry_currency, OutputKind, ADVANCED_COMMITMENT_KEY};
-pub use identity::{
-    Identity, Timelock, EVAL_IDENTITY_PRIMARY, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
-};
 pub use identity_spend::{build_identity_spend, IdentitySpendParams};
 pub use partial::{InputKind, PartialTransaction};
 pub use register::{
@@ -92,6 +86,4 @@ pub use register::{
 pub use revoke::{
     build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
 };
-pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use update::{build_identity_update, UpdateParams};
-pub use vdxf::{data_key, qualified_key, root_namespace};

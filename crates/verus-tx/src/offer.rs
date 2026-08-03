@@ -404,27 +404,28 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     // on Verus — and it is native value only, exactly as fully understood as a
     // key-hash payment. The native side is accounted from `outputs[0].value`
     // whatever the script shape, so both carry no token demand.
-    let token_demand =
-        match crate::decode::decode_output_script(&transaction.outputs[0].script_pubkey)? {
-            // Value in the payload, nothing native: the token side, accounted
-            // separately below.
-            crate::decode::OutputKind::ReserveOutput { tokens, .. } => tokens,
-            // Native value only. Paying a key or paying an identity differ in
-            // who can spend the output, not in what is being asked for.
-            crate::decode::OutputKind::PubKeyHash { .. }
-            | crate::decode::OutputKind::IdentityPayment { .. } => Vec::new(),
-            // An output that HOLDS an identity is not a payment at all, and an
-            // eval code this crate cannot decode may carry value it cannot
-            // see. Neither is a demand `take_offer` can honour.
-            other => {
-                return Err(TxError::InvalidOffer(format!(
-                    "the offer's demand output is not a shape this crate can account for: \
+    let token_demand = match verus_tx_protocol::decode::decode_output_script(
+        &transaction.outputs[0].script_pubkey,
+    )? {
+        // Value in the payload, nothing native: the token side, accounted
+        // separately below.
+        verus_tx_protocol::decode::OutputKind::ReserveOutput { tokens, .. } => tokens,
+        // Native value only. Paying a key or paying an identity differ in
+        // who can spend the output, not in what is being asked for.
+        verus_tx_protocol::decode::OutputKind::PubKeyHash { .. }
+        | verus_tx_protocol::decode::OutputKind::IdentityPayment { .. } => Vec::new(),
+        // An output that HOLDS an identity is not a payment at all, and an
+        // eval code this crate cannot decode may carry value it cannot
+        // see. Neither is a demand `take_offer` can honour.
+        other => {
+            return Err(TxError::InvalidOffer(format!(
+                "the offer's demand output is not a shape this crate can account for: \
                      {other:?}"
-                )))
-            }
-        };
+            )))
+        }
+    };
 
-    let mut balances = crate::token::Balances::default();
+    let mut balances = verus_tx_protocol::token::Balances::default();
     for (currency, amount) in &token_demand {
         balances.add_required(*currency, *amount);
     }
@@ -434,12 +435,12 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     let mut taker_inputs = Vec::with_capacity(params.utxos.len());
     for utxo in params.utxos {
         let (tokens, is_cryptocondition) =
-            match crate::decode::decode_output_script(&utxo.script_pubkey)? {
-                crate::decode::OutputKind::ReserveOutput {
+            match verus_tx_protocol::decode::decode_output_script(&utxo.script_pubkey)? {
+                verus_tx_protocol::decode::OutputKind::ReserveOutput {
                     tokens,
                     destination,
                 } => {
-                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
+                    verus_tx_protocol::token::reject_unspendable_reserve(utxo, &destination)?;
                     (tokens, true)
                 }
                 _ => (Vec::new(), false),
@@ -925,8 +926,8 @@ mod tests {
     }
 
     fn tokens_in(script: &[u8]) -> u64 {
-        match crate::decode::decode_output_script(script) {
-            Ok(crate::decode::OutputKind::ReserveOutput { tokens, .. }) => tokens
+        match verus_tx_protocol::decode::decode_output_script(script) {
+            Ok(verus_tx_protocol::decode::OutputKind::ReserveOutput { tokens, .. }) => tokens
                 .iter()
                 .filter(|(id, _)| *id == CurrencyId::from_bytes(TOKEN))
                 .map(|(_, amount)| *amount)

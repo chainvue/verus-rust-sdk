@@ -59,8 +59,6 @@ use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_wire::hash::sha256d;
 use verus_wire::TxOut;
 
-use crate::decode::{decode_output_script, OutputKind};
-use crate::identity::Identity;
 use verus_tx_primitives::cc::{
     cc_script, identity_payment_script, identity_primary_script, reserve_output_script_to,
     OptCcParams, EVAL_RESERVE_OUTPUT,
@@ -72,6 +70,8 @@ use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_protocol::decode::{decode_output_script, OutputKind};
+use verus_tx_protocol::identity::Identity;
 use verus_tx_transparent::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use verus_tx_transparent::SignedTransaction;
 
@@ -119,7 +119,7 @@ pub const CENTRALIZED_PROOF_PROTOCOL: u32 = 2;
 /// `system_id` and a content multimap.
 const IDENTITY_VERSION_PBAAS: u32 = 3;
 
-pub use crate::identity::identity_id;
+pub use verus_tx_protocol::identity::identity_id;
 
 /// Names this crate will commit to.
 ///
@@ -812,10 +812,10 @@ pub fn build_identity_registration(
             // `BURN_CHANGE_PRICE` satisfies `IsBurn()`, and `IMPORT_TO_SOURCE`
             // makes `GetImportCurrency()` return the source — the parent —
             // rather than a destination.
-            let burn = crate::convert::build_conversion(
+            let burn = verus_tx_protocol::convert::build_conversion(
                 parent_currency,
                 sub.fee,
-                crate::convert::ConversionKind::Burn,
+                verus_tx_protocol::convert::ConversionKind::Burn,
                 params.change_address,
                 // A burn carries a plain destination with no auxiliary at all,
                 // so the refund address is unused here.
@@ -858,7 +858,7 @@ pub fn build_identity_registration(
                     tokens,
                     destination,
                 } => {
-                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
+                    verus_tx_protocol::token::reject_unspendable_reserve(utxo, &destination)?;
                     for (currency, amount) in tokens {
                         if currency != CurrencyId::of_identity(parent) {
                             return Err(TxError::UnsupportedFundingEval {
@@ -1427,10 +1427,10 @@ mod tests {
         // (IMPORT_TO_SOURCE makes that the source), no next leg, and a
         // FirstCurrency the issuer recognises (its own).
         let parent_currency = CurrencyId::of_identity(parent);
-        let expected = crate::convert::build_conversion(
+        let expected = verus_tx_protocol::convert::build_conversion(
             parent_currency,
             Amount::from_sat(1_00000000),
-            crate::convert::ConversionKind::Burn,
+            verus_tx_protocol::convert::ConversionKind::Burn,
             key.address(),
             key.address(),
             CurrencyId::from_bytes(parent),

@@ -40,7 +40,6 @@
 use crate::currency_definition::{
     currency_definition_script, option, CurrencyDefinition, EVAL_CURRENCY_DEFINITION,
 };
-use crate::identity::{Identity, FLAG_ACTIVE_CURRENCY, FLAG_TOKENIZED_CONTROL};
 use crate::register::identity_id;
 use verus_tx_primitives::cc::{
     cc_script, identity_primary_script, var_int, Destination, OptCcParams, EVAL_NONE,
@@ -48,6 +47,7 @@ use verus_tx_primitives::cc::{
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::TxError;
+use verus_tx_protocol::identity::{Identity, FLAG_ACTIVE_CURRENCY, FLAG_TOKENIZED_CONTROL};
 use verus_wire::compact::write_compact_size;
 use verus_wire::TxOut;
 
@@ -551,10 +551,11 @@ pub fn build_currency_launch(
     // The chain's copy of the identity is the authority on who may spend its
     // output. Checking against the caller's own idea of it would check them
     // against their own mistake.
-    let current = match crate::decode_output_script(&params.identity_output.script_pubkey)? {
-        crate::OutputKind::IdentityPrimary { identity } => *identity,
-        _ => return Err(TxError::IdentityOutputMismatch),
-    };
+    let current =
+        match verus_tx_protocol::decode_output_script(&params.identity_output.script_pubkey)? {
+            verus_tx_protocol::OutputKind::IdentityPrimary { identity } => *identity,
+            _ => return Err(TxError::IdentityOutputMismatch),
+        };
     if identity_id(&current.name, Some(current.parent)) != params.context.identity_address {
         return Err(TxError::IdentityOutputMismatch);
     }

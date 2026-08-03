@@ -41,8 +41,6 @@
 use verus_keys::{Address, PrivateKey};
 use verus_wire::TxOut;
 
-use crate::decode::{decode_output_script, OutputKind};
-use crate::identity::{Identity, FLAG_REVOKED};
 use crate::register::identity_id;
 use verus_tx_primitives::cc::identity_primary_script;
 use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
@@ -50,6 +48,8 @@ use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
+use verus_tx_protocol::decode::{decode_output_script, OutputKind};
+use verus_tx_protocol::identity::{Identity, FLAG_REVOKED};
 use verus_tx_transparent::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use verus_tx_transparent::SignedTransaction;
 

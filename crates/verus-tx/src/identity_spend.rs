@@ -154,9 +154,9 @@ pub fn build_identity_spend(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{decode_output_script, OutputKind};
     use verus_tx_primitives::fee::{DUST_THRESHOLD, MIN_FEE};
     use verus_tx_primitives::Txid;
+    use verus_tx_protocol::decode::{decode_output_script, OutputKind};
     use verus_wire::TxV4;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";

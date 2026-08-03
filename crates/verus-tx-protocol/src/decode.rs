@@ -13,12 +13,12 @@
 //! outputs take the native path.
 
 use crate::convert::EVAL_RESERVE_TRANSFER;
-use crate::currency_launch::{EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT};
 use crate::identity::{
     Identity, EVAL_IDENTITY_PRIMARY, EVAL_IDENTITY_RECOVER, EVAL_IDENTITY_REVOKE,
 };
-use crate::register::EVAL_IDENTITY_COMMITMENT;
+use verus_tx_primitives::cc::EVAL_IDENTITY_COMMITMENT;
 use verus_tx_primitives::cc::{Destination, EVAL_NONE, EVAL_RESERVE_OUTPUT, OPT_CC_PARAMS_VERSION};
+use verus_tx_primitives::cc::{EVAL_CROSSCHAIN_IMPORT, EVAL_RESERVE_DEPOSIT};
 use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::TxError;
 

@@ -201,9 +201,9 @@ pub fn token_balances(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Destination, Txid};
     use verus_keys::{Address, AddressKind};
     use verus_tx_primitives::cc;
+    use verus_tx_primitives::{Destination, Txid};
 
     const A: CurrencyId = CurrencyId::from_bytes([0xaa; 20]);
     const B: CurrencyId = CurrencyId::from_bytes([0xbb; 20]);
@@ -284,11 +284,11 @@ mod tests {
             satoshis: Amount::from_sat(1),
             script_pubkey: cc::cc_script(
                 &cc::OptCcParams::one_of_one(
-                    crate::currency_launch::EVAL_CROSSCHAIN_IMPORT,
+                    verus_tx_primitives::cc::EVAL_CROSSCHAIN_IMPORT,
                     Destination::PubKeyHash([0x44; 20]),
                 ),
                 &cc::OptCcParams::one_of_one(
-                    crate::currency_launch::EVAL_CROSSCHAIN_IMPORT,
+                    verus_tx_primitives::cc::EVAL_CROSSCHAIN_IMPORT,
                     Destination::PubKeyHash([0x44; 20]),
                 ),
             )
@@ -522,7 +522,7 @@ mod tests {
             txid: Txid::from_internal([0x66; 32]),
             vout: 0,
             satoshis: Amount::from_sat(1_000),
-            script_pubkey: crate::identity_payment_script([0x77; 20]).unwrap(),
+            script_pubkey: verus_tx_primitives::identity_payment_script([0x77; 20]).unwrap(),
         };
         assert!(token_balances(&[utxo], None).unwrap().is_empty());
     }

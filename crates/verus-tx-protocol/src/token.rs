@@ -38,10 +38,15 @@ use verus_tx_transparent::SignedTransaction;
 /// output paying an identity, a script hash or a bare public key has to be
 /// refused here rather than built into a transaction nobody can satisfy.
 ///
+/// # Errors
+///
+/// [`TxError::IdentityHeldFunding`] for an identity-held output, and
+/// [`TxError::UnsupportedFundingScript`] for a script hash or bare public key.
+///
 /// Before the decoder learned those shapes this was enforced by accident —
 /// `decode_output_script` failed outright — which is exactly the kind of guard
 /// that disappears silently when the thing failing by accident starts working.
-pub(crate) fn reject_unspendable_reserve(
+pub fn reject_unspendable_reserve(
     utxo: &Utxo,
     destination: &verus_tx_primitives::cc::Destination,
 ) -> Result<(), TxError> {
@@ -137,30 +142,34 @@ impl Decoded<'_> {
 /// emitted, and therefore the transaction bytes. A `HashMap` here would produce
 /// a valid but different transaction, nondeterministically — hence a `Vec`.
 #[derive(Default)]
-pub(crate) struct Balances(Vec<(CurrencyId, i128)>);
+pub struct Balances(Vec<(CurrencyId, i128)>);
 
 impl Balances {
-    pub(crate) fn sub(&mut self, currency: CurrencyId, amount: u64) {
+    /// Record `amount` of `currency` being supplied by an input.
+    pub fn sub(&mut self, currency: CurrencyId, amount: u64) {
         match self.0.iter_mut().find(|(id, _)| *id == currency) {
             Some((_, balance)) => *balance -= i128::from(amount),
             None => self.0.push((currency, -i128::from(amount))),
         }
     }
 
-    pub(crate) fn add_required(&mut self, currency: CurrencyId, amount: u64) {
+    /// Record `amount` of `currency` that the outputs demand.
+    pub fn add_required(&mut self, currency: CurrencyId, amount: u64) {
         match self.0.iter_mut().find(|(id, _)| *id == currency) {
             Some((_, balance)) => *balance += i128::from(amount),
             None => self.0.push((currency, i128::from(amount))),
         }
     }
 
-    pub(crate) fn still_needed(&self, currency: CurrencyId) -> bool {
+    /// Whether the outputs still demand more of `currency` than inputs supply.
+    pub fn still_needed(&self, currency: CurrencyId) -> bool {
         self.0
             .iter()
             .any(|(id, balance)| *id == currency && *balance > 0)
     }
 
-    pub(crate) fn shortfalls(&self) -> Vec<(CurrencyId, i128)> {
+    /// Currencies the inputs do not cover, and by how much.
+    pub fn shortfalls(&self) -> Vec<(CurrencyId, i128)> {
         self.0
             .iter()
             .filter(|(_, balance)| *balance > 0)
@@ -169,7 +178,7 @@ impl Balances {
     }
 
     /// Currencies with a surplus — these become change outputs, in order.
-    pub(crate) fn change(&self) -> Vec<(CurrencyId, u64)> {
+    pub fn change(&self) -> Vec<(CurrencyId, u64)> {
         self.0
             .iter()
             .filter(|(_, balance)| *balance < 0)
@@ -253,7 +262,7 @@ pub fn build_token_send(
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),
                         vout: utxo.vout,
-                        eval_code: crate::register::EVAL_IDENTITY_COMMITMENT,
+                        eval_code: verus_tx_primitives::cc::EVAL_IDENTITY_COMMITMENT,
                     })
                 }
                 // Neither belongs to whoever is signing. A reserve deposit is
@@ -265,7 +274,7 @@ pub fn build_token_send(
                     return Err(TxError::UnsupportedFundingEval {
                         txid: utxo.txid.to_display_hex(),
                         vout: utxo.vout,
-                        eval_code: crate::currency_launch::EVAL_RESERVE_DEPOSIT,
+                        eval_code: verus_tx_primitives::cc::EVAL_RESERVE_DEPOSIT,
                     })
                 }
                 OutputKind::ReserveTransfer { .. } => {
