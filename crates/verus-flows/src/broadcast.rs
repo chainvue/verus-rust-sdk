@@ -65,7 +65,12 @@ use crate::error::FlowError;
 /// `outcome` also carries them (as [`Sent`](crate::Sent) does) they are the
 /// same values: the id is computed from the bytes, and
 /// [`broadcast`] refuses a node that answers about a different transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Serializable whenever `T` is, and that is not decoration. Proving a shielded
+/// spend costs tens of seconds; a wallet that crashes between the proof and the
+/// broadcast should be able to pick up the bytes rather than pay for them
+/// again. It is also the only safe way to survive the one flow where losing the
+/// value costs money — see [`Unsent::broadcast`] on `Pending`'s salt.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Unsent<T> {
     /// The signed transaction, hex-encoded, ready to submit.
     pub hex: String,

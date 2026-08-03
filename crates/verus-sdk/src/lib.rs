@@ -241,10 +241,10 @@ pub mod network {
 /// off a [`light::ScanResult`] with `scan(..).balance(&spent)`, then
 /// [`light::plan_spend`] and [`light::prove_spend`].
 ///
-/// [`light::DetectedNote`] and the nullifiers alongside it are what a wallet
-/// persists between runs. **Neither carries a `serde` implementation yet** —
-/// see the `serde` feature's note in `Cargo.toml`. The fields are public, so
-/// persisting them is possible; it is just not done for you.
+/// [`light::ScanResult`] is what a wallet persists between runs — the notes and
+/// the nullifiers together, which is the pair [`light::ScanResult::unspent`]
+/// needs and the pair that is wrong in the dangerous direction if they are
+/// stored apart. Turn on the `serde` feature and it round-trips.
 #[cfg(feature = "light")]
 pub mod light {
     pub use verus_flows::shielded::{

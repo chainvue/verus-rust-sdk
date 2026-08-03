@@ -22,7 +22,7 @@ use crate::funding;
 /// from `hex` rather than one a node reported. [`broadcast`](fn@crate::broadcast)
 /// refuses a node that names a different transaction, which is what keeps the
 /// two the same value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sent {
     /// The transaction id, computed locally from `hex`.
     pub txid: String,

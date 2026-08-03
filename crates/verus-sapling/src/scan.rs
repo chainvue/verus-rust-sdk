@@ -52,7 +52,14 @@ pub struct CompactOutput {
 
 /// A detected note (an output that decrypted under the wallet's ivk), with
 /// everything a later spend or spent-check needs.
+///
+/// **This is the struct a wallet persists.** A scan is expensive and its result
+/// is not recoverable from a UTXO set — nothing on chain says which outputs are
+/// yours — so a wallet that forgets these rescans from its birthday on every
+/// launch. Behind the `serde` feature it round-trips; see
+/// [`serde_hex`](mod@crate::serde_hex) for how the byte fields are written.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DetectedNote {
     /// Block height the note was mined in.
     pub height: u64,
@@ -65,10 +72,12 @@ pub struct DetectedNote {
     /// Note value in zatoshi.
     pub value: u64,
     /// 43-byte Sapling payment address this note pays to (one of the wallet's).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_hex"))]
     pub recipient: [u8; 43],
     /// Note nullifier — matches this note's entry in a future spend's
     /// `vShieldedSpend`; a wallet marks the note spent when it sees this
     /// nullifier in a compact block.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_hex"))]
     pub nullifier: [u8; 32],
 }
 

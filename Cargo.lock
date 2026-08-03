@@ -2111,6 +2111,7 @@ dependencies = [
  "rand_core 0.6.4",
  "redjubjub",
  "sapling-crypto",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.19",

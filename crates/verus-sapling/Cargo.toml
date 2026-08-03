@@ -17,6 +17,10 @@ workspace = true
 # its keys should not compile bellman.
 default = []
 prover = ["sapling-crypto/circuit"]
+# Serialize the state a shielded wallet has to survive a restart with: the
+# notes a scan found and where they sit in the commitment tree. Off by default
+# so a consumer that does not persist anything does not carry serde.
+serde = ["dep:serde"]
 # Off on wasm32 (bellman's rayon backend does not build there); on by default
 # for native builds, where it is a large speedup.
 multicore = ["sapling-crypto/multicore"]
@@ -35,6 +39,7 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 serde_json = "1"

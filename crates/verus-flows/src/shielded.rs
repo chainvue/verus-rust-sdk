@@ -77,7 +77,15 @@ pub use spending::{
 const SCAN_CHUNK: u64 = 1_000;
 
 /// Everything one scan of a block range learned.
+///
+/// **Persist this.** A scan is expensive and its result cannot be recovered
+/// from a UTXO set — nothing on chain says which outputs are yours — so a
+/// wallet that keeps only a balance rescans from its birthday on every launch.
+/// Behind the `serde` feature the whole thing round-trips, notes and observed
+/// nullifiers together, which is the pair [`Self::unspent`] needs and the pair
+/// that is wrong in the dangerous direction if they are stored apart.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScanResult {
     /// Notes paid to this viewing key, with absolute tree positions.
     ///
@@ -88,6 +96,7 @@ pub struct ScanResult {
     /// A note is spent exactly when its nullifier appears here or in any earlier
     /// block, which is why a wallet must keep these across scans rather than
     /// only the notes.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex::vec"))]
     pub nullifiers: Vec<[u8; 32]>,
     /// First block scanned.
     pub from: u64,
@@ -95,6 +104,12 @@ pub struct ScanResult {
     pub to: u64,
     /// Hash of the last block scanned, so the next scan can prove it continues
     /// the same chain rather than a reorged one.
+    ///
+    /// Nothing consumes it yet — `scan` takes no prior hash — so until it does,
+    /// a wallet reloading a persisted result must compare this itself. After a
+    /// reorg below [`Self::to`], the positions in it are stale, and a witness
+    /// built from them fails only at the daemon.
+    #[cfg_attr(feature = "serde", serde(with = "verus_sapling::serde_hex"))]
     pub tip_hash: [u8; 32],
 }
 
