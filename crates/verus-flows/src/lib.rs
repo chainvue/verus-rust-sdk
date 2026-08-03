@@ -68,6 +68,12 @@
 //!   `idregistrationfees` is discovered *after* a name commitment has been
 //!   spent, so [`identity::Pending`] records the fee it read and
 //!   [`identity::RegistrationOptions::pin_fee`] lets a caller override it.
+//!   Neither of those tells you the fee is wrong. For that, wrap two readers in
+//!   [`verus_rpc::SecondSourced`] and let the disagreement surface before the
+//!   commitment is broadcast. It corroborates the identity reads too, which
+//!   matters for [`login`]: `verify_login` checks a signature against an
+//!   authority set **the node supplied**, so one lying node there is an
+//!   authentication bypass rather than a failed request.
 //! * A node **sees every address you ask about**. Nothing here changes that.
 
 #![doc(html_no_source)]

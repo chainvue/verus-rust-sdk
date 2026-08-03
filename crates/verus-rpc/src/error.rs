@@ -116,4 +116,26 @@ pub enum RpcError {
         "a broadcast cannot be made through a cassette — an operation being re-run must only read"
     )]
     WriteThroughCassette,
+
+    /// Two nodes gave different answers to a question where being lied to costs
+    /// money.
+    ///
+    /// Produced only by [`SecondSourced`](crate::SecondSourced), and only for
+    /// the questions it corroborates. Nothing has been spent when this is
+    /// returned — that is the entire point, because the failure it guards
+    /// against (a wrong `idregistrationfees`) is otherwise discovered *after* a
+    /// name commitment has been paid for.
+    ///
+    /// It says nothing about which node is right. Two nodes disagreeing means
+    /// at least one is wrong, and deciding which is the application's call —
+    /// ask a third, prefer your own node, or stop and tell the user.
+    #[error("{question}: sources disagree — {primary} vs {secondary}")]
+    SourcesDisagree {
+        /// The question that was asked, as a method and its argument.
+        question: String,
+        /// What the primary answered.
+        primary: String,
+        /// What the second source answered.
+        secondary: String,
+    },
 }
