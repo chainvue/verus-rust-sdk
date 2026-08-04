@@ -79,6 +79,32 @@ each says whether running it spends testnet coins.
 | `spend_note_online` | a shielded spend end to end, with the anchor checked against a second source before the prover runs |
 | `receive_online` | the receiving half: record a birthday, scan only what matters, show incoming payments with their memos |
 | `drive_async` | the non-blocking driver: `advance` in an async loop, each round's requests fetched concurrently |
+| `airgap_watch` + `airgap_sign` | a payment split across two machines: one sees the chain and cannot sign, the other holds the key and cannot reach a node |
+
+Two examples need neither funds nor a network, and run straight after a clone:
+
+| Example | Shows |
+|---|---|
+| `decode_tx` | what a transaction's outputs *are* — identities, tokens, conversions, commitments — and, where it cannot tell, whether the thing it cannot read is able to hold money |
+| `airgap_sign` | the offline half of the pair above, on its own: read a plan, check what it does, sign it |
+
+#### The air gap is a fact about the build, not a convention
+
+`airgap_watch` takes an address and calls
+[`prepare_unsigned_send`](./crates/verus-flows/src/send.rs), which has no
+parameter a key could go in. `airgap_sign` is compiled **without** the `network`
+feature and therefore links no HTTP client at all — `verus-rpc`'s
+`tests/offline_crates_stay_offline.rs` fails the build if that stops being true.
+Each half is missing the capability that would make it dangerous.
+
+What travels between them is a `PartialTransaction`: the transaction plus the
+prevout scripts and values, because the sighash commits to those and a signer
+told them over a separate channel could be told the wrong ones.
+
+The two paths build the same transaction — `crates/verus-flows/tests/airgap_send.rs`
+asserts the hex is equal byte for byte to what the one-machine `prepare_send`
+produces, since a fee differing by one satoshi is a different change output and
+therefore a different transaction.
 
 ### In a browser
 
