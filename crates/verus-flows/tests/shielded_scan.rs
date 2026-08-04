@@ -15,8 +15,10 @@ impl LightTransport for Replay {
             .0
             .iter()
             .find(|(method, _)| path.ends_with(method))
-            .map(|(_, body)| body.clone())
-            .unwrap_or_else(|| panic!("no canned response for {path}"));
+            .map_or_else(
+                || panic!("no canned response for {path}"),
+                |(_, body)| body.clone(),
+            );
         Ok(HttpResponse { status: None, body })
     }
 }

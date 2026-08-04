@@ -91,7 +91,7 @@ fn the_daemon_computes_the_same_txid_for_every_vector() {
         // duplicates the builder's logic in the one place that should be
         // checking it from outside.
         let recipients = vector["outputs"].as_array().expect("outputs").len();
-        let vouts = decoded["vout"].as_array().map(Vec::len).unwrap_or(0);
+        let vouts = decoded["vout"].as_array().map_or(0, Vec::len);
         assert!(
             vouts >= recipients,
             "{name}: {vouts} outputs for {recipients} recipients"

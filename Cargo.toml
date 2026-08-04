@@ -64,7 +64,11 @@ rand_core = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
+# `deny`, not `warn`. CI ran `-D warnings` so this was already fatal there, but
+# only there — a local `cargo build` printed it and carried on, which is how an
+# undocumented public item reaches a PR in the first place. Denying it makes
+# the local build agree with CI.
+missing_docs = "deny"
 
 [workspace.lints.clippy]
 # Money and consensus bytes: an unchecked conversion here is a fund-loss bug,
@@ -72,3 +76,88 @@ missing_docs = "warn"
 cast_possible_truncation = "deny"
 cast_sign_loss = "deny"
 cast_possible_wrap = "deny"
+
+# `pedantic` as a warning tier, minus four families that are noise here.
+#
+# The tier finds 1,712 things across this workspace. Four lints are 1,375 of
+# them — 80% — and each is wrong for this codebase for a specific reason, so
+# they are turned off deliberately rather than left to drown the ~340 findings
+# that are worth reading. Anything not listed below is on.
+pedantic = { level = "warn", priority = -1 }
+
+# 418 hits. Fires on ordinary prose: every bare identifier, product name and
+# RPC method in a doc comment wants backticks. The documentation here is
+# deliberately written as English explaining why, not as API reference, and
+# this lint would turn `sendcurrency` and `VRSCTEST` into markup on every
+# mention.
+doc_markdown = "allow"
+
+# 480 hits. A real point in principle — and `# Errors` sections were written
+# by hand for the functions where the failure modes are not obvious. Requiring
+# one on every `pub fn -> Result` produces "Errors: if it fails" boilerplate,
+# which is worse than nothing because it looks like documentation.
+missing_errors_doc = "allow"
+
+# 280 hits. `#[must_use]` earns its place on a builder whose result is easy to
+# drop. Applied to every getter it is annotation for its own sake, and it
+# would be on `Amount::to_sat`.
+must_use_candidate = "allow"
+
+# 197 hits. Wants `0x0000_1000` over `0x1000`. Many of these are consensus
+# constants, flag bits and hash prefixes whose grouping matches the source
+# they were transcribed from — regrouping them makes them harder to diff
+# against the thing that defines them.
+large_digit_groups = "allow"
+
+# 12 sites, every one of them audited: see the `expect` message at each. The
+# audit established that none of those panics is reachable, so writing a
+# `# Panics` section would tell a wallet author these functions can panic when
+# they cannot — worse than silence. Revisit if a genuinely fallible `expect`
+# ever appears in a public function; the lint would then be right.
+missing_panics_doc = "allow"
+
+# `unreadable_literal` for the same reason as `large_digit_groups`: these are
+# transcribed consensus values and eval codes, and they should read the way
+# the source they came from reads.
+unreadable_literal = "allow"
+
+# Style, not correctness. A long function is a smell, not a defect, and the
+# long ones here are serializers whose length is the wire format's — splitting
+# `CCurrencyDefinition` into six helpers would scatter a layout that is
+# checked field-by-field against captured daemon output.
+too_many_lines = "allow"
+items_after_statements = "allow"
+single_match_else = "allow"
+match_same_arms = "allow"
+match_wildcard_for_single_variants = "allow"
+similar_names = "allow"
+format_collect = "allow"
+
+# 76 hits, and DEFERRED rather than dismissed. `params.with_x(y);` as a
+# statement silently does nothing, which is a real bug class for the builder
+# types here. Annotating all 76 is a bigger change than it looks and belongs
+# in its own commit, not buried in a lint-tier one.
+return_self_not_must_use = "allow"
+
+# The last 26, allowed with reasons rather than edited. Each would be a
+# behaviour-adjacent change to code whose byte-identity is the correctness
+# gate, for a stylistic gain — the wrong trade this close to consensus bytes.
+#
+# `needless_pass_by_value` wants `&self`/`&T` on builder entry points that take
+# ownership deliberately, so a caller cannot keep using a spec after it is
+# consumed. `option_option` is `Option<Option<CurrencyId>>`, where the outer
+# is "was this field present" and the inner is "was it null" — a distinction
+# the daemon's JSON actually makes and flattening it would lose.
+# `default_trait_access`, `manual_let_else`, `unnecessary_wraps`,
+# `map_unwrap_or`, `assigning_clones`, `match_wild_err_arm` and
+# `decimal_bitwise_operands` are readability preferences that disagree with
+# how the surrounding code is written.
+needless_pass_by_value = "allow"
+option_option = "allow"
+default_trait_access = "allow"
+manual_let_else = "allow"
+unnecessary_wraps = "allow"
+map_unwrap_or = "allow"
+assigning_clones = "allow"
+match_wild_err_arm = "allow"
+decimal_bitwise_operands = "allow"

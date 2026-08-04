@@ -457,7 +457,7 @@ pub fn take_offer(key: &PrivateKey, params: &TakeParams<'_>) -> Result<Vec<u8>, 
     if !shortfalls.is_empty() {
         let missing = shortfalls
             .iter()
-            .map(|(currency, amount)| format!("{amount} of {}", currency))
+            .map(|(currency, amount)| format!("{amount} of {currency}"))
             .collect::<Vec<_>>()
             .join(", ");
         return Err(TxError::InvalidOffer(format!(

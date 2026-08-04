@@ -117,17 +117,14 @@ pub fn addresses(
     let mut next = Some(from);
     core::iter::from_fn(move || {
         let start = next?;
-        match find_address(dfvk, start) {
-            Ok(Some((index, address))) => {
-                // Step past the one just returned; stop at the end of the range
-                // rather than wrapping back to the start.
-                next = index.checked_add(1).filter(|n| *n <= MAX_DIVERSIFIER_INDEX);
-                Some((index, address))
-            }
-            _ => {
-                next = None;
-                None
-            }
+        if let Ok(Some((index, address))) = find_address(dfvk, start) {
+            // Step past the one just returned; stop at the end of the range
+            // rather than wrapping back to the start.
+            next = index.checked_add(1).filter(|n| *n <= MAX_DIVERSIFIER_INDEX);
+            Some((index, address))
+        } else {
+            next = None;
+            None
         }
     })
 }

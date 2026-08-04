@@ -99,11 +99,9 @@ fn no_wallet_method_name_appears_anywhere_in_the_crate() {
 /// and protects nothing.
 #[test]
 fn the_search_can_actually_find_a_method_name() {
-    let found = crate_sources().iter().any(|file| {
-        fs::read_to_string(file)
-            .map(|text| text.contains("sendrawtransaction"))
-            .unwrap_or(false)
-    });
+    let found = crate_sources()
+        .iter()
+        .any(|file| fs::read_to_string(file).is_ok_and(|text| text.contains("sendrawtransaction")));
     assert!(
         found,
         "the search found no method name at all, so it proves nothing"

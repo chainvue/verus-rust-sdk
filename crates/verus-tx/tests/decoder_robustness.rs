@@ -247,13 +247,12 @@ fn mutate(rng: &mut Rng, bytes: &[u8]) -> Vec<u8> {
 /// Run `f` and report the input that made it panic, so the failure is
 /// actionable rather than a bare backtrace.
 fn must_not_panic<T>(label: &str, input: &[u8], f: impl FnOnce() -> T) {
-    if catch_unwind(AssertUnwindSafe(f)).is_err() {
-        panic!(
-            "{label} panicked on {} bytes: {}",
-            input.len(),
-            hex::encode(input)
-        );
-    }
+    assert!(
+        catch_unwind(AssertUnwindSafe(f)).is_ok(),
+        "{label} panicked on {} bytes: {}",
+        input.len(),
+        hex::encode(input)
+    );
 }
 
 /// The harness must be able to fail.

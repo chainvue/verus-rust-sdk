@@ -256,12 +256,11 @@ fn expand_exponent(text: &str) -> Option<String> {
         format!("0.{}{digits}", "0".repeat(leading_zeros))
     } else {
         let point = usize::try_from(point).ok()?;
-        match point.checked_sub(digits.len()) {
-            Some(trailing_zeros) => format!("{digits}{}", "0".repeat(trailing_zeros)),
-            None => {
-                let (left, right) = digits.split_at(point);
-                format!("{left}.{right}")
-            }
+        if let Some(trailing_zeros) = point.checked_sub(digits.len()) {
+            format!("{digits}{}", "0".repeat(trailing_zeros))
+        } else {
+            let (left, right) = digits.split_at(point);
+            format!("{left}.{right}")
         }
     };
 

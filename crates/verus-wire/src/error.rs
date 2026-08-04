@@ -7,6 +7,10 @@ use thiserror::Error;
 /// Every variant is a refusal, never a guess: producing a plausible-but-wrong
 /// transaction is worse than returning an error.
 #[derive(Debug, Error, PartialEq, Eq)]
+/// `#[non_exhaustive]`: this enum gains a variant whenever the crate learns to
+/// refuse something new, which happens routinely. A downstream `match` carries
+/// a wildcard arm once rather than breaking on every such discovery.
+#[non_exhaustive]
 pub enum WireError {
     /// A shielded transaction was serialized without its binding signature.
     ///

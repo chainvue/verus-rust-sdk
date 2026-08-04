@@ -217,7 +217,7 @@ fn a_broadcast_that_returns_something_other_than_a_txid_is_refused() {
     ] {
         match client(reply).send_raw_transaction("00") {
             Err(RpcError::Unexpected(message)) => {
-                assert!(message.contains("32-byte hash"), "{message}")
+                assert!(message.contains("32-byte hash"), "{message}");
             }
             other => panic!("accepted {reply} as a txid: {other:?}"),
         }
@@ -299,7 +299,7 @@ fn a_duplicate_outpoint_is_refused_at_the_boundary() {
     ]}"#;
     match client(reply).address_utxos(&["R"]) {
         Err(RpcError::Unexpected(message)) => {
-            assert!(message.contains("more than once"), "{message}")
+            assert!(message.contains("more than once"), "{message}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

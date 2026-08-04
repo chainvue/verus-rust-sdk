@@ -4,6 +4,10 @@ use thiserror::Error;
 
 /// Something the key layer refuses to do.
 #[derive(Debug, Error, PartialEq, Eq)]
+/// `#[non_exhaustive]`: this enum gains a variant whenever the crate learns to
+/// refuse something new, which happens routinely. A downstream `match` carries
+/// a wildcard arm once rather than breaking on every such discovery.
+#[non_exhaustive]
 pub enum KeyError {
     /// The string is not valid base58check (bad characters, or a bad checksum).
     ///

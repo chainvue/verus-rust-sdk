@@ -660,7 +660,7 @@ fn absorbing_a_tail_whose_window_does_not_end_at_its_tip_is_refused() {
     };
     match wallet.absorb(inconsistent) {
         Err(FlowError::Shielded(text)) => {
-            assert!(text.contains("do not end at its own tip"), "{text}")
+            assert!(text.contains("do not end at its own tip"), "{text}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

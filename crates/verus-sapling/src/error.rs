@@ -5,6 +5,10 @@ use verus_wire::WireError;
 
 /// Something the shielded layer refuses to do, or could not do.
 #[derive(Debug, Error)]
+/// `#[non_exhaustive]`: this enum gains a variant whenever the crate learns to
+/// refuse something new, which happens routinely. A downstream `match` carries
+/// a wildcard arm once rather than breaking on every such discovery.
+#[non_exhaustive]
 pub enum SaplingError {
     /// A key blob that is not a valid extended spending key (169 bytes) or
     /// diversifiable full viewing key (128 bytes).
