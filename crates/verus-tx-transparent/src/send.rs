@@ -140,7 +140,46 @@ pub struct SignedTransaction {
     pub inputs_used: Vec<(Txid, u32)>,
 }
 
-/// Build and sign a transparent send.
+/// A transparent send with its coins chosen and its outputs placed, but
+/// nothing signed.
+///
+/// Every decision that costs money has already been made by the time this
+/// exists: which UTXOs are spent, what the fee is, whether change survives the
+/// dust rule, and where it goes. A signature adds no value and moves none — it
+/// only proves the spend was authorised.
+///
+/// Which is why it is worth having on its own. [`build_transparent_send`] takes
+/// a key and therefore has to run wherever the key is; producing this does not,
+/// so a machine that can see the chain can plan a payment it has no power to
+/// make and hand the plan to a machine that never goes online. See
+/// `verus_flows::prepare_unsigned_send` and the `airgap_watch` / `airgap_sign`
+/// examples for that pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TransparentPlan {
+    /// The UTXOs to spend, in input order.
+    pub selected: Vec<Utxo>,
+    /// The outputs: the recipients in the caller's order, then change if any.
+    pub outputs: Vec<TxOut>,
+    /// The fee, including any change too small to keep.
+    pub fee: Amount,
+    /// Change returned, or zero when it would have been dust.
+    pub change: Amount,
+    /// When the transaction stops being minable.
+    pub expiry: Expiry,
+    /// nLockTime — always zero for a send. Carried so that nothing downstream
+    /// has to hardcode a consensus field it did not choose.
+    pub lock_time: u32,
+}
+
+/// Choose coins and place outputs for a transparent send, without signing.
+///
+/// This is [`build_transparent_send`] up to the point where a key is needed:
+/// the same coin selection, the same fee, the same output order, the same
+/// conservation check. The signing path calls this one, so the two cannot drift
+/// into planning different transactions — which matters, because a difference
+/// of one satoshi in the fee is a different change output and therefore a
+/// different transaction entirely.
 ///
 /// # Scope
 ///
@@ -152,13 +191,9 @@ pub struct SignedTransaction {
 ///
 /// # Determinism
 ///
-/// No randomness is involved: coin selection is ordered and signing is RFC6979.
-/// The same inputs always produce the same bytes, which is what allows this to
-/// be tested byte-for-byte against the TypeScript SDK.
-pub fn build_transparent_send(
-    key: &PrivateKey,
-    params: &SendParams<'_>,
-) -> Result<SignedTransaction, TxError> {
+/// No randomness is involved: coin selection is ordered by value, stably. The
+/// same UTXO set and the same request always produce the same plan.
+pub fn plan_transparent_send(params: &SendParams<'_>) -> Result<TransparentPlan, TxError> {
     if params.recipients.is_empty() {
         return Err(TxError::NoOutputs);
     }
@@ -222,23 +257,12 @@ pub fn build_transparent_send(
         });
     }
 
-    let mut tx = TxV4 {
-        inputs: selection
-            .selected
-            .iter()
-            .map(|utxo| TxIn::unsigned(utxo.txid.to_internal(), utxo.vout, 0xffff_ffff))
-            .collect(),
-        outputs,
-        lock_time: 0,
-        expiry_height: params.expiry.to_height(),
-        ..TxV4::default()
-    };
-
-    // Exact-integer conservation, checked before signing. This is the real
-    // backstop: the JavaScript fork's equivalent truncates input values modulo
-    // 2^32 and is blind above ~42.9 coins.
+    // Exact-integer conservation, checked before anything is signed or handed
+    // to a co-signer. This is the real backstop: the JavaScript fork's
+    // equivalent truncates input values modulo 2^32 and is blind above ~42.9
+    // coins.
     let inputs_total: u64 = selection.selected.iter().map(|u| u.satoshis.to_sat()).sum();
-    let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    let outputs_total: u64 = outputs.iter().map(|o| o.value).sum();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
     if actual != i128::from(selection.fee) {
         return Err(TxError::ValueNotConserved {
@@ -249,15 +273,54 @@ pub fn build_transparent_send(
         });
     }
 
-    sign_p2pkh_inputs(&mut tx, key, &selection.selected)?;
+    Ok(TransparentPlan {
+        selected: selection.selected,
+        outputs,
+        fee: Amount::from_sat(selection.fee),
+        change: Amount::from_sat(selection.change),
+        expiry: params.expiry,
+        lock_time: 0,
+    })
+}
+
+/// Build and sign a transparent send.
+///
+/// Coin selection, the fee and the outputs come from
+/// [`plan_transparent_send`] — see there for what is and is not supported.
+/// This adds the one thing that needs a key.
+///
+/// # Determinism
+///
+/// No randomness is involved: coin selection is ordered and signing is RFC6979.
+/// The same inputs always produce the same bytes, which is what allows this to
+/// be tested byte-for-byte against the TypeScript SDK.
+pub fn build_transparent_send(
+    key: &PrivateKey,
+    params: &SendParams<'_>,
+) -> Result<SignedTransaction, TxError> {
+    let plan = plan_transparent_send(params)?;
+
+    let mut tx = TxV4 {
+        inputs: plan
+            .selected
+            .iter()
+            .map(|utxo| TxIn::unsigned(utxo.txid.to_internal(), utxo.vout, 0xffff_ffff))
+            .collect(),
+        outputs: plan.outputs,
+        lock_time: plan.lock_time,
+        expiry_height: plan.expiry.to_height(),
+        ..TxV4::default()
+    };
+
+    sign_p2pkh_inputs(&mut tx, key, &plan.selected)?;
 
     let raw = tx.serialize()?;
     Ok(SignedTransaction {
         hex: hex::encode(&raw),
         txid: txid_display(&tx.txid()?),
-        fee: Amount::from_sat(selection.fee),
-        change: Amount::from_sat(selection.change),
-        inputs_used: selection
+        fee: plan.fee,
+        change: plan.change,
+        inputs_used: plan
             .selected
             .iter()
             .map(|utxo| (utxo.txid, utxo.vout))

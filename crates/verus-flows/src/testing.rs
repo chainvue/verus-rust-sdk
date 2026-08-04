@@ -326,9 +326,33 @@ impl ScriptedReader {
     }
 }
 
-/// `OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG`, with the hash
-/// derived from the address text so different addresses differ.
+/// `OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG` paying `address`.
+///
+/// # Why this decodes the address rather than hashing its text
+///
+/// It used to fill the 20 bytes with the address string repeated, which is a
+/// syntactically valid P2PKH script paying **nobody** — the funding it handed
+/// out did not belong to the address it was filed under.
+///
+/// That went unnoticed because `sign_p2pkh_inputs` signs whatever prevout it is
+/// given without asking whose it is; only the transaction it produces is
+/// unspendable, and a scripted chain never checks one. The first caller that
+/// did ask — `PartialTransaction::sign`, which signs an input only when the key
+/// actually owns it — signed nothing, and looked broken.
+///
+/// A test double that hands out coins nobody can spend cannot tell a signing
+/// path that checks ownership from one that is broken, so it now pays the real
+/// address whenever the string is one.
+///
+/// Names that are not addresses — `"R1"` and friends, used where the identity
+/// of the holder is beside the point — keep the old filler. They still cannot
+/// be spent, but nothing claims they can.
 fn p2pkh_script(address: &str) -> Vec<u8> {
+    if let Ok(parsed) = address.parse::<verus_keys::Address>() {
+        if let Ok(script) = parsed.p2pkh_script_pubkey() {
+            return script;
+        }
+    }
     let mut script = vec![0x76, 0xa9, 0x14];
     let bytes = address.as_bytes();
     for i in 0..20 {

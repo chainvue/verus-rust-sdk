@@ -7,8 +7,9 @@
 use verus_keys::{Address, PrivateKey};
 use verus_rpc::{Broadcaster, ChainReader};
 use verus_tx::{
-    build_token_send, build_transparent_send, Amount, CurrencyId, Expiry, Recipient, SendParams,
-    SignedTransaction, TokenRecipient, TokenSendParams, DEFAULT_EXPIRY_BLOCKS,
+    build_token_send, build_transparent_send, plan_transparent_send, Amount, CurrencyId, Expiry,
+    InputKind, PartialTransaction, Recipient, SendParams, SignedTransaction, TokenRecipient,
+    TokenSendParams, DEFAULT_EXPIRY_BLOCKS,
 };
 
 use crate::broadcast::Unsent;
@@ -115,6 +116,67 @@ pub fn prepare_send(
         Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
     );
     Ok(build_transparent_send(key, &params)?.into())
+}
+
+/// Build a payment for someone **else** to sign.
+///
+/// Takes an address rather than a key, so it can run on a machine that holds no
+/// key at all — a watch-only wallet, or the online half of an air-gapped pair.
+/// The result is a [`PartialTransaction`], which serializes with
+/// [`PartialTransaction::to_bytes`] and can be carried to the signer over any
+/// channel, including one that is read off a screen.
+///
+/// The coins, the fee, the change and the output order come from
+/// [`plan_transparent_send`], the same function [`prepare_send`] goes through.
+/// Signing the result and finalizing it produces the identical transaction —
+/// `tests/airgap_send.rs` asserts the two hex strings are equal byte for byte,
+/// because "almost the same transaction" is a different transaction.
+///
+/// # What the signer still has to check
+///
+/// Everything. Whoever built this chose the outputs, and a signature is the one
+/// irreversible step — see [`PartialTransaction::summary`] and the module docs
+/// on [`verus_tx::partial`](mod@verus_tx::partial). This function's caller is
+/// not necessarily trusted by its signer; that is the whole point of splitting
+/// them.
+///
+/// # Errors
+///
+/// [`FlowError::InsufficientFunds`] counts only what is spendable *now*, the
+/// same as [`prepare_send`]. Nothing here can fail because of a missing key,
+/// because no key is involved.
+pub fn prepare_unsigned_send(
+    reader: &impl ChainReader,
+    from: &Address,
+    to: &str,
+    amount: Amount,
+) -> Result<PartialTransaction, FlowError> {
+    let to: Address = to.parse()?;
+    let funding = funding::spendable(reader, &from.to_string())?;
+    funding::require(&funding, amount, &from.to_string())?;
+
+    let recipients = [Recipient {
+        address: to,
+        satoshis: amount,
+    }];
+    let params = SendParams::new(
+        &funding.utxos,
+        &recipients,
+        *from,
+        Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
+    );
+    let plan = plan_transparent_send(&params)?;
+
+    // Every input is P2PKH: `plan_transparent_send` refuses any funding UTXO
+    // that is not, so this is a fact rather than an assumption.
+    let kinds = vec![InputKind::PubKeyHash; plan.selected.len()];
+    Ok(PartialTransaction::start(
+        &plan.selected,
+        &kinds,
+        plan.outputs,
+        plan.expiry,
+        plan.lock_time,
+    )?)
 }
 
 /// Pay from funds a VerusID holds.

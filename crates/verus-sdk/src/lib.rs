@@ -72,11 +72,15 @@ pub mod money {
 }
 
 /// Sending value: native coins and tokens.
+///
+/// [`send::plan_transparent_send`] is the same payment with the signing left
+/// out — the half a watch-only wallet can do, and what makes an air-gapped
+/// signer possible without a second implementation of the fee rules.
 #[cfg(feature = "transparent")]
 pub mod send {
     pub use verus_tx::{
-        build_token_send, build_transparent_send, CurrencyId, Recipient, SendParams,
-        SignedTransaction, TokenRecipient, TokenSendParams,
+        build_token_send, build_transparent_send, plan_transparent_send, CurrencyId, Recipient,
+        SendParams, SignedTransaction, TokenRecipient, TokenSendParams, TransparentPlan,
     };
 }
 
@@ -218,12 +222,12 @@ pub mod network {
         inspect, key_address, launch_currency, mint, native_currency, plan_conversion,
         prepare_burn, prepare_conversion, prepare_launch, prepare_mint, prepare_publish,
         prepare_registration, prepare_registration_with_salt, prepare_send,
-        prepare_send_from_identity, prepare_send_token, prepare_take, publish, read, read_all,
-        read_history, send, send_from_identity, send_token, sign_login, spendable, take,
-        token_balances, verify_login, AwaitingCommitment, CommitmentStatus, ConversionPlan, Demand,
-        FlowError, Funding, HistoryEntry, Launched, Listing, LoggedIn, LoginPolicy, LoginRequest,
-        Namespace, OfferTerms, Pending, Published, ReadyToRegister, Registered,
-        RegistrationOptions, Sent, Taken, Taking, TokenBalances, Unsent, WaitPolicy,
+        prepare_send_from_identity, prepare_send_token, prepare_take, prepare_unsigned_send,
+        publish, read, read_all, read_history, send, send_from_identity, send_token, sign_login,
+        spendable, take, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
+        ConversionPlan, Demand, FlowError, Funding, HistoryEntry, Launched, Listing, LoggedIn,
+        LoginPolicy, LoginRequest, Namespace, OfferTerms, Pending, Published, ReadyToRegister,
+        Registered, RegistrationOptions, Sent, Taken, Taking, TokenBalances, Unsent, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,

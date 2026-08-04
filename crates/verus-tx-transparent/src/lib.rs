@@ -18,5 +18,6 @@ pub mod assemble;
 mod send;
 
 pub use send::{
-    build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
+    build_transparent_send, plan_transparent_send, sign_p2pkh_inputs, Recipient, SendParams,
+    SignedTransaction, TransparentPlan,
 };
