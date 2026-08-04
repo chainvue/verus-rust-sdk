@@ -1,0 +1,31 @@
+{
+  "step": 2,
+  "wif": "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc",
+  "name": "rustsdkdemo",
+  "parent": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  "salt": "cea4d61210a989e50d06eb071c2523f4b9d22337625abc2c9f556a55908a5736",
+  "commitment": {
+    "txid": "30f73360b7484874696bf1da3d4592a147e6548a4ba2edf83e0d20f88d1d3a88",
+    "vout": 0,
+    "satoshis": 0,
+    "script_pubkey": "1a040300010114aabfb6281561808fe200ab7e186f0e3e0e82b381cc3b040311010114aabfb6281561808fe200ab7e186f0e3e0e82b381207862702908497ed60dae3847ae101e6ee04772084540f5cd1293eacc0844043275"
+  },
+  "utxos": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "vout": 0,
+      "satoshis": 15000000000000,
+      "script_pubkey": "76a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac"
+    }
+  ],
+  "primary_addresses": [
+    "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX"
+  ],
+  "min_sigs": 1,
+  "system_id": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  "revocation_authority": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  "recovery_authority": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  "registration_fee": 10000000000,
+  "change_address": "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+  "expiry_height": 0
+}

@@ -1,0 +1,20 @@
+{
+  "wif": "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc",
+  "expiry_height": 0,
+  "fee": 30000,
+  "utxos": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "vout": 0,
+      "satoshis": 100000000,
+      "script_pubkey": "76a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac"
+    }
+  ],
+  "shielded": [
+    {
+      "address": "zs14egstusyhxhuza3c9lrqvuv546tlhskn7qjltj784tup5xr0rk8s05zcawhpwumhgxejz9cg257",
+      "satoshis": 99970000,
+      "memo": "hello from verus-rust-sdk"
+    }
+  ]
+}

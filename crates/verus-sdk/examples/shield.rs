@@ -116,7 +116,7 @@ fn main() -> Result<(), Error> {
         });
     }
 
-    let dir = spec["params_dir"].as_str().ok_or("spec.params_dir")?;
+    let dir = params_dir(&spec)?;
     eprintln!("loading Sapling parameters from {dir} …");
     let params = SaplingParams::from_files(
         format!("{dir}/sapling-spend.params"),
@@ -158,4 +158,21 @@ fn main() -> Result<(), Error> {
         })
     );
     Ok(())
+}
+
+/// Where the ~50 MB of Sapling parameters live.
+///
+/// `params_dir` in the spec, or `VERUS_SAPLING_PARAMS` in the environment. The
+/// environment variable exists so a spec file can be checked in and shared:
+/// the path to the parameters is a property of the machine, not of the
+/// transaction being built.
+fn params_dir(spec: &Value) -> Result<String, Error> {
+    if let Some(dir) = spec["params_dir"].as_str() {
+        return Ok(dir.to_string());
+    }
+    std::env::var("VERUS_SAPLING_PARAMS").map_err(|_| {
+        "no Sapling parameters: set \"params_dir\" in the spec, or \
+         VERUS_SAPLING_PARAMS in the environment"
+            .into()
+    })
 }
