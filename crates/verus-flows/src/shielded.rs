@@ -626,7 +626,8 @@ fn scan_following<T: LightTransport>(
                     outputs.push(CompactOutput {
                         height: block.height,
                         tx_index: tx.index,
-                        output_index: u64::try_from(index).expect("an index fits in u64"),
+                        output_index: u64::try_from(index)
+                            .expect("a usize index fits in u64 on every target this builds for"),
                         cmu: out.cmu,
                         epk: out.epk,
                         ciphertext: out.ciphertext,
@@ -638,7 +639,9 @@ fn scan_following<T: LightTransport>(
         // The server's counter must agree with the count we are about to assume.
         if let Some(last) = blocks.last() {
             if let Some(reported) = last.tree_size {
-                let expected = parsed + u64::try_from(outputs.len()).expect("a count fits in u64");
+                let expected = parsed
+                    + u64::try_from(outputs.len())
+                        .expect("a usize count fits in u64 on every target this builds for");
                 if reported != expected {
                     return Err(FlowError::Shielded(format!(
                         "after blocks {chunk_start}..={chunk_end} the tree should hold {expected} \
@@ -776,7 +779,8 @@ pub fn witness_note<T: LightTransport>(
             note.position,
             note.height,
             base,
-            base + u64::try_from(block_cmus.len()).expect("a count fits in u64")
+            base + u64::try_from(block_cmus.len())
+                .expect("a usize count fits in u64 on every target this builds for")
         )));
     };
 
@@ -1058,7 +1062,9 @@ fn parse_full_output(bytes: &[u8]) -> Result<FullOutput, FlowError> {
         )));
     }
     let array = |from: usize, to: usize| -> [u8; 32] {
-        bytes[from..to].try_into().expect("a 32 byte window")
+        bytes[from..to]
+            .try_into()
+            .expect("every call below asks for a 32-wide window inside the LEN checked above")
     };
     Ok(FullOutput {
         cv: array(0, 32),

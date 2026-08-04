@@ -132,7 +132,7 @@ pub(crate) fn decode_body(body: &[u8]) -> Result<Body<'_>, LightError> {
         let len = u32::from_be_bytes(
             body[offset + 1..offset + 5]
                 .try_into()
-                .expect("a four byte window"),
+                .expect("the slice above was checked to hold at least four bytes"),
         );
         let len = usize::try_from(len).map_err(|_| {
             LightError::Framing("frame length does not fit in this platform".into())

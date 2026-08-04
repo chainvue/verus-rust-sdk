@@ -150,7 +150,10 @@ mod blocking {
                 .take(self.max_response.saturating_add(1))
                 .read_to_end(&mut body)
                 .map_err(|e| LightError::Transport(format!("reading the response body: {e}")))?;
-            if u64::try_from(body.len()).expect("a body length fits in u64") > self.max_response {
+            if u64::try_from(body.len())
+                .expect("a usize length fits in u64 on every target this builds for")
+                > self.max_response
+            {
                 return Err(LightError::Transport(format!(
                     "response exceeds the {} byte cap; ask for a smaller block range",
                     self.max_response

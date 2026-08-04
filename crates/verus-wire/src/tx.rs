@@ -457,22 +457,32 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32, WireError> {
         Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("took four bytes"),
+            self.take(4)?
+                .try_into()
+                .expect("take(4) returns four bytes or errors"),
         ))
     }
 
     fn u64(&mut self) -> Result<u64, WireError> {
         Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().expect("took eight bytes"),
+            self.take(8)?
+                .try_into()
+                .expect("take(8) returns eight bytes or errors"),
         ))
     }
 
     fn array32(&mut self) -> Result<[u8; 32], WireError> {
-        Ok(self.take(32)?.try_into().expect("took 32 bytes"))
+        Ok(self
+            .take(32)?
+            .try_into()
+            .expect("take(32) returns 32 bytes or errors"))
     }
 
     fn array64(&mut self) -> Result<[u8; 64], WireError> {
-        Ok(self.take(64)?.try_into().expect("took 64 bytes"))
+        Ok(self
+            .take(64)?
+            .try_into()
+            .expect("take(64) returns 64 bytes or errors"))
     }
 
     /// A compact size, refusing the non-canonical encodings.
@@ -485,7 +495,9 @@ impl<'a> Reader<'a> {
         let value = match first {
             0xfd => {
                 let n = u64::from(u16::from_le_bytes(
-                    self.take(2)?.try_into().expect("two bytes"),
+                    self.take(2)?
+                        .try_into()
+                        .expect("take(2) returns two bytes or errors"),
                 ));
                 if n < 0xfd {
                     return Err(WireError::NonCanonicalCompactSize);
@@ -494,7 +506,9 @@ impl<'a> Reader<'a> {
             }
             0xfe => {
                 let n = u64::from(u32::from_le_bytes(
-                    self.take(4)?.try_into().expect("four bytes"),
+                    self.take(4)?
+                        .try_into()
+                        .expect("take(4) returns four bytes or errors"),
                 ));
                 if n <= u64::from(u16::MAX) {
                     return Err(WireError::NonCanonicalCompactSize);
@@ -502,7 +516,11 @@ impl<'a> Reader<'a> {
                 n
             }
             0xff => {
-                let n = u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes"));
+                let n = u64::from_le_bytes(
+                    self.take(8)?
+                        .try_into()
+                        .expect("take(8) returns eight bytes or errors"),
+                );
                 if n <= u64::from(u32::MAX) {
                     return Err(WireError::NonCanonicalCompactSize);
                 }

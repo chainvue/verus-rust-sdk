@@ -310,7 +310,7 @@ pub fn build_shielded_spend(
         spec.fee,
     )?;
 
-    let anchor = anchor.expect("checked non-empty above");
+    let anchor = anchor.expect("`spec.notes` was refused above if empty, and it sets `anchor`");
     // Outputs are keyed to the first note's outgoing viewing key, which is what
     // lets that wallet recover its own sends. Notes from different accounts in
     // one transaction would need a choice this API does not offer.
