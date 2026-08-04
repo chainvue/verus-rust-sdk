@@ -45,6 +45,9 @@ ripemd = "0.1"
 bs58 = { version = "0.5", features = ["check"] }
 zeroize = { version = "1", features = ["derive"] }
 indexmap = "2"
+# Benchmarks. `html_reports` off: the value here is the committed baseline
+# numbers, not a directory of generated plots nobody looks at.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 # BIP-39's PBKDF2-HMAC-SHA512, for turning a recovery phrase into the seed the
 # shielded path derives from. RustCrypto; with default features off it pulls in
 # `hmac` and nothing else, and `digest`/`sha2` are already here. Taken as a
