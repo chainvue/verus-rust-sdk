@@ -174,21 +174,20 @@ pub fn prepare_launch(
     // The launch fee is chain policy, read from the parent currency. Zero
     // means the parent's definition carries none — refusing beats building a
     // transaction the daemon rejects with an unrelated-looking message.
-    let launch_fee = match pin_launch_fee {
-        Some(fee) => fee,
-        None => {
-            let parent = verus_keys::Address::new(
-                verus_keys::AddressKind::Identity,
-                definition.parent.to_bytes(),
-            )
-            .to_string();
-            let reported = reader.currency(&parent)?.currency_registration_fee;
-            // H4: node-supplied and BURNED outright — see
-            // `check_trusted_node_fee`. A caller who pins the fee explicitly
-            // has taken responsibility for it, so it skips this bar and is
-            // checked against `MAX_DECLARED_BURN` instead, later at assembly.
-            check_trusted_node_fee("currency launch", reported)?
-        }
+    let launch_fee = if let Some(fee) = pin_launch_fee {
+        fee
+    } else {
+        let parent = verus_keys::Address::new(
+            verus_keys::AddressKind::Identity,
+            definition.parent.to_bytes(),
+        )
+        .to_string();
+        let reported = reader.currency(&parent)?.currency_registration_fee;
+        // H4: node-supplied and BURNED outright — see
+        // `check_trusted_node_fee`. A caller who pins the fee explicitly
+        // has taken responsibility for it, so it skips this bar and is
+        // checked against `MAX_DECLARED_BURN` instead, later at assembly.
+        check_trusted_node_fee("currency launch", reported)?
     };
     if launch_fee == Amount::ZERO {
         return Err(FlowError::NotReady(

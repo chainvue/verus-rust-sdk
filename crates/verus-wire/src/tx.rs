@@ -199,8 +199,8 @@ impl TxV4 {
             inputs.push(TxIn {
                 txid_internal,
                 vout,
-                script_sig,
                 sequence,
+                script_sig,
             });
         }
 
@@ -402,7 +402,7 @@ impl TxV4 {
         let output_descriptions: Vec<&[u8]> = self
             .shielded_outputs
             .iter()
-            .map(|output| output.as_slice())
+            .map(std::vec::Vec::as_slice)
             .collect();
         let hash_shielded_outputs =
             hash_descriptions(SHIELDED_OUTPUTS_PERSONAL, &output_descriptions);
@@ -510,7 +510,7 @@ impl<'a> Reader<'a> {
                         .try_into()
                         .expect("take(4) returns four bytes or errors"),
                 ));
-                if n <= u64::from(u16::MAX) {
+                if u16::try_from(n).is_ok() {
                     return Err(WireError::NonCanonicalCompactSize);
                 }
                 n
@@ -521,7 +521,7 @@ impl<'a> Reader<'a> {
                         .try_into()
                         .expect("take(8) returns eight bytes or errors"),
                 );
-                if n <= u64::from(u32::MAX) {
+                if u32::try_from(n).is_ok() {
                     return Err(WireError::NonCanonicalCompactSize);
                 }
                 n

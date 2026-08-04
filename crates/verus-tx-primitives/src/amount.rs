@@ -79,7 +79,7 @@ impl Amount {
     pub fn checked_sum(amounts: impl IntoIterator<Item = Amount>) -> Option<Amount> {
         amounts
             .into_iter()
-            .try_fold(Amount::ZERO, |total, next| total.checked_add(next))
+            .try_fold(Amount::ZERO, Amount::checked_add)
     }
 
     /// Parse a decimal coin string — `"1.5"`, `"0.00000001"`, `"100"` — exactly.

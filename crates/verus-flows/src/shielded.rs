@@ -669,10 +669,10 @@ fn scan_following<T: LightTransport>(
     Ok(ScanResult {
         notes,
         nullifiers,
-        checkpoints,
         from,
         to,
         tip_hash,
+        checkpoints,
     })
 }
 

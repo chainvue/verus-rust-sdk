@@ -209,8 +209,7 @@ impl PublicKey {
     /// strip it before calling.
     pub fn verify_der(&self, hash: &[u8; 32], signature: &[u8]) -> bool {
         Signature::from_der(signature)
-            .map(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
-            .unwrap_or(false)
+            .is_ok_and(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
     }
 
     /// Whether `signature` is a valid compact `r || s` signature over `hash`.
@@ -221,8 +220,7 @@ impl PublicKey {
             return false;
         };
         Signature::from_slice(&bytes)
-            .map(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
-            .unwrap_or(false)
+            .is_ok_and(|signature| self.verifying_key.verify_prehash(hash, &signature).is_ok())
     }
 
     /// Recover the public key that produced a 65-byte recoverable signature.

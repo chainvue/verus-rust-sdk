@@ -85,7 +85,7 @@ mod blocking {
             Self::check_scheme(&base)?;
             let agent = ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(10))
-                .timeout(Duration::from_secs(120))
+                .timeout(Duration::from_mins(2))
                 .build();
             Ok(Self {
                 agent,

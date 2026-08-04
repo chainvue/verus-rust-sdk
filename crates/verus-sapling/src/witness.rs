@@ -75,14 +75,14 @@ impl NoteWitness {
         let mut tree = crate::scan::commitment_tree(tree_before_block)?;
         for cmu in block_cmus.iter().take(my_cmu_index + 1) {
             tree.append(node(cmu)?)
-                .map_err(|_| SaplingError::Witness("commitment tree is full".into()))?;
+                .map_err(|()| SaplingError::Witness("commitment tree is full".into()))?;
         }
         let mut inner = IncrementalWitness::from_tree(tree)
             .ok_or_else(|| SaplingError::Witness("no note commitment to witness".into()))?;
         for cmu in block_cmus.iter().skip(my_cmu_index + 1) {
             inner
                 .append(node(cmu)?)
-                .map_err(|_| SaplingError::Witness("witness is full".into()))?;
+                .map_err(|()| SaplingError::Witness("witness is full".into()))?;
         }
         Ok(Self {
             inner,
@@ -110,7 +110,7 @@ impl NoteWitness {
         for cmu in cmus {
             self.inner
                 .append(node(cmu)?)
-                .map_err(|_| SaplingError::Witness("witness is full".into()))?;
+                .map_err(|()| SaplingError::Witness("witness is full".into()))?;
         }
         self.height = height;
         Ok(())
