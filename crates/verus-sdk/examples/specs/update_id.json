@@ -1,0 +1,22 @@
+{
+  "wif": "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc",
+  "identity_output": {
+    "txid": "a0fda74eb2f2a8a75ad723546d6dfb4be560ba33174ea8b465ab01b1a765180d",
+    "vout": 0,
+    "satoshis": 0,
+    "script_pubkey": "47040300010315048aea15d7df6220cf095e326d7481267b3935d2451504a6ef9ea235635e328124ff3429db9f9e91b64e2d1504a6ef9ea235635e328124ff3429db9f9e91b64e2dcc4cda04030e010115048aea15d7df6220cf095e326d7481267b3935d2454c8503000000000000000114aabfb6281561808fe200ab7e186f0e3e0e82b38101000000a6ef9ea235635e328124ff3429db9f9e91b64e2d0b7275737473646b64656d6f0000a6ef9ea235635e328124ff3429db9f9e91b64e2da6ef9ea235635e328124ff3429db9f9e91b64e2d00a6ef9ea235635e328124ff3429db9f9e91b64e2d000000001b04030f01011504a6ef9ea235635e328124ff3429db9f9e91b64e2d1b04031001011504a6ef9ea235635e328124ff3429db9f9e91b64e2d75"
+  },
+  "utxos": [
+    {
+      "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "vout": 1,
+      "satoshis": 100000000,
+      "script_pubkey": "76a914aabfb6281561808fe200ab7e186f0e3e0e82b38188ac"
+    }
+  ],
+  "change_address": "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+  "expiry_height": 0,
+  "set_content_map": {
+    "0102030405060708090a0b0c0d0e0f1011121314": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+  }
+}
