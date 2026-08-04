@@ -115,8 +115,8 @@ pub use launch::{launch_currency, prepare_launch, Launched};
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use offer::{browse, inspect, prepare_take, take, Demand, Listing, OfferTerms, Taken, Taking};
 pub use send::{
-    prepare_send, prepare_send_from_identity, prepare_send_token, send, send_from_identity,
-    send_token, Sent,
+    prepare_send, prepare_send_from_identity, prepare_send_token, prepare_unsigned_send, send,
+    send_from_identity, send_token, Sent,
 };
 pub use vdxf::{
     key_address, prepare_publish, publish, read, read_all, read_history, Namespace, Published,

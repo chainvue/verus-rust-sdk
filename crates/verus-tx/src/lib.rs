@@ -110,5 +110,6 @@ pub use verus_tx_protocol::{
     FLAG_TOKENIZED_CONTROL, RESERVE_TRANSFER_ADDRESS,
 };
 pub use verus_tx_transparent::{
-    build_transparent_send, sign_p2pkh_inputs, Recipient, SendParams, SignedTransaction,
+    build_transparent_send, plan_transparent_send, sign_p2pkh_inputs, Recipient, SendParams,
+    SignedTransaction, TransparentPlan,
 };

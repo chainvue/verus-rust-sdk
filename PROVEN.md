@@ -19,6 +19,19 @@ Verify any row on the [testnet explorer](https://testex.verus.io) or with
 | Facade acceptance — one dependency line, connect → balance → send | `4d061de95f2ef669dd6789efee9cc3a904d60ea12a4eb00d695247225f0bf8a8` | 1168821 |
 | **Spend from a VerusID** — fulfillment-signed, change back to the identity | `9b23824a9b93439f540bf188a0078f73ba58b252d4f00e4d5538c579b3e85519` | 1168907 |
 | **2-of-2 multisig spend from a VerusID** — two keys in one fulfillment per input | `894b995b3e2ec0c2a9ad81595c8ee5e220922a6906ce1f2724efc62a5beb61d7` | 1168966 |
+| **Air-gapped send** — planned by a process holding no key, signed by one that links no HTTP client | `570c9e724c724136002e95df22dd67c851594221425654f71575c9fa8bd51f20` | 1176357 |
+
+The last row is the one where the *absence* of a capability is the claim. The
+transaction was planned by `examples/airgap_watch`, which takes an address and
+therefore has no parameter a private key could go in; it was signed by
+`examples/airgap_sign`, compiled without the `network` feature and so carrying
+no HTTP client in its dependency tree at all — the two halves exchanged 163
+bytes and nothing else. Neither is missing its dangerous half by discipline.
+
+That it produces the *same* transaction as the one-machine path is not
+established by this row but by `crates/verus-flows/tests/airgap_send.rs`, which
+asserts byte equality against `prepare_send`. The chain can only say that what
+arrived was valid.
 
 ## VerusID lifecycle
 

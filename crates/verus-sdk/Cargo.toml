@@ -173,3 +173,20 @@ required-features = ["transparent"]
 [[example]]
 name = "revoke_id"
 required-features = ["transparent"]
+
+# Reading rather than building. Offline, and it needs neither funds nor a key,
+# which makes it the one that runs straight after a clone.
+[[example]]
+name = "decode_tx"
+required-features = ["transparent"]
+
+# The air-gapped pair. `airgap_sign` deliberately does NOT take `network`: it is
+# the half that holds the key, and it must not be able to reach a node even by
+# accident. `tests/offline_crates_stay_offline.rs` is what keeps that true.
+[[example]]
+name = "airgap_watch"
+required-features = ["network"]
+
+[[example]]
+name = "airgap_sign"
+required-features = ["transparent"]
