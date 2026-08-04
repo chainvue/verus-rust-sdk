@@ -71,10 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Expiry::within(tip, 200),
         ),
     )?;
-    println!(
-        "offer signed: give {} VRSCTEST, want {} VRSCTEST back",
-        give, want
-    );
+    println!("offer signed: give {give} VRSCTEST, want {want} VRSCTEST back");
     println!("offer hex (hand this to a taker):\n{}", offer.hex);
     Ok(())
 }

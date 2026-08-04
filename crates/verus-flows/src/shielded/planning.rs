@@ -442,7 +442,7 @@ mod tests {
     /// than was asked for, which is the one outcome worse than an error.
     #[test]
     fn too_many_notes_is_refused_rather_than_cut_short() {
-        let notes: Vec<DetectedNote> = (0..MAX_SPEND_NOTES + 1)
+        let notes: Vec<DetectedNote> = (0..=MAX_SPEND_NOTES)
             .map(|i| note(10, u64::try_from(i).expect("a position")))
             .collect();
         let needed = 10 * u64::try_from(notes.len()).expect("a count");

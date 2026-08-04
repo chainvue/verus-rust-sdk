@@ -132,7 +132,7 @@ fn an_absent_currency_registration_fee_is_zero() {
                 r#"{"result":{"currencyid":"i","name":"X","idregistrationfees":1.0,
                    "idreferrallevels":0,"idimportfees":0.0}}"#
                     .replace('\n', "")
-                    .to_string(),
+                    .clone(),
             )
         }
     }
@@ -609,7 +609,7 @@ fn reads_a_fee_rate_written_as_an_exponent() {
     );
 
     let fee = client("estimatefee").estimate_fee(1).unwrap();
-    assert_eq!(fee.map(|f| f.to_sat()), Some(100));
+    assert_eq!(fee.map(verus_tx::Amount::to_sat), Some(100));
 }
 
 /// A node that will not estimate answers a **negative** number, which is not a

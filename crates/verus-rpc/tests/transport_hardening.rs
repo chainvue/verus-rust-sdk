@@ -122,7 +122,7 @@ fn userinfo_embedded_in_a_url_still_authenticates() {
     let _ = client.chain_info();
 
     let request = rx
-        .recv_timeout(Duration::from_millis(2_000))
+        .recv_timeout(Duration::from_secs(2))
         .expect("the node was contacted");
     // base64("user:hunter2")
     let expected = "Basic dXNlcjpodW50ZXIy";
@@ -195,7 +195,7 @@ fn a_redirect_to_another_host_is_never_followed() {
     let _ = client.chain_info();
 
     assert!(
-        rx.recv_timeout(Duration::from_millis(1_000)).is_err(),
+        rx.recv_timeout(Duration::from_secs(1)).is_err(),
         "the redirect to the second host was followed"
     );
 }

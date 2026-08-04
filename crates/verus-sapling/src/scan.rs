@@ -227,7 +227,7 @@ pub(crate) fn commitment_tree(state: &TreeStateBefore) -> Result<CommitmentTree,
         .map(|p| p.map(node).transpose())
         .collect::<Result<Vec<Option<Node>>, SaplingError>>()?;
     CommitmentTree::from_parts(left, right, parents)
-        .map_err(|_| SaplingError::InvalidTreeState("tree parents too deep".into()))
+        .map_err(|()| SaplingError::InvalidTreeState("tree parents too deep".into()))
 }
 
 /// Trial-decrypt `outputs` (in global chain order, contiguous from the block
@@ -496,14 +496,14 @@ pub(crate) fn build_witness(
     let mut tree = commitment_tree(tree_before_block)?;
     for cmu in block_cmus.iter().take(my_cmu_index + 1) {
         tree.append(node(*cmu)?)
-            .map_err(|_| SaplingError::Witness("commitment tree is full".into()))?;
+            .map_err(|()| SaplingError::Witness("commitment tree is full".into()))?;
     }
     let mut incremental = sapling_crypto::IncrementalWitness::from_tree(tree)
         .ok_or_else(|| SaplingError::Witness("no note commitment to witness".into()))?;
     for cmu in block_cmus.iter().skip(my_cmu_index + 1) {
         incremental
             .append(node(*cmu)?)
-            .map_err(|_| SaplingError::Witness("witness is full".into()))?;
+            .map_err(|()| SaplingError::Witness("witness is full".into()))?;
     }
     let root = incremental.root();
     let path = incremental

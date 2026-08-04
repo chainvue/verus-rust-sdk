@@ -81,7 +81,7 @@ fn narrow<T: TryFrom<u64>>(value: Option<&serde_json::Value>) -> T {
 }
 
 fn fee(value: Option<&serde_json::Value>) -> u64 {
-    value.map(sats).unwrap_or(0)
+    value.map_or(0, sats)
 }
 
 /// Build a definition from the daemon's own JSON description of it.
@@ -116,10 +116,7 @@ fn from_daemon_json(definition: &serde_json::Value) -> CurrencyDefinition {
         proof_protocol: narrow(definition.get("proofprotocol")),
         start_block: integer(definition.get("startblock")),
         end_block: integer(definition.get("endblock")),
-        initial_supply: definition
-            .get("initialsupply")
-            .map(coins)
-            .unwrap_or(Amount::ZERO),
+        initial_supply: definition.get("initialsupply").map_or(Amount::ZERO, coins),
         preallocations,
         gateway_converter_issuance: Amount::ZERO,
         currencies: currencies(definition.get("currencies")),

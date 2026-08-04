@@ -73,6 +73,10 @@ const ITERATIONS: u32 = 2048;
 /// place key material should end up — it goes to logs, to crash reporters and
 /// to screenshots — so a bad word is reported by position only.
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
+/// `#[non_exhaustive]`: this enum gains a variant whenever the crate learns to
+/// refuse something new, which happens routinely. A downstream `match` carries
+/// a wildcard arm once rather than breaking on every such discovery.
+#[non_exhaustive]
 pub enum MnemonicError {
     /// Not one of BIP-39's word counts (12, 15, 18, 21 or 24).
     ///
