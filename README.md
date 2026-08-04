@@ -67,6 +67,10 @@ Each online example in [`crates/verus-sdk/examples/`](./crates/verus-sdk/example
 is a complete operation meant to be copied as a starting point. The header of
 each says whether running it spends testnet coins.
 
+**[→ the examples index](./crates/verus-sdk/examples/README.md)** — all 24, grouped
+by what they cost you: offline and free, read-only, or spends. Plus the feature
+flags, every environment variable, and a sixty-second path from a clone.
+
 | Example | Shows |
 |---|---|
 | `wallet_balance` | spendable vs immature vs token-bearing outputs |
