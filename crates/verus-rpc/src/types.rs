@@ -870,7 +870,9 @@ pub(crate) fn converter_from_entry(
             )
         })?
         .clone();
-    let definition = object.remove(&converter_id).expect("just found by key");
+    let definition = object
+        .remove(&converter_id)
+        .expect("the key came from `find` over this same map, unmodified since");
 
     if definition.get("currencyid").and_then(|v| v.as_str()) != Some(converter_id.as_str()) {
         return Err(RpcError::Unexpected(format!(

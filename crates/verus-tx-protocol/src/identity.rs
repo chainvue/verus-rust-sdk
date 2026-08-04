@@ -416,7 +416,7 @@ impl Identity {
             let value: [u8; 32] = reader
                 .take(32)?
                 .try_into()
-                .expect("take returned the requested length");
+                .expect("Reader::take returns exactly the length asked for, or errors");
             content_map.push((key, value));
         }
 
@@ -430,7 +430,7 @@ impl Identity {
                 reader
                     .take(43)?
                     .try_into()
-                    .expect("take returned the requested length"),
+                    .expect("Reader::take returns exactly the length asked for, or errors"),
             );
         }
 
@@ -496,12 +496,17 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32, TxError> {
         Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
+            self.take(4)?
+                .try_into()
+                .expect("take(4) returns four bytes or errors"),
         ))
     }
 
     fn array20(&mut self) -> Result<[u8; 20], TxError> {
-        Ok(self.take(20)?.try_into().expect("twenty bytes"))
+        Ok(self
+            .take(20)?
+            .try_into()
+            .expect("take(20) returns twenty bytes or errors"))
     }
 
     /// CompactSize — the count encoding, NOT the `uint32` used for scalars.
@@ -510,12 +515,20 @@ impl<'a> Reader<'a> {
         let value = match first {
             0..=0xfc => u64::from(first),
             0xfd => u64::from(u16::from_le_bytes(
-                self.take(2)?.try_into().expect("two bytes"),
+                self.take(2)?
+                    .try_into()
+                    .expect("take(2) returns two bytes or errors"),
             )),
             0xfe => u64::from(u32::from_le_bytes(
-                self.take(4)?.try_into().expect("four bytes"),
+                self.take(4)?
+                    .try_into()
+                    .expect("take(4) returns four bytes or errors"),
             )),
-            _ => u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")),
+            _ => u64::from_le_bytes(
+                self.take(8)?
+                    .try_into()
+                    .expect("take(8) returns eight bytes or errors"),
+            ),
         };
         // A count can never exceed what is left to read, so a huge one is
         // corruption — and allocating for it first would be a denial of service.
@@ -538,14 +551,22 @@ impl<'a> Reader<'a> {
 /// CompactSize — matches [`Reader::compact_size`].
 fn write_compact_size(out: &mut Vec<u8>, value: usize) {
     match value {
-        0..=0xfc => out.push(u8::try_from(value).expect("checked above")),
+        0..=0xfc => out.push(u8::try_from(value).expect("the match arm bounds this to 0xfc")),
         0xfd..=0xffff => {
             out.push(0xfd);
-            out.extend_from_slice(&u16::try_from(value).expect("checked above").to_le_bytes());
+            out.extend_from_slice(
+                &u16::try_from(value)
+                    .expect("the match arm bounds this to 0xffff")
+                    .to_le_bytes(),
+            );
         }
         0x1_0000..=0xffff_ffff => {
             out.push(0xfe);
-            out.extend_from_slice(&u32::try_from(value).expect("checked above").to_le_bytes());
+            out.extend_from_slice(
+                &u32::try_from(value)
+                    .expect("the match arm bounds this to 0xffff_ffff")
+                    .to_le_bytes(),
+            );
         }
         _ => {
             out.push(0xff);

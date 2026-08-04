@@ -99,10 +99,10 @@ const TOKEN_OUTPUT_VERSION_SINGLE: u64 = 1;
 /// script, so a different output, so a different transaction.
 fn push_data(script: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TxError> {
     match bytes.len() {
-        0..=75 => script.push(u8::try_from(bytes.len()).expect("checked above")),
+        0..=75 => script.push(u8::try_from(bytes.len()).expect("the match arm bounds this to 75")),
         76..=255 => {
             script.push(OP_PUSHDATA1);
-            script.push(u8::try_from(bytes.len()).expect("checked above"));
+            script.push(u8::try_from(bytes.len()).expect("the match arm bounds this to 255"));
         }
         // An identity carrying any content outgrows OP_PUSHDATA1 immediately —
         // a single content-map entry puts the params chunk at 266 bytes. The
@@ -111,7 +111,7 @@ fn push_data(script: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TxError> {
             script.push(OP_PUSHDATA2);
             script.extend_from_slice(
                 &u16::try_from(bytes.len())
-                    .expect("checked above")
+                    .expect("the match arm bounds this to 65535")
                     .to_le_bytes(),
             );
         }
@@ -197,11 +197,15 @@ impl Destination {
     pub fn from_push(bytes: &[u8]) -> Result<Self, TxError> {
         match bytes.len() {
             20 => Ok(Destination::PubKeyHash(
-                bytes.try_into().expect("checked length"),
+                bytes
+                    .try_into()
+                    .expect("the match arm requires exactly 20 bytes"),
             )),
             33 | 65 => Ok(Destination::PubKey(bytes.to_vec())),
             21 => {
-                let hash: [u8; 20] = bytes[1..].try_into().expect("checked length");
+                let hash: [u8; 20] = bytes[1..]
+                    .try_into()
+                    .expect("a 21-byte push, less its one type byte, is 20");
                 match bytes[0] {
                     DEST_TYPE_SCRIPT_HASH => Ok(Destination::ScriptHash(hash)),
                     DEST_TYPE_IDENTITY => Ok(Destination::Identity(hash)),
@@ -405,7 +409,9 @@ pub fn fulfillment_script_sig(
 /// exists, so this refuses rather than writing an encoding nothing has tested.
 fn compact_size(value: usize) -> Result<Vec<u8>, TxError> {
     match value {
-        0..=252 => Ok(vec![u8::try_from(value).expect("checked above")]),
+        0..=252 => Ok(vec![
+            u8::try_from(value).expect("the match arm bounds this to 252")
+        ]),
         other => Err(TxError::CcPayloadTooLarge(other)),
     }
 }

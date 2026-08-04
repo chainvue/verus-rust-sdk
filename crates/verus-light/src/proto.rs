@@ -226,7 +226,8 @@ pub(crate) fn put_bytes_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
     put_tag(out, field, WIRE_BYTES);
     put_varint(
         out,
-        u64::try_from(value.len()).expect("a slice length fits in u64"),
+        u64::try_from(value.len())
+            .expect("a usize length fits in u64 on every target this builds for"),
     );
     out.extend_from_slice(value);
 }

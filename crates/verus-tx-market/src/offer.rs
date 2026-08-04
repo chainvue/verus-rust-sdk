@@ -557,7 +557,7 @@ fn push_data(script: &mut Vec<u8>, data: &[u8]) -> Result<(), TxError> {
             "a scriptSig element is unexpectedly large".into(),
         ));
     }
-    script.push(u8::try_from(data.len()).expect("checked"));
+    script.push(u8::try_from(data.len()).expect("refused above unless the length is below 0x4c"));
     script.extend_from_slice(data);
     Ok(())
 }

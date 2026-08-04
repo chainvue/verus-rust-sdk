@@ -256,7 +256,10 @@ impl TransferDestination {
                 .get(*offset..*offset + 8)
                 .ok_or_else(|| bad("a gateway leg ended before its fees"))?;
             *offset += 8;
-            let fees = i64::from_le_bytes(raw.try_into().expect("slice is 8 bytes"));
+            let fees = i64::from_le_bytes(
+                raw.try_into()
+                    .expect("the range above asked for exactly 8 bytes"),
+            );
             // `CAmount` is signed; a negative fee is not something this crate
             // can report honestly, and it is not something a valid transfer
             // contains.
@@ -342,7 +345,8 @@ fn read_currency(bytes: &[u8], offset: &mut usize) -> Result<CurrencyId, TxError
         .ok_or_else(|| bad("a payload ended before a currency id"))?;
     *offset += 20;
     Ok(CurrencyId::from_bytes(
-        raw.try_into().expect("slice is 20 bytes"),
+        raw.try_into()
+            .expect("the range above asked for exactly 20 bytes"),
     ))
 }
 

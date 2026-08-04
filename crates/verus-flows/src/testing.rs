@@ -99,7 +99,8 @@ impl ScriptedReader {
         satoshis: u64,
         script_pubkey: Vec<u8>,
     ) -> Self {
-        let index = u32::try_from(self.utxos.borrow().len()).expect("few utxos");
+        let index = u32::try_from(self.utxos.borrow().len())
+            .expect("a test double never accumulates four billion UTXOs");
         let mut txid = [0u8; 32];
         // Deliberately wrapping: these bytes are an identifier, not a value.
         // Byte 1 carries the height so `is_coinbase` can be answered without a
@@ -135,7 +136,7 @@ impl ScriptedReader {
             verus_tx::CurrencyId::from_bytes([0x22; 20]),
             1_000_000,
         )
-        .expect("reserve script");
+        .expect("constant inputs: a 20-byte destination, a 20-byte currency, a fixed amount");
         self.with_script_utxo(address, height, 0, script)
     }
 

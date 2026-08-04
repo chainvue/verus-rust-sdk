@@ -174,14 +174,20 @@ pub fn multisig_script_sig(
 fn push(script: &mut Vec<u8>, data: &[u8]) -> Result<(), TxError> {
     match data.len() {
         0 => script.push(OP_0),
-        length if length < 0x4c => script.push(u8::try_from(length).expect("checked")),
+        length if length < 0x4c => {
+            script.push(u8::try_from(length).expect("the guard bounds this below 0x4c"));
+        }
         length if length <= 0xff => {
             script.push(0x4c);
-            script.push(u8::try_from(length).expect("checked"));
+            script.push(u8::try_from(length).expect("the guard bounds this to 0xff"));
         }
         length if length <= 0xffff => {
             script.push(0x4d);
-            script.extend_from_slice(&u16::try_from(length).expect("checked").to_le_bytes());
+            script.extend_from_slice(
+                &u16::try_from(length)
+                    .expect("the guard bounds this to 0xffff")
+                    .to_le_bytes(),
+            );
         }
         length => {
             return Err(TxError::InvalidMultisig(format!(
@@ -200,7 +206,7 @@ fn small_int(n: usize) -> Result<u8, TxError> {
             "{n} is not encodable as a small integer opcode"
         )));
     }
-    Ok(OP_1 + u8::try_from(n - 1).expect("checked above"))
+    Ok(OP_1 + u8::try_from(n - 1).expect("refused above unless 1 <= n <= MAX_MULTISIG_KEYS"))
 }
 
 #[cfg(test)]

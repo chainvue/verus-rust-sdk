@@ -668,13 +668,17 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32, TxError> {
         Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
+            self.take(4)?
+                .try_into()
+                .expect("take(4) returns four bytes or errors"),
         ))
     }
 
     fn u64(&mut self) -> Result<u64, TxError> {
         Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().expect("eight bytes"),
+            self.take(8)?
+                .try_into()
+                .expect("take(8) returns eight bytes or errors"),
         ))
     }
 
@@ -683,7 +687,9 @@ impl<'a> Reader<'a> {
         let value = match first {
             0..=0xfc => u64::from(first),
             0xfd => u64::from(u16::from_le_bytes(
-                self.take(2)?.try_into().expect("two bytes"),
+                self.take(2)?
+                    .try_into()
+                    .expect("take(2) returns two bytes or errors"),
             )),
             0xfe => u64::from(self.u32()?),
             _ => self.u64()?,

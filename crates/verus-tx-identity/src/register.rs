@@ -228,10 +228,14 @@ impl NameReservation {
 /// CompactSize, as used for vector lengths (not the `VARINT` in [`verus_tx_primitives::cc`]).
 fn write_compact_size(out: &mut Vec<u8>, value: usize) {
     match value {
-        0..=252 => out.push(u8::try_from(value).expect("checked above")),
+        0..=252 => out.push(u8::try_from(value).expect("the match arm bounds this to 252")),
         253..=0xffff => {
             out.push(0xfd);
-            out.extend_from_slice(&u16::try_from(value).expect("checked above").to_le_bytes());
+            out.extend_from_slice(
+                &u16::try_from(value)
+                    .expect("the match arm bounds this to 0xffff")
+                    .to_le_bytes(),
+            );
         }
         // Names are capped at 64 bytes by `validate_name`, so nothing this crate
         // writes reaches even the two-byte form; the wider arms exist so the
@@ -240,7 +244,7 @@ fn write_compact_size(out: &mut Vec<u8>, value: usize) {
             out.push(0xfe);
             out.extend_from_slice(
                 &u32::try_from(value)
-                    .expect("a CompactSize above u32::MAX is unreachable here")
+                    .expect("every caller passes a length bounded by validated input, far below u32::MAX")
                     .to_le_bytes(),
             );
         }

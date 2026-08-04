@@ -194,7 +194,7 @@ impl TreeReader<'_> {
                     .get(self.offset..end)
                     .ok_or_else(|| SaplingError::InvalidTreeState("node ended early".into()))?
                     .try_into()
-                    .expect("slice is 32 bytes");
+                    .expect("the range above asked for exactly 32 bytes");
                 self.offset = end;
                 Ok(Some(node))
             }

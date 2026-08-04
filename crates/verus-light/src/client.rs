@@ -142,7 +142,8 @@ impl<T: LightTransport> LightClient<T> {
         // and a gap here would be indistinguishable from "no notes in those
         // blocks" everywhere downstream.
         for (offset, block) in blocks.iter().enumerate() {
-            let offset = u64::try_from(offset).expect("an index fits in u64");
+            let offset = u64::try_from(offset)
+                .expect("a usize index fits in u64 on every target this builds for");
             // `count` is bounded by `MAX_BLOCK_RANGE` for what this client
             // *asked* for, but a hostile server can stream back more messages
             // than it was asked for, so `offset` here is not actually bounded

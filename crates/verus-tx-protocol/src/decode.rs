@@ -326,7 +326,8 @@ fn read_currency_at(payload: &[u8], offset: &mut usize) -> Result<CurrencyId, Tx
         .ok_or_else(|| malformed("a payload ended before a currency id"))?;
     *offset += 20;
     Ok(CurrencyId::from_bytes(
-        raw.try_into().expect("slice is 20 bytes"),
+        raw.try_into()
+            .expect("the range above asked for exactly 20 bytes"),
     ))
 }
 
@@ -436,11 +437,11 @@ fn read_currency_value_map(
     for _ in 0..entries {
         let currency: [u8; 20] = payload[*offset..*offset + 20]
             .try_into()
-            .expect("slice is 20 bytes");
+            .expect("the range above asked for exactly 20 bytes");
         let amount = i64::from_le_bytes(
             payload[*offset + 20..*offset + ENTRY]
                 .try_into()
-                .expect("slice is 8 bytes"),
+                .expect("the range above asked for exactly 8 bytes"),
         );
         *offset += ENTRY;
         // `CAmount` is signed and this crate's `Amount` is not. A negative
@@ -498,7 +499,7 @@ pub(crate) fn parse_token_output_at(
         .get(*offset..*offset + 20)
         .ok_or_else(|| malformed("TokenOutput ended before its currency id"))?
         .try_into()
-        .expect("slice is 20 bytes");
+        .expect("the range above asked for exactly 20 bytes");
     *offset += 20;
     let amount = read_var_int(payload, offset)?;
     Ok(vec![(CurrencyId::from_bytes(currency), amount)])
@@ -649,7 +650,7 @@ pub fn decode_output_script(script: &[u8]) -> Result<OutputKind, TxError> {
             .get(..32)
             .ok_or_else(|| malformed("a name commitment is shorter than its hash"))?
             .try_into()
-            .expect("slice is 32 bytes");
+            .expect("the range above asked for exactly 32 bytes");
         // The hash's own first twenty bytes decide whether a token output
         // follows it. Anything else trailing the hash is a payload this
         // decoder has no rule for, and reading it as a `CTokenOutput` anyway

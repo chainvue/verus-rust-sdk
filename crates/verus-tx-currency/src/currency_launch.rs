@@ -259,7 +259,7 @@ fn serialize_currency_state(
     for weight in &state_weights {
         let price = if fractional && initial_supply.to_sat() > 0 && *weight > 0 {
             let denominator = u128::from(initial_supply.to_sat())
-                * u128::try_from(*weight).expect("a positive weight");
+                * u128::try_from(*weight).expect("the `*weight > 0` guard above");
             let price = SATOSHIDEN * SATOSHIDEN * SATOSHIDEN / denominator;
             i64::try_from(price).map_err(|_| TxError::ValueOverflow)?
         } else {
@@ -348,10 +348,11 @@ fn identity_change_script(identity: [u8; 20]) -> Vec<u8> {
     params.extend_from_slice(&identity);
 
     let mut script = Vec::new();
-    script.push(u8::try_from(master.len()).expect("five bytes"));
+    script
+        .push(u8::try_from(master.len()).expect("`master` is built here and is always five bytes"));
     script.extend_from_slice(&master);
     script.push(0xcc); // OP_CHECKCRYPTOCONDITION
-    script.push(u8::try_from(params.len()).expect("under 76 bytes"));
+    script.push(u8::try_from(params.len()).expect("`params` is built here and is always 27 bytes"));
     script.extend_from_slice(&params);
     script.push(0x75); // OP_DROP
     script
