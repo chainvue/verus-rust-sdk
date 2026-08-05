@@ -83,12 +83,21 @@ fn the_unlock_floor_is_measured_from_the_transactions_expiry() {
     let client = client();
 
     // --- precondition ---
+    //
+    // "Unlocked" is not the same as `Timelock::None`. A countdown that has
+    // elapsed leaves `unlock_after` set to a height in the past forever, unless
+    // somebody clears it — which is exactly the state this test leaves behind.
+    // Demanding `None` here would make it run once and fail on every re-run,
+    // against an identity that is perfectly fine to use.
+    let tip = client.block_count().expect("tip");
     let before = current_identity(&client, &name).expect("the identity");
-    assert_eq!(
-        before.identity.timelock(),
-        Timelock::None,
-        "this test needs an unlocked identity to start from"
-    );
+    match before.identity.timelock() {
+        Timelock::None => {}
+        Timelock::UntilBlock(height) if height <= tip => {
+            eprintln!("  an elapsed countdown to {height} is left over; that is still unlocked");
+        }
+        other => panic!("this test needs an unlocked identity to start from, found {other:?}"),
+    }
 
     // --- lock it ---
     eprintln!("locking {name} with a delay of {DELAY}");
