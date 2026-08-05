@@ -50,6 +50,7 @@ arrived was valid.
 | `flows::register`, custom primaries + `minsigs 2` → `rustms1168959@` | `7ed0224c98f4986f9e9c1a475e10f93d645f32785239efb2c2f5e7db449cbb7c` | 1168963 |
 | `flows::vdxf::publish` — application data under a derived VDXF key → `vdxf1171008.VRSCTEST@` | `715d698bad6129ff35114786676c4f851eea345bd0685bf3611ce0c595a34083` | 1171012 |
 | **…and a second key published without erasing the first** | `adfdc3235ea2618b96d11f8a54edde8b71448ac9a55439fbedc6c4427e965551` | 1171013 |
+| **Recovery authority moved off self**, signed only by the identity's own primary keys → `vdxf1171008.VRSCTEST@` | `e3994443922e3a2e01e42b5a830ac48314d3fae60d4cb8c3859db2a4b8f9058a` | 1177036 |
 
 The second of those two is the row that matters. An identity update
 republishes the identity **in full**, so the update writing the second key had
@@ -64,6 +65,28 @@ value published across a height range rather than reporting current state, so
 an application reading back its own data would have seen every revision it had
 ever written, concatenated. The identity now holds one value under that key and
 reports four in its history, and both views are asserted.
+
+The last row settles who may change an authority, which the docs had wrong in
+both directions at once. `vdxf1171008.VRSCTEST@` was its own revocation *and*
+recovery authority, and its own primary keys moved recovery to `VRSCTEST@` in an
+ordinary update — so an authority is **not** frozen at registration. The same
+run then tried to move it back with the same keys and consensus refused, so it
+is **not** freely editable either. Both halves come from one test,
+`live_authority`, and the second costs nothing because a rejected transaction is
+never mined.
+
+Worth knowing what the refusal looks like, because it names nothing:
+
+```text
+-26: 16: mandatory-script-verify-flag-failed
+(Script evaluated without error but finished with a false/empty top stack element)
+```
+
+Not `Unauthorized modification of recovery information`. The condition that was
+not satisfied is invisible in the reply, so a caller who guesses wrong about
+which authority they hold gets a script failure and no hint. That is the reason
+`UpdateParams::allow_authority_change` refuses by default rather than letting
+consensus be the first thing to say no.
 
 VerusID **login** (message signing) is also proven live, in both directions
 against the daemon's `signmessage`/`verifymessage` — but a signature is not a
