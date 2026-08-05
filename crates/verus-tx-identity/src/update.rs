@@ -36,7 +36,7 @@
 //! `ValidateIdentityRevoke` and `ValidateIdentityRecover` in VerusCoin's
 //! `src/pbaas/identity.cpp`, read at `master` on 2026-08-05:
 //!
-//! | changing | needs the … condition satisfied | refusal |
+//! | changing | needs the … condition satisfied | refusal, as consensus names it internally |
 //! |---|---|---|
 //! | `primary_addresses`, `min_sigs` | primary | `Unauthorized identity modification` |
 //! | `revocation_authority` | revocation | `Unauthorized modification of revocation information` |
@@ -55,11 +55,19 @@
 //!   cannot be taken back by the identity. That is the direction with no undo,
 //!   and the reason [`UpdateParams::allow_authority_change`] is off by default.
 //!
-//! What this crate has *not* proven is that the fulfillment it builds satisfies
-//! the revocation and recovery conditions in the self-authority case. Nothing
-//! in the workspace broadcasts an authority-changing update; `allow_authority_change`
-//! gates the builder, not consensus. Treat the first one as an experiment on
-//! testnet.
+//! Both halves are proven on VRSCTEST rather than argued from the source above.
+//! `vdxf1171008.VRSCTEST@`, its own recovery authority since registration, moved
+//! that authority to `VRSCTEST@` with nothing but its own primary keys at block
+//! 1177036 (`e3994443922e3a2e01e42b5a830ac48314d3fae60d4cb8c3859db2a4b8f9058a`).
+//! The same run then tried to move it back with the same keys and was refused.
+//! See `crates/verus-flows/tests/live_authority.rs`.
+//!
+//! The refusal names nothing — `mandatory-script-verify-flag-failed`, the
+//! generic "a script finished false". Consensus does not report *which*
+//! condition went unsatisfied, so a caller who is wrong about which authority
+//! they hold learns only that something failed. That is why
+//! [`UpdateParams::allow_authority_change`] refuses by default instead of
+//! letting the daemon be the first thing to say no.
 //!
 //! Both thresholds are proven on VRSCTEST: `rustsdk@` (`1-of-1`) updated at
 //! block 1166566, and `rustmulti@` (`2-of-2`) at block 1166732 with both
