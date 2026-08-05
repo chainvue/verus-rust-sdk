@@ -601,7 +601,8 @@ pub fn prepare_identity_recovery(
 ///
 /// [`FlowError::Content`] if the identity is not locked with a delay — an
 /// identity already counting down has nothing to start, and an unlocked one has
-/// nothing to do.
+/// nothing to do. A countdown the chain has already passed counts as unlocked,
+/// not as counting down, however stale the height it left behind.
 pub fn prepare_identity_unlock(
     reader: &impl ChainReader,
     funding_key: &PrivateKey,
@@ -627,12 +628,17 @@ pub fn prepare_identity_unlock(
     }
     let delay = match held.identity.timelock() {
         Timelock::DelayAfterUnlock(delay) => delay,
-        Timelock::UntilBlock(height) => {
+        Timelock::UntilBlock(height) if height > funding.tip => {
             return Err(FlowError::Content(format!(
                 "{identity} is already counting down to block {height}; there is nothing to start"
             )))
         }
-        Timelock::None => return Err(FlowError::Content(format!("{identity} is not locked"))),
+        // An elapsed countdown leaves its height behind forever. The identity is
+        // unlocked, not counting down, and saying otherwise sends the caller
+        // looking for a clock that stopped.
+        Timelock::UntilBlock(_) | Timelock::None => {
+            return Err(FlowError::Content(format!("{identity} is not locked")))
+        }
     };
 
     let expiry = Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS);
@@ -1208,6 +1214,67 @@ mod tests {
         let err = prepare_identity_unlock(&reader, &key, &[&key], "app@", 0)
             .expect_err("nothing to unlock");
         assert!(format!("{err}").contains("not locked"), "{err}");
+    }
+
+    /// An identity past its unlock height is an ordinary identity.
+    ///
+    /// Nothing clears `unlock_after` when a countdown elapses, so the stale
+    /// height is republished by every later update — and until 2026-08-05 the
+    /// timelock check read that carried-through value as a countdown being set
+    /// and refused the update outright. Consensus does not: `IsInvalidMutation`
+    /// gates the whole rule on `newIdentity.IsLocked(height)`, false here.
+    ///
+    /// The bug made the resting state of every previously-unlocked identity
+    /// permanently unupdatable, whatever the update was about.
+    #[test]
+    fn an_elapsed_countdown_does_not_block_an_unrelated_update() {
+        let key = test_key();
+        let mut identity = populated(&key, 0);
+        // Set while the chain was at 1_170_500-ish; the reader's tip is 1_170_800.
+        Timelock::UntilBlock(1_170_500).apply_to(&mut identity);
+        let reader = reader_for(&key, &identity);
+
+        let unsent = prepare_identity_update(
+            &reader,
+            &key,
+            &[&key],
+            "app@",
+            &IdentityChange::new().with_content_map(vec![([0xcc; 20], [0x22; 32])]),
+        )
+        .expect("a stale unlock height must not block an unrelated change");
+
+        let after = republished(&unsent.hex);
+        assert_eq!(
+            after.timelock(),
+            Timelock::UntilBlock(1_170_500),
+            "the stale height is carried through untouched, as every unnamed field is"
+        );
+        assert_eq!(
+            after.content_map,
+            vec![([0xcc; 20], [0x22; 32])],
+            "and the change the caller actually asked for is applied"
+        );
+    }
+
+    /// The same state, reported honestly by the unlock flow.
+    ///
+    /// "already counting down to block n" is false once the chain passes n, and
+    /// it is the message a wallet surfaces. The identity is unlocked.
+    #[test]
+    fn an_elapsed_countdown_reads_as_unlocked_not_as_counting_down() {
+        let key = test_key();
+        let mut identity = populated(&key, 0);
+        Timelock::UntilBlock(1_170_500).apply_to(&mut identity);
+        let reader = reader_for(&key, &identity);
+
+        let err = prepare_identity_unlock(&reader, &key, &[&key], "app@", 0)
+            .expect_err("an elapsed countdown leaves nothing to start");
+        let message = format!("{err}");
+        assert!(message.contains("not locked"), "{message}");
+        assert!(
+            !message.contains("counting down"),
+            "the clock stopped at 1170500 and the tip is past it: {message}"
+        );
     }
 
     /// A delay above the cap is rejected, not silently shortened.
