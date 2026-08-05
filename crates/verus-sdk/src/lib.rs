@@ -101,6 +101,13 @@ pub mod send {
 /// so it can point revocation and recovery elsewhere in a later update. Which
 /// authority may change what — and which direction has no undo — is in
 /// [`identity::UpdateParams::allow_authority_change`].
+///
+/// The builders here take the identity *as it should read afterwards, in full*,
+/// which makes every caller perform a read-modify-write and makes an omission
+/// indistinguishable from a deliberate deletion. With the `network` feature,
+/// [`network::prepare_identity_update`] and its siblings take a described
+/// change instead, read the current identity themselves, and carry over
+/// everything that was not named.
 #[cfg(feature = "transparent")]
 pub mod identity {
     pub use verus_tx::identity::{Identity, FLAG_LOCKED, FLAG_REVOKED};
@@ -229,16 +236,19 @@ pub mod vdxf {
 pub mod network {
     pub use verus_flows::drive::{advance, Answers, Step};
     pub use verus_flows::{
-        broadcast, browse, burn, convert, currency_names, estimate, history, identity_held,
-        inspect, key_address, launch_currency, mint, native_currency, plan_conversion,
-        prepare_burn, prepare_conversion, prepare_launch, prepare_mint, prepare_publish,
-        prepare_registration, prepare_registration_with_salt, prepare_send,
+        broadcast, browse, burn, convert, currency_names, current_identity, estimate, history,
+        identity_held, inspect, key_address, launch_currency, mint, native_currency,
+        plan_conversion, prepare_burn, prepare_conversion, prepare_identity_recovery,
+        prepare_identity_revocation, prepare_identity_update, prepare_launch, prepare_mint,
+        prepare_publish, prepare_registration, prepare_registration_with_salt, prepare_send,
         prepare_send_from_identity, prepare_send_token, prepare_take, prepare_unsigned_send,
         publish, read, read_all, read_history, send, send_from_identity, send_token, sign_login,
         spendable, take, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
-        ConversionPlan, Demand, FlowError, Funding, HistoryEntry, Launched, Listing, LoggedIn,
-        LoginPolicy, LoginRequest, Namespace, OfferTerms, Pending, Published, ReadyToRegister,
-        Registered, RegistrationOptions, Sent, Taken, Taking, TokenBalances, Unsent, WaitPolicy,
+        ContentMultimap, ConversionPlan, Demand, FlowError, Funding, Held, HistoryEntry,
+        IdentityChange, Launched, Listing, LoggedIn, LoginPolicy, LoginRequest, Namespace,
+        OfferTerms, Pending, Published, ReadyToRegister, Recovered, Registered,
+        RegistrationOptions, Revoked, Sent, Taken, Taking, TokenBalances, Unsent, Updated,
+        WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,
