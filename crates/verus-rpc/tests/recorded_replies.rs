@@ -910,3 +910,212 @@ fn every_multimap_rendering_the_daemon_uses_is_readable() {
     assert!(read(r#"{"iK":["nothex"]}"#).is_err());
     assert!(read("[]").is_err(), "a list is not a map of keys to values");
 }
+
+/// `getaddressmempool`, from a live pending transaction on 2026-08-05.
+///
+/// Not this SDK's transaction: an unrelated one that happened to be in flight
+/// against `api.verustest.net` while this method was being written. That is why
+/// it is the only shape of this reply anyone here has actually seen, and why it
+/// is committed rather than hand-written from the daemon's help text.
+///
+/// It exercises the awkward parts at once: a spend row and two receive rows for
+/// one transaction, a spend carrying `prevtxid`/`prevout`, and an `index` of
+/// `0` appearing on both a receive and a spend — inputs and outputs are
+/// numbered separately, so `index` alone is not a key.
+#[test]
+fn reads_mempool_deltas_from_a_live_pending_transaction() {
+    let rows = client("getaddressmempool")
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("the recorded reply parses");
+    assert_eq!(rows.len(), 3);
+
+    // Row 0: money arriving. Positive, no prevout.
+    assert_eq!(rows[0].satoshis.to_sat(), 40_000_000);
+    assert!(!rows[0].spending);
+    assert_eq!(rows[0].spends, None);
+    assert_eq!(rows[0].index, 0);
+    assert_eq!(rows[0].timestamp, 1_785_894_733);
+
+    // Row 1: the input being spent. Negative, and it names what it consumes.
+    assert_eq!(rows[1].satoshis.to_sat(), -489_990_000);
+    assert!(rows[1].spending);
+    let (prev_txid, prev_vout) = rows[1].spends.expect("a spend names its prevout");
+    assert_eq!(
+        prev_txid.to_display_hex(),
+        "2aada70ae1f59cf0c61698eeeb97dbc4466417cbbf09e19b2123ebad31b07886"
+    );
+    assert_eq!(prev_vout, 1);
+
+    // And `index` really does collide across the two, which is why the
+    // uniqueness key in the client includes `spending`.
+    assert_eq!(rows[0].index, rows[1].index);
+    assert_eq!(rows[0].txid, rows[1].txid);
+
+    // The native leg appears twice in every row: once as satoshis, once in
+    // coins under the chain's own currency id. Summing both double-counts it.
+    let native = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+    assert_eq!(rows[0].currency_values[native].to_sat(), 40_000_000);
+    assert_eq!(rows[1].currency_values[native].to_sat(), -489_990_000);
+
+    // The whole transaction conserves value at this address, less the fee it
+    // paid: 4.8999 spent, 0.4 + 4.4998 received back.
+    let net: i64 = rows.iter().map(|r| r.satoshis.to_sat()).sum();
+    assert_eq!(net, -10_000, "the fee, and nothing else, left the address");
+}
+
+/// `currencyvalues` arrive **without** asking for `verbosity`.
+///
+/// Worth pinning because the daemon's help reads the other way: its `verbosity`
+/// option is described as adding "output information for spends, including all
+/// reserve amounts and destinations", which invites sending it in order to see
+/// token movements at all. Measured, the per-currency values are in the plain
+/// reply, and a token transfer in flight is therefore visible without it.
+///
+/// What `verbosity: 1` does add is a `sent` object on spend rows — the *other*
+/// addresses a spent output paid. This crate does not ask for it, and this test
+/// records that both halves of that decision were checked against the wire
+/// rather than the documentation.
+#[test]
+fn per_currency_values_do_not_need_the_verbosity_option() {
+    let plain = client("getaddressmempool")
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("plain reply parses");
+    let verbose = client("getaddressmempool_verbose")
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("verbose reply parses");
+
+    assert!(
+        plain.iter().all(|r| !r.currency_values.is_empty()),
+        "the plain reply carried no currency values, so verbosity would be needed"
+    );
+    assert_eq!(
+        plain, verbose,
+        "verbosity changed the values this crate reads; the decision not to send it \
+         would then be a decision to see less"
+    );
+}
+
+/// One positional argument, and no `verbosity` inside it.
+///
+/// The proxy in front of `api.verustest.net` refuses this method outright
+/// (`-32601`) when a second positional argument is present, the same way it
+/// refuses `getblock` with a verbosity argument. A request that grew one would
+/// work against a local daemon and fail against public infrastructure, which is
+/// the failure that is expensive to diagnose.
+#[test]
+fn asks_for_the_mempool_with_exactly_one_argument() {
+    let node = client("getaddressmempool");
+    node.address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("parses");
+
+    let sent = node.transport().asked.borrow();
+    assert_eq!(sent.len(), 1, "one request, not a probe and a retry");
+    let body: serde_json::Value = serde_json::from_str(&sent[0]).expect("a JSON body");
+    let params = body["params"].as_array().expect("params is an array");
+    assert_eq!(
+        params.len(),
+        1,
+        "a second positional argument is refused: {sent:?}"
+    );
+    assert!(
+        params[0].get("verbosity").is_none(),
+        "verbosity is deliberately not sent: {sent:?}"
+    );
+    assert!(params[0].get("addresses").is_some());
+}
+
+/// Answers a body chosen per test, so a malformed reply can be constructed
+/// without committing a fixture that never came off the wire.
+struct Fixed(&'static str);
+
+impl Transport for Fixed {
+    fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+        Ok(self.0.to_string())
+    }
+}
+
+/// A row for an address nobody asked about is refused.
+///
+/// This matters more here than for `address_utxos`, where the same check
+/// exists: nothing downstream builds a transaction from these rows, so no
+/// sighash rejects them later. A caller sums them and shows a user money on its
+/// way, and an invented row is an invented payment.
+#[test]
+fn a_mempool_row_for_an_address_we_did_not_ask_about_is_refused() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RSomeoneElse","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":1,"spending":false,"timestamp":1}]}"#,
+    ));
+    match node.address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"]) {
+        Err(RpcError::Unexpected(message)) => assert!(message.contains("not asked about")),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The same row twice is refused, because a caller folding these into a total
+/// would count the payment twice.
+#[test]
+fn a_repeated_mempool_row_is_refused() {
+    const ROW: &str = r#"{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":1,"spending":false,"timestamp":1}"#;
+    let body: &'static str = Box::leak(format!(r#"{{"result":[{ROW},{ROW}]}}"#).into_boxed_str());
+    match RpcClient::new(Fixed(body)).address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"]) {
+        Err(RpcError::Unexpected(message)) => assert!(message.contains("more than once")),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// A receive and a spend that share an index are **not** a repeat.
+///
+/// The live fixture contains exactly this, and a uniqueness key without
+/// `spending` would reject the real reply — turning a correct answer into an
+/// error and leaving a wallet unable to see its own pending payment.
+#[test]
+fn a_receive_and_a_spend_sharing_an_index_are_both_kept() {
+    let rows = client("getaddressmempool")
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("the live reply is not a duplicate");
+    assert_eq!(rows.len(), 3);
+}
+
+/// A spend whose prevout is missing is refused rather than read as a receipt.
+///
+/// The dangerous direction: `spending` says money left, the absent
+/// `prevtxid`/`prevout` says nothing was consumed. Silently trusting either
+/// half gives a wallet a row it will show as incoming.
+#[test]
+fn a_spend_without_a_prevout_is_refused() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":-1,"spending":true,"timestamp":1}]}"#,
+    ));
+    match node.address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"]) {
+        Err(RpcError::Unexpected(message)) => {
+            assert!(message.contains("spending=true"), "{message}");
+            assert!(message.contains("prevtxid=absent"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// And the reverse: a prevout on a row that claims not to be a spend.
+#[test]
+fn a_prevout_on_a_receive_is_refused() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":1,"spending":false,"prevtxid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prevout":0,"timestamp":1}]}"#,
+    ));
+    match node.address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"]) {
+        Err(RpcError::Unexpected(message)) => {
+            assert!(message.contains("spending=false"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// Nothing pending is an empty list, not an error — the ordinary case, and the
+/// one a wallet sees almost always.
+#[test]
+fn an_address_with_nothing_pending_is_an_empty_list() {
+    let node = RpcClient::new(Fixed(r#"{"result":[]}"#));
+    let rows = node
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("an empty list is a real answer");
+    assert!(rows.is_empty());
+}

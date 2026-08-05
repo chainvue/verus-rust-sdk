@@ -1017,3 +1017,46 @@ fn the_discovery_reads_still_parse_from_the_live_endpoint() {
         content.content_map.len()
     );
 }
+
+/// `getaddressmempool` is served, and served with **one** positional argument.
+///
+/// The reason to spend a live test on a method that usually answers with an
+/// empty list: the empty list is the proof. A `-32601` here would mean the
+/// request shape is wrong, and the failure mode this guards against is a second
+/// positional argument creeping in — which works against a local daemon and is
+/// refused by the proxy in front of the public endpoint, so no offline test can
+/// see it.
+///
+/// Measured 2026-08-05: `[{"addresses":[…]}]` is answered,
+/// `[{"addresses":[…]}, 1]` is `-32601`.
+#[test]
+fn the_public_endpoint_serves_the_address_mempool() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1");
+        return;
+    }
+    // An address with history, so a node that filtered by "never seen" would
+    // still have to answer about it.
+    let rows = client()
+        .address_mempool(&["RK9izAySZHQAaCEkRmVV4Xtu73uV5sqsZy"])
+        .expect("getaddressmempool is served with one positional argument");
+    println!("address_mempool: {} pending row(s)", rows.len());
+
+    // Whatever came back must be about the address that was asked for, and the
+    // client refuses it otherwise — so reaching here already proves that. What
+    // is worth asserting is the invariant a caller depends on.
+    for row in &rows {
+        assert_eq!(row.address, "RK9izAySZHQAaCEkRmVV4Xtu73uV5sqsZy");
+        assert_eq!(
+            row.spending,
+            row.spends.is_some(),
+            "a spend must name its prevout and a receive must not"
+        );
+        println!(
+            "  {} {} {}",
+            if row.spending { "spend " } else { "receive" },
+            row.satoshis.to_sat(),
+            row.txid.to_display_hex()
+        );
+    }
+}

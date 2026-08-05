@@ -24,8 +24,11 @@
 //! * **A shielded account, and spending from it** — [`light`], which carries
 //!   the whole path from `derive_account` through `plan_spend` and
 //!   `prove_spend`.
-//! * **Pending payments** — `network::ChainReader::mempool`, the one thing a
-//!   UTXO set and a delta list both leave out.
+//! * **Pending payments** — `network::ChainReader::address_mempool`, the one
+//!   thing a UTXO set and a delta list both leave out. Without it a wallet
+//!   shows `0` for an address that has just been paid, until a block is mined.
+//!   `network::ChainReader::mempool` is the whole-node view; this is the one
+//!   scoped to addresses you care about, in a single request.
 //! * **A second opinion on a node** — [`network::SecondSourced`], for the reads
 //!   where one lying node costs money or lets someone in.
 //!
@@ -232,8 +235,8 @@ pub mod network {
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,
         ContentValue, ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary,
-        HttpTransport, IdentityContent, IdentityRecord, OfferListing, OfferSide, RpcClient,
-        RpcError, SecondSourced, SignedAmount,
+        HttpTransport, IdentityContent, IdentityRecord, MempoolDelta, OfferListing, OfferSide,
+        RpcClient, RpcError, SecondSourced, SignedAmount,
     };
 }
 

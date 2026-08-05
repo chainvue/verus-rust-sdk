@@ -50,6 +50,8 @@ meaning anything:
 | `getcurrencyconverters_vrsctest.json` | an entry whose definition hides under a key that is its own currency id |
 | `getidentitycontent_rustsdk.json` | an identity's `contentmap`, published by this SDK at block 1166566 |
 | `getaddressdeltas.json` | signed movements — a spend row, a token leg with `satoshis` of zero, and the settled swap's economics |
+| `getaddressmempool.json` | an **unconfirmed** transaction: a spend row naming its prevout, two receives, and an `index` of 0 on both a receive and a spend |
+| `getaddressmempool_verbose.json` | the same call with `verbosity: 1`, kept to show what it does *and does not* add |
 
 ## `-32601` is not proof a method is missing
 
@@ -67,3 +69,28 @@ wrong. This one was: `getblock` was recorded as absent, and it is not — which
 means a block's Sapling commitments *are* enumerable through the public node
 after all. `z_gettreestate` is genuinely gone at every arity, and
 `getsaplingtree` answers only for the tip whatever height it is given.
+
+## What `getaddressmempool`'s `verbosity` actually changes
+
+The daemon's help describes `verbosity: 1` as adding "output information for
+spends, including all reserve amounts and destinations", which reads as though
+per-currency values were behind it. They are not — compare the two fixtures:
+`currencyvalues` and `currencynames` are in the plain reply, so a token transfer
+in flight is visible without asking for anything.
+
+What `verbosity: 1` adds is a `sent` object on **spend** rows, naming the other
+addresses that spent output paid:
+
+```json
+"sent": { "outputs": [ { "addresses": "RJ7gs…", "amounts": { "iJhC…": 4.8998 } } ] }
+```
+
+That is information about someone else's outputs. `verus-rpc` does not ask for
+it: it is not needed to see that money is moving, it makes every reply larger,
+and it puts one more option in a request whose arity the proxy is already picky
+about.
+
+Both fixtures are from the same live pending transaction, captured on
+2026-08-05 before it was mined. It is not this SDK's transaction — it was
+somebody else's, in flight at the right moment, which is why it is the only
+shape of this reply that has been seen here at all.

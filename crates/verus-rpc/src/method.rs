@@ -24,6 +24,7 @@ pub(crate) enum Method {
     GetAddressUtxos,
     GetAddressBalance,
     GetAddressDeltas,
+    GetAddressMempool,
     // Policy
     GetCurrency,
     GetCurrencyState,
@@ -58,6 +59,7 @@ impl Method {
             Method::GetAddressUtxos => "getaddressutxos",
             Method::GetAddressBalance => "getaddressbalance",
             Method::GetAddressDeltas => "getaddressdeltas",
+            Method::GetAddressMempool => "getaddressmempool",
             Method::GetCurrency => "getcurrency",
             Method::GetCurrencyState => "getcurrencystate",
             Method::ListCurrencies => "listcurrencies",
@@ -108,6 +110,7 @@ impl Method {
             | Method::GetAddressUtxos
             | Method::GetAddressBalance
             | Method::GetAddressDeltas
+            | Method::GetAddressMempool
             | Method::GetCurrency
             | Method::GetCurrencyState
             | Method::ListCurrencies

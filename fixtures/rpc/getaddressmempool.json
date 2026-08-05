@@ -1,0 +1,48 @@
+{
+  "result": [
+    {
+      "address": "RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp",
+      "currencynames": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": "VRSCTEST"
+      },
+      "currencyvalues": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": 0.4
+      },
+      "index": 0,
+      "satoshis": 40000000,
+      "spending": false,
+      "timestamp": 1785894733,
+      "txid": "f444b32d73b8b6a7bc6375e141b7fbde9d30101268405cd15a4086303a9b0d0f"
+    },
+    {
+      "address": "RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp",
+      "currencynames": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": "VRSCTEST"
+      },
+      "currencyvalues": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": -4.8999
+      },
+      "index": 0,
+      "prevout": 1,
+      "prevtxid": "2aada70ae1f59cf0c61698eeeb97dbc4466417cbbf09e19b2123ebad31b07886",
+      "satoshis": -489990000,
+      "spending": true,
+      "timestamp": 1785894733,
+      "txid": "f444b32d73b8b6a7bc6375e141b7fbde9d30101268405cd15a4086303a9b0d0f"
+    },
+    {
+      "address": "RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp",
+      "currencynames": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": "VRSCTEST"
+      },
+      "currencyvalues": {
+        "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq": 4.4998
+      },
+      "index": 1,
+      "satoshis": 449980000,
+      "spending": false,
+      "timestamp": 1785894733,
+      "txid": "f444b32d73b8b6a7bc6375e141b7fbde9d30101268405cd15a4086303a9b0d0f"
+    }
+  ]
+}

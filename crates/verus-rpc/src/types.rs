@@ -127,6 +127,79 @@ pub struct AddressDelta {
     pub spending: bool,
 }
 
+/// One movement of value at an address that is **in the mempool, not yet
+/// mined**.
+///
+/// The present-tense companion to [`AddressDelta`]: the same "what moved at this
+/// address", on the other side of the confirmation line. A wallet needs both,
+/// because a UTXO set and a delta list agree that an unconfirmed payment does
+/// not exist — so an address that has just been paid reports a balance of zero,
+/// which is the one answer a wallet must not give while money is demonstrably on
+/// its way.
+///
+/// # What is missing compared to a mined delta, and what is added
+///
+/// No `height`, `block_index` or `block_time`: nothing here is in a block. In
+/// their place is [`MempoolDelta::timestamp`], and — on spend rows —
+/// [`MempoolDelta::spends`], which names the output being consumed. A mined
+/// delta does not carry that, because for a confirmed spend the prevout can be
+/// found on the chain.
+///
+/// # None of this is settled
+///
+/// A row here is a statement about **one node's** mempool at one instant. The
+/// transaction may be mined, may be evicted, may be replaced, and a second node
+/// may never have seen it. Show it as pending; do not let it decide what can be
+/// spent. [`crate::ChainReader::address_utxos`] answers that question and
+/// deliberately excludes everything here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MempoolDelta {
+    /// The address this movement belongs to.
+    pub address: String,
+    /// The unconfirmed transaction that causes it.
+    pub txid: Txid,
+    /// Position of the input or output within that transaction.
+    ///
+    /// Inputs and outputs are numbered separately, so this is unique only
+    /// alongside [`MempoolDelta::spending`] — a receive at output 0 and a spend
+    /// at input 0 both report `0`.
+    pub index: u32,
+    /// Native value moved, negative when spending.
+    ///
+    /// **Zero for a token-only output**, exactly as [`AddressDelta::satoshis`]
+    /// is: the value of a reserve output lives in its payload. See
+    /// [`MempoolDelta::currency_values`].
+    pub satoshis: SignedAmount,
+    /// Per-currency value moved, keyed by currency i-address, negative when
+    /// spending.
+    ///
+    /// Includes the chain's own currency, duplicating
+    /// [`MempoolDelta::satoshis`]. Summing this map *and* that field
+    /// double-counts the native leg.
+    ///
+    /// The daemon sends this **without being asked**. Its `verbosity` option
+    /// reads as though it were the switch for per-currency data; measured
+    /// against `api.verustest.net` on 2026-08-05 these values are in the plain
+    /// reply, and what `verbosity: 1` adds is something else — see
+    /// [`crate::ChainReader::address_mempool`].
+    pub currency_values: BTreeMap<String, SignedAmount>,
+    /// Whether this row is an input being spent rather than an output created.
+    pub spending: bool,
+    /// The output being spent, when this row is a spend.
+    ///
+    /// `Some` exactly when [`MempoolDelta::spending`] is true. A reply where the
+    /// two disagree is refused rather than reconciled: a spend whose prevout
+    /// went missing would read as a receipt, and be counted as incoming money.
+    pub spends: Option<(Txid, u32)>,
+    /// When the transaction entered **this node's** mempool, in seconds.
+    ///
+    /// Node-local, not consensus data: a second node reports a different value
+    /// for the same transaction, and a node that has just restarted reports when
+    /// it re-learned of it. Fine for display, not a source of ordering, and
+    /// never a basis for deciding something has taken too long.
+    pub timestamp: i64,
+}
+
 /// One side of an offer — what is being given, or what is wanted for it.
 ///
 /// The two sides have the same shape and either can be either kind, which is
@@ -647,6 +720,82 @@ impl RawAddressDelta<'_> {
             satoshis: json::signed_satoshis(self.satoshis, "satoshis")?,
             currency_values,
             spending: self.spending,
+        })
+    }
+}
+
+/// A `getaddressmempool` row, still as JSON.
+///
+/// Deliberately its own type rather than `RawAddressDelta` with more `default`
+/// attributes. The two replies overlap but differ in what is *required*: a
+/// mined delta must carry a height, and a mempool row must not. Reading one
+/// through the other's decoder would silently accept a mined delta here with
+/// `height` dropped on the floor.
+#[derive(Deserialize)]
+pub(crate) struct RawMempoolDelta<'a> {
+    pub address: String,
+    pub txid: String,
+    #[serde(default)]
+    pub index: u32,
+    #[serde(borrow)]
+    pub satoshis: &'a RawValue,
+    #[serde(borrow, default)]
+    pub currencyvalues: BTreeMap<String, &'a RawValue>,
+    #[serde(default)]
+    pub spending: bool,
+    /// Present on spend rows only.
+    #[serde(default)]
+    pub prevtxid: Option<String>,
+    /// Present on spend rows only.
+    #[serde(default)]
+    pub prevout: Option<u32>,
+    #[serde(default)]
+    pub timestamp: i64,
+}
+
+impl RawMempoolDelta<'_> {
+    pub(crate) fn into_typed(self) -> Result<MempoolDelta, RpcError> {
+        let mut currency_values = BTreeMap::new();
+        for (currency, raw) in self.currencyvalues {
+            currency_values.insert(
+                currency,
+                json::signed_currency_coins(raw, "currencyvalues")?,
+            );
+        }
+
+        // `spending` and the prevout must agree. Neither is derived from the
+        // other, because the disagreement is the interesting case: a spend
+        // whose `prevtxid` went missing would otherwise decode as a receipt,
+        // and a caller summing positive rows would count money leaving the
+        // address as money arriving at it.
+        let spends = match (self.spending, self.prevtxid, self.prevout) {
+            (true, Some(txid), Some(vout)) => Some((
+                Txid::from_display_hex(&txid)
+                    .map_err(|e| RpcError::OutOfRange(format!("prevtxid: {e}")))?,
+                vout,
+            )),
+            (false, None, None) => None,
+            (spending, txid, vout) => {
+                return Err(RpcError::Unexpected(format!(
+                    "getaddressmempool row for {} says spending={spending} but \
+                     prevtxid={} and prevout={}",
+                    self.address,
+                    txid.map_or("absent".into(), |t| t),
+                    vout.map_or("absent".to_string(), |v| v.to_string()),
+                )))
+            }
+        };
+
+        Ok(MempoolDelta {
+            address: self.address,
+            txid: Txid::from_display_hex(&self.txid)
+                .map_err(|e| RpcError::OutOfRange(format!("txid: {e}")))?,
+            index: self.index,
+            satoshis: json::signed_satoshis(self.satoshis, "satoshis")?,
+            currency_values,
+            spending: self.spending,
+            spends,
+            timestamp: self.timestamp,
         })
     }
 }
