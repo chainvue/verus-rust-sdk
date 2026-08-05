@@ -113,6 +113,22 @@ are therefore not committed tests; the committed
 `crates/verus-flows/tests/live_timelock.rs` proves the accepted path and asserts
 the refusals offline.
 
+### The fourth state, which is not a state at all
+
+Nothing clears `unlock_after` when the chain passes it. An identity that has
+ever been unlocked therefore rests at flag-clear with a stale height behind it,
+and republishes that height on every later update. Consensus does not care:
+`IsInvalidMutation` gates the whole timelock rule on
+`newIdentity.IsLocked(height)`, and `CIdentity::IsLocked(uint32_t)` is
+`IsLocked() || unlockAfter >= height` — false once the height is passed. The
+stale value is inert.
+
+This crate read it as a countdown being started and refused every update to such
+an identity, whatever the update was about (#104, fixed 2026-08-05). Read from
+`identity.cpp` at `master` rather than measured, because the two disagreeing
+parties are both offline: no transaction had to reach a node to settle which of
+them was wrong.
+
 Worth knowing what the refusal looks like, because it names nothing:
 
 ```text

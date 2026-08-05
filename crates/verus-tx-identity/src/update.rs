@@ -293,12 +293,30 @@ pub fn build_identity_update(
 /// an instant one were both refused while a later one was accepted. The rule is
 /// a floor, not a pin. See `PROVEN.md`.
 ///
-/// # What is not checked
+/// # Stale unlock heights
+///
+/// `unlock_after` keeps its value once a countdown elapses; nothing clears it.
+/// So an identity that has ever been unlocked rests at flag-clear with a
+/// non-zero height in the past, and every later update carries that height
+/// through untouched. Consensus judges this by
+/// `newIdentity.IsLocked(height)` alone — false for an elapsed height, so the
+/// floor never applies. Anything stricter here refuses ordinary updates to an
+/// ordinary identity, which is what it did until 2026-08-05.
+///
+/// # What is not checked, and where this is deliberately stricter
 ///
 /// `IdentityLockOverride` — a chain-level override consensus consults — has no
-/// offline equivalent, so an identity it exempts is judged locked here. That
-/// direction is safe: this refuses something the chain would have allowed,
-/// rather than passing something it would reject.
+/// offline equivalent, so an identity it exempts is judged locked here.
+///
+/// Without a tip, "counting down" cannot be told from "elapsed", so *setting* a
+/// new absolute height is judged a live countdown and held to the floor. With a
+/// tip, one case stays stricter than consensus on purpose: setting a height that
+/// is already in the past. Consensus shrugs — the identity is unlocked either
+/// way — while this refuses it, because a caller asking for it has almost
+/// certainly computed the wrong number.
+///
+/// Both divergences are in the same safe direction: this refuses something the
+/// chain would have allowed, rather than passing something it would reject.
 fn check_timelock(
     current: &Identity,
     proposed: &Identity,
@@ -363,7 +381,17 @@ fn check_timelock(
                 current.unlock_after, proposed.unlock_after
             ));
         }
-    } else if locked_now(proposed) || (!flagged(proposed) && proposed.unlock_after != 0) {
+    } else if locked_now(proposed)
+        // Consensus stops at `locked_now(proposed)`. The rest is this crate
+        // covering the tipless case, where "counting down" and "elapsed" cannot
+        // be told apart: an absolute height being *set* is then treated as a
+        // live countdown. It must not fire on a height being carried through
+        // unchanged, which is the resting state of every identity that has ever
+        // been unlocked — see the note on stale heights below.
+        || (!flagged(proposed)
+            && proposed.unlock_after != 0
+            && proposed.unlock_after != current.unlock_after)
+    {
         if flagged(proposed) {
             if proposed.unlock_after > MAX_UNLOCK_DELAY {
                 return refuse(format!(
