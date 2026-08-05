@@ -51,8 +51,11 @@ arrived was valid.
 | `flows::vdxf::publish` — application data under a derived VDXF key → `vdxf1171008.VRSCTEST@` | `715d698bad6129ff35114786676c4f851eea345bd0685bf3611ce0c595a34083` | 1171012 |
 | **…and a second key published without erasing the first** | `adfdc3235ea2618b96d11f8a54edde8b71448ac9a55439fbedc6c4427e965551` | 1171013 |
 | **Recovery authority moved off self**, signed only by the identity's own primary keys → `vdxf1171008.VRSCTEST@` | `e3994443922e3a2e01e42b5a830ac48314d3fae60d4cb8c3859db2a4b8f9058a` | 1177036 |
+| **Timelock set** — `DelayAfterUnlock(2)`, flag and delay together | `19d1f39798c36f40855ec45cfd0336eb8a94d0219ceef6b89c1963dae6570f5d` | 1177369 |
+| **…countdown started** at `delay + expiry`, by `flows::prepare_identity_unlock` | `3b01d18435320eb7797667c9caaf2ee009fa0569a1a5497da69ef081bb12394f` | 1177370 |
 
-The second of those two is the row that matters. An identity update
+The two `vdxf::publish` rows are where the erase invariant is settled, and the
+second is the one that matters. An identity update
 republishes the identity **in full**, so the update writing the second key had
 to carry the first one over untouched — along with both authorities and the
 primary addresses. Nothing offline can confirm that reconstruction is faithful;
@@ -66,14 +69,49 @@ an application reading back its own data would have seen every revision it had
 ever written, concatenated. The identity now holds one value under that key and
 reports four in its history, and both views are asserted.
 
-The last row settles who may change an authority, which the docs had wrong in
-both directions at once. `vdxf1171008.VRSCTEST@` was its own revocation *and*
+The **recovery authority** row settles who may change an authority, which the
+docs had wrong in both directions at once. `vdxf1171008.VRSCTEST@` was its own revocation *and*
 recovery authority, and its own primary keys moved recovery to `VRSCTEST@` in an
 ordinary update — so an authority is **not** frozen at registration. The same
 run then tried to move it back with the same keys and consensus refused, so it
 is **not** freely editable either. Both halves come from one test,
 `live_authority`, and the second costs nothing because a rejected transaction is
 never mined.
+
+## The timelock floor, and the four values that settle it
+
+`prepare_identity_unlock` computes an unlock height as `delay + this
+transaction's expiry`. That arithmetic came from reading
+`CIdentity::IsInvalidMutation`, and the reading is only worth as much as the
+chain agrees with. Both directions were measured on VRSCTEST on 2026-08-05, from
+the **flagged-locked** state the rule actually governs:
+
+| published height | consensus |
+|---|---|
+| `tip + delay` = 1177378 — what reasoning from the tip produces | **refused** |
+| `delay + expiry` = 1177398 — what the flow produces | accepted (`334e85b7…`, 1177374) |
+
+So the floor is real, it is measured from `nExpiryHeight`, and the obvious
+mental model is 20 blocks short of it. The identity ended at
+`UntilBlock(1177398)`, read back from the chain.
+
+Three more probes from the **counting-down** state, all as expected:
+
+| attempt | consensus |
+|---|---|
+| move the unlock earlier (1177386 from 1177391) | refused |
+| unlock instantly (a height below the tip) | refused |
+| push the unlock later (1177394) | accepted (`6be4c0f1…`) |
+
+The last one matters as much as the refusals: the rule is a **floor, not a
+pin**, so `check_timelock` refusing anything above it would have been a bug that
+only showed up as users unable to set the timelock they wanted.
+
+Producing the two refusals meant temporarily disabling this crate's own
+`check_timelock`, since it refuses them first — which is the point of it. They
+are therefore not committed tests; the committed
+`crates/verus-flows/tests/live_timelock.rs` proves the accepted path and asserts
+the refusals offline.
 
 Worth knowing what the refusal looks like, because it names nothing:
 
