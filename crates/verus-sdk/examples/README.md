@@ -138,9 +138,11 @@ cargo run -q -p verus-sdk --example revoke_id < crates/verus-sdk/examples/specs/
 For recovery, change `"action"` to `"recover"` and add `"primary_addresses"` —
 usually the point, since revocation normally means the old keys are gone.
 
-The spec works because the identity it names has its revocation authority
-pointed **elsewhere**. A freshly registered identity is its own revocation
-authority and therefore can never be revoked; the builder refuses first.
+The spec works because the identity it names has its **recovery** authority
+pointed elsewhere. Revocation is refused for an identity that is its own
+recovery authority — nobody could then recover it — and the builder refuses
+first. The revocation authority is not what decides this; an identity can
+revoke itself as long as somebody else can recover it.
 
 ## `keygen_shielded` — a shielded account from a seed
 

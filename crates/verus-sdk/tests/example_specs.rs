@@ -209,9 +209,9 @@ fn the_registration_specs_build_both_halves() {
 #[test]
 fn the_identity_specs_update_and_revoke_the_identity_the_registration_built() {
     assert_signed(&run("update_id", "update_id.json"), "update_id");
-    // Revocation is refused for an identity that is its own revocation
+    // Revocation is refused for an identity that is its own *recovery*
     // authority — so this passing also confirms the registration spec still
-    // points its authorities elsewhere, which is the whole reason it does.
+    // points recovery elsewhere, which is the whole reason it does.
     assert_signed(&run("revoke_id", "revoke_id.json"), "revoke_id");
 }
 

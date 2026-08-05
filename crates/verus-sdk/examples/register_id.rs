@@ -199,9 +199,11 @@ fn main() -> Result<(), Error> {
                 .with_min_sigs(u32::try_from(spec["min_sigs"].as_u64().unwrap_or(1))?)
                 // Authorities default to the identity itself, which is what
                 // the daemon does — and which makes the identity
-                // unrevokable, since an identity that is its own recovery
-                // authority can never be recovered. Point recovery at
-                // another identity here if revocation is meant to be usable.
+                // unrevokable, since consensus rejects revoking an identity
+                // that is its own recovery authority. Point recovery at
+                // another identity here if revocation is meant to be usable;
+                // a later update can still move it while the identity is
+                // still its own authority.
                 .with_authorities(
                     authority(&spec["revocation_authority"])?,
                     authority(&spec["recovery_authority"])?,
