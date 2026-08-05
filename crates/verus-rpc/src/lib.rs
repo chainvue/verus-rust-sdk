@@ -106,5 +106,5 @@ pub use transport::{RequestBody, Transport};
 pub use types::{
     spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
     ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent,
-    IdentityRecord, OfferListing, OfferSide, SignedAmount, COINBASE_MATURITY,
+    IdentityRecord, MempoolDelta, OfferListing, OfferSide, SignedAmount, COINBASE_MATURITY,
 };

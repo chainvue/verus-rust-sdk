@@ -19,7 +19,7 @@ use serde_json::json;
 use verus_rpc::{
     AddressBalance, AddressDelta, AddressUtxo, Broadcaster, ChainInfo, ChainReader,
     CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord,
-    OfferListing, RpcError,
+    MempoolDelta, OfferListing, RpcError,
 };
 use verus_tx::{Amount, Txid, Utxo};
 
@@ -56,6 +56,11 @@ pub struct ScriptedReader {
     omit_sapling_root: RefCell<bool>,
     /// Transaction ids `getrawmempool` reports.
     mempool: RefCell<Vec<String>>,
+    /// Rows `getaddressmempool` reports. Deliberately unrelated to `mempool`
+    /// above: a node can hold a transaction that touches none of the addresses
+    /// being asked about, and a wallet that assumed otherwise would read an
+    /// empty address view as an empty mempool.
+    address_mempool: RefCell<Vec<MempoolDelta>>,
 }
 
 impl ScriptedReader {
@@ -82,6 +87,7 @@ impl ScriptedReader {
             sapling_roots: RefCell::new(Vec::new()),
             omit_sapling_root: RefCell::new(false),
             mempool: RefCell::new(Vec::new()),
+            address_mempool: RefCell::new(Vec::new()),
         }
     }
 
@@ -173,6 +179,36 @@ impl ScriptedReader {
     /// Transaction ids the node reports as pending.
     pub fn with_mempool(self, txids: &[&str]) -> Self {
         *self.mempool.borrow_mut() = txids.iter().map(|t| (*t).to_string()).collect();
+        self
+    }
+
+    /// Unconfirmed movements `getaddressmempool` reports.
+    ///
+    /// Set independently of [`ScriptedReader::with_mempool`], because the node
+    /// answers the two questions independently: a mempool full of other
+    /// people's transactions produces an empty address view, and that
+    /// difference is the thing a wallet gets wrong.
+    pub fn with_address_mempool(self, rows: Vec<MempoolDelta>) -> Self {
+        *self.address_mempool.borrow_mut() = rows;
+        self
+    }
+
+    /// One incoming unconfirmed payment of `satoshis` to `address`.
+    ///
+    /// The case a balance display exists to handle, spelled out so a test does
+    /// not have to build the row by hand.
+    pub fn with_incoming_payment(self, address: &str, txid: &str, satoshis: i64) -> Self {
+        let row = MempoolDelta {
+            address: address.to_string(),
+            txid: Txid::from_display_hex(txid).expect("a txid-shaped constant"),
+            index: 0,
+            satoshis: verus_rpc::SignedAmount::from_sat(satoshis),
+            currency_values: std::collections::BTreeMap::new(),
+            spending: false,
+            spends: None,
+            timestamp: 1_785_894_733,
+        };
+        self.address_mempool.borrow_mut().push(row);
         self
     }
 
@@ -395,6 +431,21 @@ impl ChainReader for ScriptedReader {
     fn mempool(&self) -> Result<Vec<String>, RpcError> {
         self.count();
         Ok(self.mempool.borrow().clone())
+    }
+
+    fn address_mempool(&self, addresses: &[&str]) -> Result<Vec<MempoolDelta>, RpcError> {
+        self.count();
+        // Filtered, like the node does. A double that handed back every row
+        // regardless of what was asked would let a caller pass a test it fails
+        // against a real node, and would also hide the client's own check that
+        // refuses rows about addresses nobody asked for.
+        Ok(self
+            .address_mempool
+            .borrow()
+            .iter()
+            .filter(|row| addresses.contains(&row.address.as_str()))
+            .cloned()
+            .collect())
     }
 
     fn block(&self, height_or_hash: &str) -> Result<serde_json::Value, RpcError> {

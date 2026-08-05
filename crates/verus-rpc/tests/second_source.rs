@@ -161,6 +161,9 @@ impl ChainReader for Node {
     ) -> Result<Vec<verus_rpc::AddressDelta>, RpcError> {
         unimplemented!("not asked by these tests")
     }
+    fn address_mempool(&self, _a: &[&str]) -> Result<Vec<verus_rpc::MempoolDelta>, RpcError> {
+        unimplemented!("not asked by these tests")
+    }
     fn address_balance(&self, _a: &[&str]) -> Result<verus_rpc::AddressBalance, RpcError> {
         unimplemented!("not asked by these tests")
     }

@@ -169,7 +169,7 @@ use crate::client::ChainReader;
 use crate::error::RpcError;
 use crate::types::{
     AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyConverter,
-    CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord, OfferListing,
+    CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord, MempoolDelta, OfferListing,
 };
 
 /// A [`ChainReader`] that asks two nodes the questions where being lied to
@@ -356,6 +356,14 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
         range: Option<(u32, u32)>,
     ) -> Result<Vec<AddressDelta>, RpcError> {
         self.primary.address_deltas(addresses, range)
+    }
+
+    /// The primary only, and this one could not be corroborated even in
+    /// principle: two nodes have different mempools by design. A disagreement
+    /// here is normal operation, not evidence of a lie, so comparing them would
+    /// produce an error on every honest pair.
+    fn address_mempool(&self, addresses: &[&str]) -> Result<Vec<MempoolDelta>, RpcError> {
+        self.primary.address_mempool(addresses)
     }
 
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError> {

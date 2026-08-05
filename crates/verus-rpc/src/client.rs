@@ -15,8 +15,9 @@ use crate::transport::Transport;
 use crate::types::{
     converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
     ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent,
-    IdentityRecord, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo,
-    RawConversionEstimate, RawCurrency, RawCurrencyEntry, RawIdentity, RawOfferEntry,
+    IdentityRecord, MempoolDelta, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo,
+    RawChainInfo, RawConversionEstimate, RawCurrency, RawCurrencyEntry, RawIdentity,
+    RawMempoolDelta, RawOfferEntry,
 };
 
 /// Asking a node questions.
@@ -136,11 +137,63 @@ pub trait ChainReader {
         addresses: &[&str],
         range: Option<(u32, u32)>,
     ) -> Result<Vec<AddressDelta>, RpcError>;
+    /// Movements at these addresses that are in the mempool and not yet mined.
+    ///
+    /// The present-tense companion to [`ChainReader::address_deltas`]: the same
+    /// question on the other side of the confirmation line. Every other address
+    /// read here is about settled state —
+    /// [`address_utxos`](ChainReader::address_utxos) and
+    /// [`address_balance`](ChainReader::address_balance) exclude the mempool,
+    /// and `address_deltas` reports only what is mined — so without this a
+    /// wallet answers "0" for an address that has demonstrably just been paid,
+    /// for as long as it takes to mine a block.
+    ///
+    /// The alternative is [`mempool`](ChainReader::mempool) followed by one
+    /// [`raw_transaction`](ChainReader::raw_transaction) per txid, scanning
+    /// outputs: O(mempool) round trips to learn about one address. This is one.
+    ///
+    /// # None of it is settled
+    ///
+    /// Answers describe **one node's** mempool at one instant. A transaction
+    /// here may be mined, evicted or never seen by a second node. Show it as
+    /// pending; do not let it decide what can be spent — `address_utxos` is
+    /// still the answer to that, and still excludes all of this. Nothing in
+    /// `verus-flows` funds a transaction from these rows.
+    ///
+    /// # Sent with one argument, and `verbosity` is deliberately not among them
+    ///
+    /// One positional object. A second positional argument is refused as
+    /// `-32601` by the proxy in front of `api.verustest.net` — the same
+    /// arity-sensitivity that makes [`block`](ChainReader::block) and
+    /// [`mempool`](ChainReader::mempool) ask the way they do, measured again for
+    /// this method on 2026-08-05.
+    ///
+    /// The daemon's help describes a `verbosity` option as adding "output
+    /// information for spends, including all reserve amounts and destinations",
+    /// which reads as though it were the switch for per-currency values. It is
+    /// not: `currencyvalues` arrives in the plain reply, measured against a live
+    /// pending transaction on 2026-08-05 and recorded in
+    /// `fixtures/rpc/getaddressmempool_vrsctest.json`. What `verbosity: 1` adds
+    /// is a `sent` object on spend rows, naming the *other* addresses a spent
+    /// output paid. That is information about someone else's outputs, it is not
+    /// needed to see that money is moving, and asking for it would make every
+    /// reply larger and the request one option further from the shape that is
+    /// known to pass the proxy. So it is not sent.
+    ///
+    /// # Needs the node's address index
+    ///
+    /// Like every other address method here. A node without one answers with an
+    /// error rather than an empty list — and an empty list is a real answer,
+    /// meaning nothing is pending for these addresses.
+    fn address_mempool(&self, addresses: &[&str]) -> Result<Vec<MempoolDelta>, RpcError>;
     /// What these addresses hold, native and per-currency.
     ///
     /// Cheaper than [`ChainReader::address_utxos`] when only a total is wanted,
     /// and it is the total *including* immature coinbase — a balance is not the
     /// spendable amount. Select from UTXOs for that.
+    ///
+    /// **Excludes the mempool.** An address that has just been paid still
+    /// reports the old figure; see [`ChainReader::address_mempool`].
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError>;
     /// Registration policy for a currency: the fee, referral levels and
     /// proofprotocol a registration under it needs.
@@ -629,6 +682,53 @@ impl<T: Transport> ChainReader for RpcClient<T> {
             }
         }
         Ok(deltas)
+    }
+
+    fn address_mempool(&self, addresses: &[&str]) -> Result<Vec<MempoolDelta>, RpcError> {
+        // One positional object, no `verbosity`. See the trait method's docs
+        // for why both halves of that are deliberate.
+        let body = self.call_raw(
+            Method::GetAddressMempool,
+            json!([{ "addresses": addresses }]),
+        )?;
+        let result = result_of(&body, Method::GetAddressMempool)?;
+        let raw: Vec<RawMempoolDelta<'_>> = serde_json::from_str(result.get())
+            .map_err(|e| RpcError::Unexpected(format!("getaddressmempool: {e}")))?;
+
+        let rows: Vec<MempoolDelta> = raw
+            .into_iter()
+            .map(RawMempoolDelta::into_typed)
+            .collect::<Result<_, _>>()?;
+
+        // The same two checks `address_deltas` makes, for the same reasons: a
+        // row about an address nobody asked for, or one delivered twice, is
+        // folded straight into a caller's "incoming" total with nothing
+        // downstream to catch it. Here that total is what a user is shown as
+        // money on its way, so an inflated one is a lie about their balance.
+        //
+        // The key includes `spending` because `index` numbers inputs and
+        // outputs separately: a receive at output 0 and a spend at input 0
+        // legitimately share an index in the same transaction, and both appear
+        // in the live fixture this was written against.
+        let mut seen = std::collections::HashSet::with_capacity(rows.len());
+        for row in &rows {
+            if !addresses.contains(&row.address.as_str()) {
+                return Err(RpcError::Unexpected(format!(
+                    "node returned a mempool delta for {}, which was not asked about",
+                    row.address
+                )));
+            }
+            if !seen.insert((row.address.as_str(), row.txid, row.spending, row.index)) {
+                return Err(RpcError::Unexpected(format!(
+                    "node returned the mempool delta {}:{} ({}) for {} more than once",
+                    row.txid.to_display_hex(),
+                    row.index,
+                    if row.spending { "spend" } else { "receive" },
+                    row.address
+                )));
+            }
+        }
+        Ok(rows)
     }
 
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError> {
