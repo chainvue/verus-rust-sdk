@@ -157,6 +157,18 @@ pub const FLAG_REVOKED: u32 = 0x8000;
 pub const FLAG_ACTIVE_CURRENCY: u32 = 0x1;
 /// Set when the identity is locked.
 pub const FLAG_LOCKED: u32 = 0x2;
+
+/// The longest unlock delay consensus accepts, in blocks — about 21 years at
+/// one minute a block.
+///
+/// Two different behaviours hang off this number and it is worth knowing which
+/// you are getting. Consensus **rejects** an identity whose lock delay exceeds
+/// it (`CIdentity::IsInvalidMutation`). The daemon's own `CIdentity::Lock`
+/// helper instead **clamps** silently, so asking it for more gives you a
+/// different timelock than you requested rather than an error. This crate
+/// rejects, matching consensus: a timelock quietly shortened by 21 years is not
+/// a convenience.
+pub const MAX_UNLOCK_DELAY: u32 = 60 * 24 * 22 * 365;
 /// Set when revocation and recovery are controlled by whoever holds the
 /// identity's token, rather than by the authorities below.
 pub const FLAG_TOKENIZED_CONTROL: u32 = 0x4;

@@ -373,6 +373,23 @@ pub enum TxError {
     #[error("recovery authority is the identity itself; revoking it would strand it permanently")]
     RevocationWouldStrand,
 
+    /// An update the chain's timelock rules refuse.
+    ///
+    /// `CIdentity::IsInvalidMutation` guards the lock in four ways: a locked
+    /// identity cannot be unlocked in the same transaction that unlocks it, an
+    /// unlock can only ever move later, a delay cannot exceed
+    /// `MAX_UNLOCK_DELAY`, and an absolute unlock height must be past the
+    /// transaction's own expiry.
+    ///
+    /// The last one is the surprise: the height a caller must publish is
+    /// computed from `nExpiryHeight`, not from the tip, so it cannot be worked
+    /// out without knowing the expiry the transaction will carry.
+    #[error("this update is refused by the timelock rules: {reason}")]
+    TimelockRefused {
+        /// Which rule, in terms of the values involved.
+        reason: String,
+    },
+
     /// The output being spent does not hold the identity being updated.
     #[error("the output being spent does not hold this identity")]
     IdentityOutputMismatch,
