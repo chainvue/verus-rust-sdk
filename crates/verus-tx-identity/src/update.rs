@@ -287,6 +287,12 @@ pub fn build_identity_update(
 ///   least `d + expiry`. This is the one a caller cannot work out alone, since
 ///   the expiry belongs to the transaction being built.
 ///
+/// Measured against VRSCTEST on 2026-08-05 rather than left as a reading of the
+/// source: from the flagged-locked state, `tip + delay` was refused and
+/// `delay + expiry` accepted, and from a running countdown an earlier unlock and
+/// an instant one were both refused while a later one was accepted. The rule is
+/// a floor, not a pin. See `PROVEN.md`.
+///
 /// # What is not checked
 ///
 /// `IdentityLockOverride` — a chain-level override consensus consults — has no
