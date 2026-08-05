@@ -58,10 +58,7 @@ use std::collections::BTreeMap;
 use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_rpc::{Broadcaster, ChainReader, ContentValue};
 use verus_tx::update::{build_identity_update, UpdateParams};
-use verus_tx::{
-    decode_output_script, Amount, CurrencyId, Expiry, Identity, OutputKind, Utxo,
-    DEFAULT_EXPIRY_BLOCKS,
-};
+use verus_tx::{Amount, CurrencyId, Expiry, Identity, DEFAULT_EXPIRY_BLOCKS};
 
 use crate::broadcast::Unsent;
 use crate::error::FlowError;
@@ -264,123 +261,26 @@ pub fn prepare_publish(
 
     // Issued together, unwrapped after: the funding lookup needs nothing from
     // the identity, and a `?` between them would make it a second network round
-    // trip against a driver. See [`crate::drive`]. What *is* irreducible is the
-    // step below — the transaction can only be asked for once the identity has
-    // named its outpoint.
-    let record = reader.identity(identity);
+    // trip against a driver. See [`crate::drive`].
+    //
+    // Locating the output and proving it holds the identity that was *named*
+    // lives in [`crate::lifecycle::current_identity`] — the same guard every
+    // operation that spends an identity output needs, written once.
     let funding = funding::spendable(reader, funding_address);
-    let (record, funding) = (record?, funding?);
+    let held = crate::lifecycle::current_identity(reader, identity);
+    let (funding, held) = (funding?, held?);
 
-    if record.is_revoked() {
+    if held.record.is_revoked() {
         return Err(FlowError::Content(format!(
             "{identity} is revoked and cannot be updated"
         )));
     }
-    let (txid, vout) = record.outpoint;
 
-    // The identity as consensus holds it, decoded from its own output script.
-    // Not from `record.identity`, which is a rendering — see the module docs.
-    let raw = reader.raw_transaction(&txid.to_display_hex())?;
-    let script = identity_output_script(&raw, vout)?;
-    let mut object = match decode_output_script(&script)? {
-        OutputKind::IdentityPrimary { identity } => *identity,
-        other => {
-            return Err(FlowError::Content(format!(
-                "the output holding {identity} is not an identity: {other:?}"
-            )))
-        }
-    };
-
-    // **The decoded identity must be the one that was named.**
-    //
-    // Everything above came from the node: the outpoint from `getidentity`,
-    // the transaction from `getrawtransaction`. A node that answers both with
-    // some *other* identity the same key also controls produces an internally
-    // consistent lie — the script matches the outpoint, the signature verifies
-    // because the key is a primary address there too, and the caller
-    // broadcasts a valid update to an identity they never named. Publishing an
-    // empty value would then delete that identity's entry for the key.
-    //
-    // The sighash cannot catch this, because nothing about it is inconsistent.
-    // Two comparisons do, and they are not equally strong.
-    let expected = record.identity_address.parse::<Address>().map_err(|e| {
-        FlowError::Content(format!(
-            "{identity} reported the identity address {:?}, which does not parse: {e}",
-            record.identity_address
-        ))
-    })?;
-    let decoded_id = verus_tx::identity_id(&object.name, Some(object.parent));
-
-    // **The strong one, and only available when the caller named an `i`
-    // address.** An `i` address *is* the identity's id, so this compares the
-    // decoded object against the caller's own input and needs no node at all.
-    // It closes the wholesale lie: a node that answers `getidentity` with some
-    // other identity's entire record — its address, its outpoint, its real
-    // script — still fails here.
-    //
-    // Prefer an `i` address for this reason. Publishing is the operation where
-    // a redirected write is destructive: an empty `values` on the wrong
-    // identity deletes that identity's entry for the key.
-    if let Ok(named) = identity.parse::<Address>() {
-        if named.kind() == AddressKind::Identity && named.hash() != decoded_id {
-            return Err(FlowError::Content(format!(
-                "asked for {identity} but the output the node pointed at holds {}, whose id is \
-                 {} — refusing to sign an update to an identity that was not named",
-                object.name,
-                key_address(decoded_id)
-            )));
-        }
-    }
-
-    // **The weak one**, which is all that is possible for a `name@` lookup:
-    // the node resolved the name, so the id it reported is its own claim and
-    // there is nothing offline to check it against. This catches a node that
-    // is inconsistent *with itself* — an honest `getidentity` and a redirected
-    // `getrawtransaction` — and not one that lies consistently in both.
-    if expected.hash() != decoded_id {
-        return Err(FlowError::Content(format!(
-            "asked for {identity} but the output the node pointed at holds {}, whose id is {} \
-             rather than {} — refusing to sign an update to an identity that was not named",
-            object.name,
-            key_address(decoded_id),
-            record.identity_address
-        )));
-    }
+    let mut object = held.identity;
+    let identity_output = held.output;
 
     set_multimap_entry(&mut object, key, values.clone());
 
-    // An identity output carries no native value. Reading it rather than
-    // assuming means a nonzero one is named here instead of surfacing as an
-    // opaque sighash rejection.
-    //
-    // An **absent** `valueSat` is refused rather than read as zero. Defaulting
-    // would let a node that simply omits the field walk straight through the
-    // check this is; and the value below is hardcoded to zero, so the sighash
-    // would then commit to an amount nobody verified. `launch::holding_output`
-    // refuses the same shape, and the two flows spend the same kind of output.
-    let held = raw["vout"]
-        .as_array()
-        .and_then(|outs| outs.get(usize::try_from(vout).unwrap_or(usize::MAX)))
-        .and_then(|out| out["valueSat"].as_u64())
-        .ok_or_else(|| {
-            FlowError::Content(format!(
-                "the node's copy of the output holding {identity} reports no valueSat, so there \
-                 is nothing to check the zero-value rule against"
-            ))
-        })?;
-    if held != 0 {
-        return Err(FlowError::Content(format!(
-            "the output holding {identity} carries {held} satoshis; identity outputs hold none, \
-             so this is not the output it claims to be"
-        )));
-    }
-
-    let identity_output = Utxo {
-        txid,
-        vout,
-        satoshis: Amount::ZERO,
-        script_pubkey: script,
-    };
     let change: Address = funding_address.parse()?;
 
     // `UpdateParams::new` refuses authority changes by construction, and this
@@ -421,19 +321,6 @@ fn set_multimap_entry(identity: &mut Identity, key: [u8; 20], values: Vec<Vec<u8
     if !values.is_empty() {
         identity.content_multimap.push((key, values));
     }
-}
-
-/// The script of output `vout` in a decoded transaction.
-fn identity_output_script(raw: &serde_json::Value, vout: u32) -> Result<Vec<u8>, FlowError> {
-    let hex_script = raw["vout"]
-        .as_array()
-        .and_then(|outs| outs.get(usize::try_from(vout).unwrap_or(usize::MAX)))
-        .and_then(|out| out["scriptPubKey"]["hex"].as_str())
-        .ok_or_else(|| {
-            FlowError::Content(format!("the identity's transaction has no output {vout}"))
-        })?;
-    hex::decode(hex_script)
-        .map_err(|e| FlowError::Content(format!("the identity output's script is not hex: {e}")))
 }
 
 #[cfg(test)]
@@ -685,6 +572,7 @@ mod publish_tests {
     use serde_json::json;
     use verus_keys::PrivateKey;
     use verus_rpc::IdentityRecord;
+    use verus_tx::OutputKind;
     use verus_tx::{identity_id, Destination, Txid};
 
     /// A key nothing has ever been sent to, derived rather than written down
