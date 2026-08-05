@@ -89,10 +89,18 @@ pub mod send {
 
 /// The VerusID lifecycle: register, update, revoke, recover.
 ///
-/// The order matters more than it looks. A freshly registered identity is its
-/// own revocation and recovery authority, which makes it **unrevokable** —
-/// pointing recovery elsewhere is a decision at registration time, through
-/// [`identity::RegistrationParams::with_authorities`], not a later refinement.
+/// A freshly registered identity is its own revocation and recovery authority,
+/// and in that shape it is **unrevokable**: consensus refuses to revoke an
+/// identity whose *recovery* authority is itself, since nobody could then
+/// recover it. Set the authorities at registration through
+/// [`identity::RegistrationParams::with_authorities`] if revocation is meant to
+/// be usable from the start.
+///
+/// That default is not a trap, though. Being all three authorities at once, a
+/// fresh identity's own `primary_addresses` satisfy all three spend conditions,
+/// so it can point revocation and recovery elsewhere in a later update. Which
+/// authority may change what — and which direction has no undo — is in
+/// [`identity::UpdateParams::allow_authority_change`].
 #[cfg(feature = "transparent")]
 pub mod identity {
     pub use verus_tx::identity::{Identity, FLAG_LOCKED, FLAG_REVOKED};

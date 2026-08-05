@@ -44,10 +44,11 @@ the identity output (the one whose script starts `4704`) into the other two.
 
 Two constraints that are easy to lose while doing it:
 
-* Step 2 must point its `revocation_authority` and `recovery_authority`
-  **somewhere other than the identity itself**, or `revoke_id.json` stops
-  working — an identity that is its own revocation authority can never be
-  revoked, and the builder refuses first.
+* Step 2 must point its `recovery_authority` **somewhere other than the
+  identity itself**, or `revoke_id.json` stops working — an identity that is its
+  own recovery authority can never be revoked, because nobody could then recover
+  it, and the builder refuses first. (The spec points `revocation_authority`
+  elsewhere too, which is realistic but not what the refusal turns on.)
 * The identity's `primary_addresses` must contain the address of the `wif` used
   by `update_id.json`, or it fails with `NotAPrimaryAddress`. That refusal is
   correct: an update must be signed by the identity's own authority.

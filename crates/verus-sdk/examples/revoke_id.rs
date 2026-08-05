@@ -30,8 +30,14 @@
 //!
 //! A freshly registered identity is its own revocation and recovery authority.
 //! In that shape it can never be revoked — the daemon refuses, because nobody
-//! could then recover it — and the builder refuses first. Making revocation
-//! usable means pointing recovery at another identity **at registration time**.
+//! could then recover it — and the builder refuses first. What decides this is
+//! the **recovery** authority; an identity may revoke itself as long as
+//! somebody else can recover it.
+//!
+//! Making revocation usable means pointing recovery at another identity, at
+//! registration or in a later update. A fresh identity is all three authorities
+//! at once, so its own primary keys can still move them; once recovery points
+//! elsewhere, only that authority can move it again.
 
 use std::io::Read;
 

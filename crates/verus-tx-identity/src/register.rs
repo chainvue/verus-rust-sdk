@@ -607,10 +607,17 @@ impl<'a> RegistrationParams<'a> {
     /// Who may revoke and who may recover.
     ///
     /// Both default to the identity itself, which is what the daemon does — and
-    /// which makes the identity **unrevokable**, since an identity that is its
-    /// own recovery authority can never be recovered. Point recovery at another
-    /// identity here if revocation is ever meant to be usable; it cannot be
-    /// changed later without an authority-changing update.
+    /// which makes the identity **unrevokable**: consensus rejects a revocation
+    /// whose subject is its own recovery authority, since nobody could then
+    /// recover it. Point recovery at another identity here if revocation is
+    /// ever meant to be usable.
+    ///
+    /// Choosing here is not the last chance. A self-authority identity is all
+    /// three authorities at once, so its primary keys can still redirect these
+    /// later through an authority-changing update — see
+    /// [`crate::update::UpdateParams::allow_authority_change`]. The step that
+    /// cannot be undone is delegating to someone else: after that only they can
+    /// move it.
     pub fn with_authorities(
         mut self,
         revocation: Option<[u8; 20]>,

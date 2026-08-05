@@ -29,6 +29,38 @@
 //! Changing any of the four authority fields is refused unless
 //! [`UpdateParams::allow_authority_change`] is set — see that field for why.
 //!
+//! # Who may change which authority
+//!
+//! Consensus validates the three conditions of that `1-of-3` **separately**,
+//! each one guarding its own fields. From `ValidateIdentityPrimary`,
+//! `ValidateIdentityRevoke` and `ValidateIdentityRecover` in VerusCoin's
+//! `src/pbaas/identity.cpp`, read at `master` on 2026-08-05:
+//!
+//! | changing | needs the … condition satisfied | refusal |
+//! |---|---|---|
+//! | `primary_addresses`, `min_sigs` | primary | `Unauthorized identity modification` |
+//! | `revocation_authority` | revocation | `Unauthorized modification of revocation information` |
+//! | `recovery_authority` | recovery | `Unauthorized modification of recovery information` |
+//!
+//! So an authority is **not** frozen at registration, and it is **not** freely
+//! editable either. Which of the two applies depends on where it currently
+//! points:
+//!
+//! * A **freshly registered identity is all three authorities at once**, so the
+//!   same `primary_addresses` satisfy all three conditions. It can point
+//!   revocation and recovery elsewhere in an ordinary update — a self-authority
+//!   identity is not stuck with that shape.
+//! * Once an authority points at **another** identity, the primary keys alone
+//!   can no longer move it. Only the authority currently named can, and it
+//!   cannot be taken back by the identity. That is the direction with no undo,
+//!   and the reason [`UpdateParams::allow_authority_change`] is off by default.
+//!
+//! What this crate has *not* proven is that the fulfillment it builds satisfies
+//! the revocation and recovery conditions in the self-authority case. Nothing
+//! in the workspace broadcasts an authority-changing update; `allow_authority_change`
+//! gates the builder, not consensus. Treat the first one as an experiment on
+//! testnet.
+//!
 //! Both thresholds are proven on VRSCTEST: `rustsdk@` (`1-of-1`) updated at
 //! block 1166566, and `rustmulti@` (`2-of-2`) at block 1166732 with both
 //! signatures in one fulfillment
@@ -78,6 +110,11 @@ pub struct UpdateParams<'a> {
     /// The check compares against the identity **as the chain currently has
     /// it**, decoded from the output being spent, not against anything the
     /// caller supplies.
+    ///
+    /// Setting this does not mean consensus will accept the result: each
+    /// authority field is guarded by its own spend condition, and the identity's
+    /// primary keys satisfy the revocation and recovery ones only while the
+    /// identity is still its own authority. See [the module docs](self#who-may-change-which-authority).
     pub allow_authority_change: bool,
 }
 
