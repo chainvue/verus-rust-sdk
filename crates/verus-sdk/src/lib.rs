@@ -111,6 +111,8 @@ pub mod send {
 #[cfg(feature = "transparent")]
 pub mod identity {
     pub use verus_tx::identity::{Identity, FLAG_LOCKED, FLAG_REVOKED};
+    // The timelock is a flag and a number that mean different things
+    // together; `Timelock` is the only safe way to write the pair.
     pub use verus_tx::register::{
         build_identity_registration, build_name_commitment, commitment_script, identity_id,
         registration_fees, CommitmentParams, NameReservation, ParentCurrencyFee,
@@ -122,6 +124,7 @@ pub mod identity {
     pub use verus_tx::update::{build_identity_update, UpdateParams};
     pub use verus_tx::{build_identity_spend, IdentitySpendParams};
     pub use verus_tx::{identity_payment_script, identity_primary_script};
+    pub use verus_tx::{Timelock, MAX_UNLOCK_DELAY};
 }
 
 /// Signing across machines, for identities that need more than one key.
@@ -239,16 +242,16 @@ pub mod network {
         broadcast, browse, burn, convert, currency_names, current_identity, estimate, history,
         identity_held, inspect, key_address, launch_currency, mint, native_currency,
         plan_conversion, prepare_burn, prepare_conversion, prepare_identity_recovery,
-        prepare_identity_revocation, prepare_identity_update, prepare_launch, prepare_mint,
-        prepare_publish, prepare_registration, prepare_registration_with_salt, prepare_send,
-        prepare_send_from_identity, prepare_send_token, prepare_take, prepare_unsigned_send,
-        publish, read, read_all, read_history, send, send_from_identity, send_token, sign_login,
-        spendable, take, token_balances, verify_login, AwaitingCommitment, CommitmentStatus,
-        ContentMultimap, ConversionPlan, Demand, FlowError, Funding, Held, HistoryEntry,
-        IdentityChange, Launched, Listing, LoggedIn, LoginPolicy, LoginRequest, Namespace,
-        OfferTerms, Pending, Published, ReadyToRegister, Recovered, Registered,
-        RegistrationOptions, Revoked, Sent, Taken, Taking, TokenBalances, Unsent, Updated,
-        WaitPolicy,
+        prepare_identity_revocation, prepare_identity_unlock, prepare_identity_update,
+        prepare_launch, prepare_mint, prepare_publish, prepare_registration,
+        prepare_registration_with_salt, prepare_send, prepare_send_from_identity,
+        prepare_send_token, prepare_take, prepare_unsigned_send, publish, read, read_all,
+        read_history, send, send_from_identity, send_token, sign_login, spendable, take,
+        token_balances, verify_login, AwaitingCommitment, CommitmentStatus, ContentMultimap,
+        ConversionPlan, Demand, FlowError, Funding, Held, HistoryEntry, IdentityChange, Launched,
+        Listing, LoggedIn, LoginPolicy, LoginRequest, Namespace, OfferTerms, Pending, Published,
+        ReadyToRegister, Recovered, Registered, RegistrationOptions, Revoked, Sent, Taken, Taking,
+        TokenBalances, Unsent, Updated, WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,

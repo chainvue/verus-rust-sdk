@@ -45,6 +45,7 @@ pub use convert::{
 pub use decode::{decode_output_script, may_carry_currency, OutputKind, ADVANCED_COMMITMENT_KEY};
 pub use identity::{
     identity_id, Identity, Timelock, EVAL_IDENTITY_PRIMARY, FLAG_LOCKED, FLAG_TOKENIZED_CONTROL,
+    MAX_UNLOCK_DELAY,
 };
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use vdxf::{data_key, qualified_key, root_namespace};

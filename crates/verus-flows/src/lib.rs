@@ -115,7 +115,8 @@ pub use identity::{
 pub use launch::{launch_currency, prepare_launch, Launched};
 pub use lifecycle::{
     current_identity, prepare_identity_recovery, prepare_identity_revocation,
-    prepare_identity_update, ContentMultimap, Held, IdentityChange, Recovered, Revoked, Updated,
+    prepare_identity_unlock, prepare_identity_update, ContentMultimap, Held, IdentityChange,
+    Recovered, Revoked, Updated,
 };
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use offer::{browse, inspect, prepare_take, take, Demand, Listing, OfferTerms, Taken, Taking};

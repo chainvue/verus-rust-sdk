@@ -84,7 +84,7 @@ use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
 use verus_tx_protocol::decode::{decode_output_script, OutputKind};
-use verus_tx_protocol::identity::Identity;
+use verus_tx_protocol::identity::{Identity, FLAG_LOCKED, MAX_UNLOCK_DELAY};
 use verus_tx_transparent::assemble::{assemble, check_expiry, check_p2pkh_funding, Assembly};
 use verus_tx_transparent::SignedTransaction;
 use verus_wire::TxOut;
@@ -124,6 +124,18 @@ pub struct UpdateParams<'a> {
     /// primary keys satisfy the revocation and recovery ones only while the
     /// identity is still its own authority. See [the module docs](self#who-may-change-which-authority).
     pub allow_authority_change: bool,
+    /// The chain tip, if known, so the timelock rules can be checked in full.
+    ///
+    /// Consensus decides whether an identity is locked *right now* partly from
+    /// whether its unlock height has passed, which cannot be known offline. With
+    /// this set, [`build_identity_update`] applies every timelock rule; without
+    /// it, the one rule that needs the height — an identity part-way through a
+    /// countdown — goes unchecked and is left to the daemon, which will report
+    /// only that a script finished false.
+    ///
+    /// [`crate::update`]'s flow counterpart in `verus-flows` always sets it,
+    /// because it has already read the tip to compute the expiry.
+    pub tip: Option<u32>,
 }
 
 impl<'a> UpdateParams<'a> {
@@ -143,7 +155,15 @@ impl<'a> UpdateParams<'a> {
             expiry,
             fee_per_kb: DEFAULT_FEE_PER_KB,
             allow_authority_change: false,
+            tip: None,
         }
+    }
+
+    /// Tell the builder the current height, enabling the full timelock check.
+    #[must_use]
+    pub fn at_tip(mut self, tip: u32) -> Self {
+        self.tip = Some(tip);
+        self
     }
 
     /// Override the fee rate.
@@ -198,6 +218,7 @@ pub fn build_identity_update(
     if !params.allow_authority_change {
         check_authority_unchanged(&current, identity)?;
     }
+    check_timelock(&current, identity, params.expiry.to_height(), params.tip)?;
 
     // Satisfying the condition takes min_sigs signatures — the CURRENT
     // threshold, since that is what the output being spent commits to. An
@@ -244,6 +265,115 @@ pub fn build_identity_update(
             fee_per_kb: params.fee_per_kb,
         },
     )
+}
+
+/// Refuse an update the chain's timelock rules would reject.
+///
+/// A transcription of the timelock half of `CIdentity::IsInvalidMutation`
+/// (VerusCoin `src/pbaas/identity.cpp`, read at `master` on 2026-08-05). Every
+/// input it needs is already here, so these are refusals the caller can read
+/// rather than the anonymous `mandatory-script-verify-flag-failed` the daemon
+/// answers with once the fee is spent.
+///
+/// # The rules, and the one that surprises everyone
+///
+/// * **No instant unlock.** A locked identity cannot come out locked-false in
+///   the same update, unless that update also revokes it.
+/// * **An unlock only ever moves later.** Neither a longer delay nor a re-lock
+///   may bring the unlock height forward.
+/// * **A delay is capped** at [`MAX_UNLOCK_DELAY`].
+/// * **Starting the countdown is measured from `nExpiryHeight`**, not from the
+///   tip: leaving a delay of `d` requires publishing an unlock height of at
+///   least `d + expiry`. This is the one a caller cannot work out alone, since
+///   the expiry belongs to the transaction being built.
+///
+/// # What is not checked
+///
+/// `IdentityLockOverride` — a chain-level override consensus consults — has no
+/// offline equivalent, so an identity it exempts is judged locked here. That
+/// direction is safe: this refuses something the chain would have allowed,
+/// rather than passing something it would reject.
+fn check_timelock(
+    current: &Identity,
+    proposed: &Identity,
+    expiry_height: u32,
+    tip: Option<u32>,
+) -> Result<(), TxError> {
+    let refuse = |reason: String| Err(TxError::TimelockRefused { reason });
+
+    // "Locked" has two senses and both matter. The flag alone means locked and
+    // *not* counting down; the height comparison catches an identity part-way
+    // through a countdown, and is the only part that needs the tip.
+    let flagged = |id: &Identity| id.flags & FLAG_LOCKED != 0;
+    let locked_now = |id: &Identity| match tip {
+        _ if id.is_revoked() => false,
+        Some(height) => flagged(id) || id.unlock_after >= height,
+        // Without the tip, only the unambiguous half is known.
+        None => flagged(id),
+    };
+
+    if locked_now(current) && !proposed.is_revoked() {
+        if !locked_now(proposed) {
+            return refuse(format!(
+                "the identity is locked and this update would leave it unlocked; only a \
+                 revocation may do that in one step (unlock_after {} -> {})",
+                current.unlock_after, proposed.unlock_after
+            ));
+        }
+        if flagged(current) {
+            if flagged(proposed) {
+                if proposed.unlock_after < current.unlock_after {
+                    return refuse(format!(
+                        "a locked identity's delay may only grow: {} -> {}",
+                        current.unlock_after, proposed.unlock_after
+                    ));
+                }
+            } else {
+                // Starting the countdown. The floor is the delay plus this
+                // transaction's own expiry height, with one escape for delays
+                // that were set above the cap before it applied.
+                let floor = current.unlock_after.saturating_add(expiry_height);
+                let escape = current.unlock_after > MAX_UNLOCK_DELAY
+                    && proposed.unlock_after == MAX_UNLOCK_DELAY.saturating_add(expiry_height);
+                if proposed.unlock_after < floor && !escape {
+                    return refuse(format!(
+                        "starting the countdown needs an unlock height of at least {floor} \
+                         (delay {} + this transaction's expiry {expiry_height}), not {}",
+                        current.unlock_after, proposed.unlock_after
+                    ));
+                }
+            }
+        } else if flagged(proposed) {
+            if expiry_height.saturating_add(proposed.unlock_after) < current.unlock_after {
+                return refuse(format!(
+                    "re-locking may not bring the unlock forward: {} + delay {} is before the \
+                     current unlock height {}",
+                    expiry_height, proposed.unlock_after, current.unlock_after
+                ));
+            }
+        } else if proposed.unlock_after < current.unlock_after {
+            return refuse(format!(
+                "an unlock height may only move later: {} -> {}",
+                current.unlock_after, proposed.unlock_after
+            ));
+        }
+    } else if locked_now(proposed) || (!flagged(proposed) && proposed.unlock_after != 0) {
+        if flagged(proposed) {
+            if proposed.unlock_after > MAX_UNLOCK_DELAY {
+                return refuse(format!(
+                    "a lock delay of {} exceeds the maximum of {MAX_UNLOCK_DELAY}",
+                    proposed.unlock_after
+                ));
+            }
+        } else if proposed.unlock_after <= expiry_height {
+            return refuse(format!(
+                "an unlock height of {} is not past this transaction's expiry {expiry_height}, \
+                 so the identity would be unlocked before it could be mined",
+                proposed.unlock_after
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse an update that moves control of the identity.

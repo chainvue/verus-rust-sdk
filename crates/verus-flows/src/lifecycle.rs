@@ -436,7 +436,8 @@ pub fn prepare_identity_update(
         &funding.utxos,
         change_address.parse::<Address>()?,
         Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
-    );
+    )
+    .at_tip(funding.tip);
     if change.allow_authority_change {
         params = params.allowing_authority_change();
     }
@@ -570,6 +571,98 @@ pub fn prepare_identity_recovery(
             identity: identity.to_string(),
             authority: i_address(authority),
             replaces_primary_addresses,
+            fee: signed.fee,
+            change: signed.change,
+        },
+    })
+}
+
+/// Start the countdown on a locked identity, without sending it.
+///
+/// # Why this is not just `with_timelock`
+///
+/// Unlocking is never instant. A locked identity has to publish an unlock
+/// *height*, and consensus measures that height from the transaction's own
+/// `nExpiryHeight` rather than from the tip: leaving a delay of `d` requires
+/// publishing at least `d + expiry`. The expiry belongs to the transaction this
+/// function is building, so a caller passing [`Timelock`] by hand is guessing
+/// against a number they cannot see. Guess low and the daemon answers
+/// `mandatory-script-verify-flag-failed`, after the fee.
+///
+/// So this reads the delay the chain holds, picks the expiry, and computes the
+/// height from both. `extra_blocks` is added on top of the minimum for callers
+/// who want the unlock later than the earliest consensus permits; `0` asks for
+/// the earliest.
+///
+/// The identity stays locked until the chain passes the published height. This
+/// transaction starts the clock; it does not stop the lock.
+///
+/// # Errors
+///
+/// [`FlowError::Content`] if the identity is not locked with a delay — an
+/// identity already counting down has nothing to start, and an unlocked one has
+/// nothing to do.
+pub fn prepare_identity_unlock(
+    reader: &impl ChainReader,
+    funding_key: &PrivateKey,
+    identity_keys: &[&PrivateKey],
+    identity: &str,
+    extra_blocks: u32,
+) -> Result<Unsent<Updated>, FlowError> {
+    if identity_keys.is_empty() {
+        return Err(FlowError::Content(
+            "starting an unlock needs at least one signing key".into(),
+        ));
+    }
+
+    let change_address = funding_key.address().to_string();
+    let funding = funding::spendable(reader, &change_address);
+    let held = current_identity(reader, identity);
+    let (funding, held) = (funding?, held?);
+
+    if held.identity.is_revoked() {
+        return Err(FlowError::Content(format!(
+            "{identity} is revoked; recover it before unlocking it"
+        )));
+    }
+    let delay = match held.identity.timelock() {
+        Timelock::DelayAfterUnlock(delay) => delay,
+        Timelock::UntilBlock(height) => {
+            return Err(FlowError::Content(format!(
+                "{identity} is already counting down to block {height}; there is nothing to start"
+            )))
+        }
+        Timelock::None => return Err(FlowError::Content(format!("{identity} is not locked"))),
+    };
+
+    let expiry = Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS);
+    // The floor consensus enforces, plus whatever the caller asked for on top.
+    let unlock_at = delay
+        .saturating_add(expiry.to_height())
+        .saturating_add(extra_blocks);
+
+    let mut object = held.identity.clone();
+    Timelock::UntilBlock(unlock_at).apply_to(&mut object);
+
+    let signed = build_identity_update(
+        funding_key,
+        identity_keys,
+        &UpdateParams::new(
+            &held.output,
+            &object,
+            &funding.utxos,
+            change_address.parse::<Address>()?,
+            expiry,
+        )
+        .at_tip(funding.tip),
+    )?;
+    Ok(Unsent {
+        hex: signed.hex.clone(),
+        txid: signed.txid.clone(),
+        outcome: Updated {
+            txid: signed.txid,
+            identity: identity.to_string(),
+            changes_authority: false,
             fee: signed.fee,
             change: signed.change,
         },
@@ -1044,6 +1137,118 @@ mod tests {
             after.content_multimap, identity.content_multimap,
             "content survives recovery"
         );
+    }
+
+    /// The trap the unlock flow exists for.
+    ///
+    /// A caller reaching for `with_timelock` has to publish an unlock height
+    /// measured from the transaction's expiry, which the flow picks and they
+    /// never see. The obvious guess — tip plus delay — is below the floor and
+    /// consensus refuses it. Here that refusal is named, before signing.
+    #[test]
+    fn unlocking_by_hand_against_the_tip_is_refused_with_the_floor_named() {
+        let key = test_key();
+        let mut identity = populated(&key, 0);
+        Timelock::DelayAfterUnlock(100).apply_to(&mut identity);
+        let reader = reader_for(&key, &identity);
+
+        // What someone reasoning from the tip would write.
+        let err = prepare_identity_update(
+            &reader,
+            &key,
+            &[&key],
+            "app@",
+            &IdentityChange::new().with_timelock(Timelock::UntilBlock(1_170_800 + 100)),
+        )
+        .expect_err("below the floor consensus enforces");
+        let message = format!("{err}");
+        assert!(
+            message.contains("at least"),
+            "must name the floor: {message}"
+        );
+        assert!(
+            message.contains("expiry"),
+            "must say where the floor comes from: {message}"
+        );
+    }
+
+    /// And the flow computes it correctly instead.
+    #[test]
+    fn the_unlock_flow_publishes_the_delay_plus_this_transactions_expiry() {
+        let key = test_key();
+        let mut identity = populated(&key, 0);
+        Timelock::DelayAfterUnlock(100).apply_to(&mut identity);
+        let reader = reader_for(&key, &identity);
+
+        let unsent = prepare_identity_unlock(&reader, &key, &[&key], "app@", 0).expect("unlock");
+        let after = republished(&unsent.hex);
+
+        let expiry = 1_170_800 + verus_tx::DEFAULT_EXPIRY_BLOCKS;
+        assert_eq!(
+            after.timelock(),
+            Timelock::UntilBlock(100 + expiry),
+            "the floor is the delay plus this transaction's own expiry height"
+        );
+        assert!(
+            !after.is_locked(),
+            "the flag comes off; the countdown is what keeps it locked"
+        );
+        assert_eq!(
+            after.content_multimap, identity.content_multimap,
+            "an unlock still republishes the identity in full"
+        );
+    }
+
+    #[test]
+    fn unlocking_something_that_is_not_locked_is_refused() {
+        let key = test_key();
+        let identity = populated(&key, 0);
+        let reader = reader_for(&key, &identity);
+
+        let err = prepare_identity_unlock(&reader, &key, &[&key], "app@", 0)
+            .expect_err("nothing to unlock");
+        assert!(format!("{err}").contains("not locked"), "{err}");
+    }
+
+    /// A delay above the cap is rejected, not silently shortened.
+    ///
+    /// The daemon's own `Lock()` helper clamps instead, which would hand back a
+    /// timelock 21 years shorter than the one that was asked for.
+    #[test]
+    fn a_delay_beyond_the_maximum_is_refused_rather_than_clamped() {
+        let key = test_key();
+        let identity = populated(&key, 0);
+        let reader = reader_for(&key, &identity);
+
+        let err = prepare_identity_update(
+            &reader,
+            &key,
+            &[&key],
+            "app@",
+            &IdentityChange::new()
+                .with_timelock(Timelock::DelayAfterUnlock(verus_tx::MAX_UNLOCK_DELAY + 1)),
+        )
+        .expect_err("over the cap");
+        assert!(format!("{err}").contains("exceeds the maximum"), "{err}");
+    }
+
+    /// An unlock may never be brought forward.
+    #[test]
+    fn shortening_a_running_countdown_is_refused() {
+        let key = test_key();
+        let mut identity = populated(&key, 0);
+        Timelock::UntilBlock(1_180_000).apply_to(&mut identity);
+        let reader = reader_for(&key, &identity);
+
+        let err = prepare_identity_update(
+            &reader,
+            &key,
+            &[&key],
+            "app@",
+            &IdentityChange::new().with_timelock(Timelock::UntilBlock(1_175_000)),
+        )
+        .expect_err("earlier than the current unlock");
+        assert!(format!("{err}").contains("only move later"), "{err}");
     }
 
     /// A timelock is a flag and a height together, so it is the field most

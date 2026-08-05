@@ -107,7 +107,7 @@ pub use verus_tx_protocol::{
     token_balances, ConversionKind, ConversionParams, Identity, OutputKind, ReserveTransfer,
     Timelock, TokenBalances, TokenRecipient, TokenSendParams, TransferDestination,
     ADVANCED_COMMITMENT_KEY, EVAL_IDENTITY_PRIMARY, EVAL_RESERVE_TRANSFER, FLAG_LOCKED,
-    FLAG_TOKENIZED_CONTROL, RESERVE_TRANSFER_ADDRESS,
+    FLAG_TOKENIZED_CONTROL, MAX_UNLOCK_DELAY, RESERVE_TRANSFER_ADDRESS,
 };
 pub use verus_tx_transparent::{
     build_transparent_send, plan_transparent_send, sign_p2pkh_inputs, Recipient, SendParams,
