@@ -684,11 +684,42 @@ impl WaitPolicy {
     }
 }
 
-/// 32 unpredictable bytes.
+/// 32 unpredictable bytes, straight from the operating system.
+///
+/// # Why this must be unpredictable
+///
+/// Registration is commit/reveal, and the salt is the only thing hiding *which*
+/// name is being claimed between the two transactions. A predictable salt turns
+/// the mapping from name to commitment hash into a table anyone can build: an
+/// observer reads the commitment out of the mempool, works out the name, and
+/// claims it first. The loss is the name and the burned registration fee — over
+/// 100 VRSCTEST for a root identity, which the chain does not give back.
+///
+/// # Why `OsRng` rather than `thread_rng`
+///
+/// Not because `thread_rng` is weak — it is ChaCha12 seeded from this same
+/// source, reseeded every 64 KiB and across a fork, and it was not a
+/// vulnerability. It is about how much has to be true for this line to be safe.
+///
+/// `thread_rng()` means "whatever `rand` currently considers the right PRNG and
+/// the right reseeding policy", and it keeps that PRNG's state in this process
+/// — so anything that reads the process's memory once can predict every salt
+/// until the next reseed. `OsRng` means "ask the operating system", holds no
+/// state of its own, and is a contract that cannot quietly change under a minor
+/// version bump.
+///
+/// This is the only place in any library crate here that generates randomness.
+/// Keys are never generated: entropy for those comes from the caller, so the
+/// application can be seen to choose its own source. See `verus-keys`, which
+/// declares no RNG at all, and `tests/no_key_generation.rs` in that crate.
 fn random_salt() -> [u8; 32] {
+    use rand::rngs::OsRng;
     use rand::RngCore;
     let mut salt = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut salt);
+    // Panics rather than returning weak bytes if the OS has no entropy to give,
+    // which is the correct failure: a salt that is not unpredictable is worse
+    // than no registration at all.
+    OsRng.fill_bytes(&mut salt);
     salt
 }
 
