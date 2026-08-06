@@ -65,6 +65,7 @@ fn chain_with_status(flags: u32, status: &str) -> ScriptedReader {
         id.to_bytes().unwrap(),
         id.revocation_authority,
         id.recovery_authority,
+        id.has_tokenized_control(),
     )
     .unwrap();
     ScriptedReader::new(1_000)
@@ -279,6 +280,7 @@ fn counts_distinct_signers_against_min_sigs() {
         id.to_bytes().unwrap(),
         id.revocation_authority,
         id.recovery_authority,
+        id.has_tokenized_control(),
     )
     .unwrap();
     let chain = chain(0).with_raw_transaction(
@@ -491,6 +493,7 @@ fn refuses_a_holding_output_without_value_sat() {
         id.to_bytes().unwrap(),
         id.revocation_authority,
         id.recovery_authority,
+        id.has_tokenized_control(),
     )
     .unwrap();
     let chain = chain(0).with_raw_transaction(

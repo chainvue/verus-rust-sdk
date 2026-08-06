@@ -792,6 +792,7 @@ pub fn build_identity_registration(
             identity.to_bytes()?,
             revocation,
             recovery,
+            identity.has_tokenized_control(),
         )?,
     });
     // The parent's fee, in the parent's currency — and its shape depends on

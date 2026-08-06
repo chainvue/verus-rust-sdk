@@ -818,6 +818,7 @@ mod tests {
             identity.to_bytes().expect("identity encodes"),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .expect("script")
     }

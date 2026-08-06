@@ -166,6 +166,7 @@ fn identity_script(identity: &Identity) -> Vec<u8> {
         identity.to_bytes().unwrap(),
         identity.revocation_authority,
         identity.recovery_authority,
+        identity.has_tokenized_control(),
     )
     .unwrap()
 }
@@ -189,6 +190,7 @@ fn valid_scripts() -> Vec<Vec<u8>> {
             identity.to_bytes().unwrap(),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .unwrap(),
         commitment_script(

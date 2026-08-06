@@ -186,6 +186,7 @@ fn an_identity_primary_demand_is_refused() {
         identity.to_bytes().unwrap(),
         identity.revocation_authority,
         identity.recovery_authority,
+        identity.has_tokenized_control(),
     )
     .unwrap();
     let offer = offer_with_demand_script(script, 0);

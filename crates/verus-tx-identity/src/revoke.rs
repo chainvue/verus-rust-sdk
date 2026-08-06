@@ -259,6 +259,7 @@ fn republish(
         identity.to_bytes()?,
         identity.revocation_authority,
         identity.recovery_authority,
+        identity.has_tokenized_control(),
     )?;
 
     assemble(
@@ -329,6 +330,7 @@ mod tests {
                 identity.to_bytes().unwrap(),
                 identity.revocation_authority,
                 identity.recovery_authority,
+                identity.has_tokenized_control(),
             )
             .unwrap(),
         }

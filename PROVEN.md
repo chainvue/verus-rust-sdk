@@ -253,6 +253,12 @@ acceptance:
 - **P2SH multisig** — reproduces `createmultisig` exactly
 - **SIGHASH `NONE` / `SINGLE` / `ANYONECANPAY`** — only `0x83` has been on chain (inside the settled order)
 - **Identity timelocks**
+- **The tokenized-control identity output**, which only an NFT launch produces
+  — `identity_primary_script` rebuilds output 0 of the two NFT launches on
+  VRSCTEST, `sdknftbeta` (`4ad8fb14…7d7e`) and `kmerg` (`8d8671d4…b6b3`), byte
+  for byte, `EVAL_IDENTITY_RECOVER` contract destination included. Both are in
+  `fixtures/daemon/identities.json`, so the whole round trip is checked. The
+  launch *transaction* has not been broadcast — see *Known not working*.
 - **Diversified z-addresses** — proven through the real prover offline
 - **The browser build (`verus-wasm`)** — the wasm module, driven from
   JavaScript under plain `node`, reproduces all seven of the TypeScript SDK's
@@ -275,3 +281,8 @@ acceptance:
 
 - **Cross-chain export / PBaaS launch** — needs a second system to test
   against.
+- **An NFT launch, end to end.** The identity output is byte-verified above,
+  but a whole `definecurrency` for an NFT has never been accepted by a node
+  from this SDK. Two other pieces are still missing — the fee is read from the
+  wrong field (#112) and there is no supported way to express the definition
+  (#113) — so the first NFT this builds is the test.

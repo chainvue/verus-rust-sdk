@@ -606,6 +606,7 @@ fn preparing_a_publish_costs_the_one_round_it_cannot_avoid() {
         identity.to_bytes().expect("identity encodes"),
         identity.revocation_authority,
         identity.recovery_authority,
+        identity.has_tokenized_control(),
     )
     .expect("identity script");
 

@@ -606,6 +606,7 @@ mod publish_tests {
             identity.to_bytes().expect("identity encodes"),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .expect("script");
         (identity, script)
@@ -725,6 +726,7 @@ mod publish_tests {
             other.to_bytes().expect("encodes"),
             other.revocation_authority,
             other.recovery_authority,
+            other.has_tokenized_control(),
         )
         .expect("script");
 
@@ -780,6 +782,7 @@ mod publish_tests {
             other.to_bytes().expect("encodes"),
             other.revocation_authority,
             other.recovery_authority,
+            other.has_tokenized_control(),
         )
         .expect("script");
 

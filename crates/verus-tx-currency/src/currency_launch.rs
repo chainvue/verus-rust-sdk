@@ -448,6 +448,9 @@ pub fn build_launch_outputs(
                 identity.to_bytes()?,
                 identity.revocation_authority,
                 identity.recovery_authority,
+                // Set just above for an NFT, and the script has to agree with
+                // it: consensus derives the recovery condition from the flag.
+                identity.has_tokenized_control(),
             )?,
         },
         TxOut {

@@ -416,6 +416,29 @@ fn compact_size(value: usize) -> Result<Vec<u8>, TxError> {
     }
 }
 
+/// The key hash the `EVAL_IDENTITY_RECOVER` contract spends under.
+///
+/// A constant, not something derived per identity: it is
+/// `hash160` of `IdentityRecoverPubKey`, the fixed contract pubkey at
+/// `src/cc/CCcustom.cpp:126`.
+///
+/// ```text
+/// 03a058410b33f893fe182f15336577f3941c28c8cadcfb0395b9c31dd5c07ccd11
+///   -> b6aff598ba595562ed96e7a4841936ed236cf3bd
+/// ```
+///
+/// Confirmed on chain: output 0 of the two VRSCTEST NFT launches
+/// `sdknftbeta` (`4ad8fb14…7d7e`) and `kmerg` (`8d8671d4…b6b3`) both end in
+/// this same value, which is what makes it a constant rather than something
+/// each identity computes for itself.
+///
+/// It goes into the recovery condition of a tokenized-control identity — see
+/// [`identity_primary_script`].
+pub const IDENTITY_RECOVER_KEYHASH: [u8; 20] = [
+    0xb6, 0xaf, 0xf5, 0x98, 0xba, 0x59, 0x55, 0x62, 0xed, 0x96, 0xe7, 0xa4, 0x84, 0x19, 0x36, 0xed,
+    0x23, 0x6c, 0xf3, 0xbd,
+];
+
 /// Build the output script that HOLDS a VerusID.
 ///
 /// Its shape is not the token layout. The master condition is `1-of-3` over the
@@ -433,16 +456,34 @@ fn compact_size(value: usize) -> Result<Vec<u8>, TxError> {
 /// ```
 ///
 /// Verified by re-encoding live VRSCTEST identity outputs byte for byte.
+///
+/// # Tokenized control
+///
+/// `tokenized_control` is the identity's `FLAG_TOKENIZED_CONTROL` bit — an NFT
+/// launch sets it, and nothing else this crate builds does. When it is set the
+/// **recovery** condition gains a second destination,
+/// [`IDENTITY_RECOVER_KEYHASH`], and becomes `1-of-2`:
+///
+/// ```text
+///                v3 eval 16 1-of-2 [recovery, IDENTITY_RECOVER_KEYHASH]
+/// ```
+///
+/// The revoke condition and the master are untouched. This mirrors
+/// `CIdentity::IdentityUpdateOutputScript` (`src/key_io.cpp:1881`), which
+/// pushes the contract key hash onto `dests3` — and only `dests3` — under
+/// `HasTokenizedControl()`.
+///
+/// It has to be passed in rather than read out of `identity_bytes` because this
+/// crate treats that payload as opaque. Getting it wrong is not a soft failure:
+/// an NFT launch whose identity output omits the destination is refused by
+/// consensus as `-25: bad-txns-failed-precheck`, which names nothing.
 pub fn identity_primary_script(
     identity_id: [u8; 20],
     identity_bytes: Vec<u8>,
     revocation_authority: [u8; 20],
     recovery_authority: [u8; 20],
+    tokenized_control: bool,
 ) -> Result<Vec<u8>, TxError> {
-    let condition = |eval_code: u8, destination: [u8; 20]| {
-        OptCcParams::one_of_one(eval_code, Destination::Identity(destination))
-    };
-
     let master = OptCcParams {
         version: OPT_CC_PARAMS_VERSION,
         eval_code: EVAL_NONE,
@@ -455,12 +496,24 @@ pub fn identity_primary_script(
         ],
         vdata: Vec::new(),
     };
+
+    let revoke = OptCcParams::one_of_one(
+        EVAL_IDENTITY_REVOKE,
+        Destination::Identity(revocation_authority),
+    );
+    let mut recover = OptCcParams::one_of_one(
+        EVAL_IDENTITY_RECOVER,
+        Destination::Identity(recovery_authority),
+    );
+    if tokenized_control {
+        recover
+            .destinations
+            .push(Destination::PubKeyHash(IDENTITY_RECOVER_KEYHASH));
+        recover.n = 2;
+    }
+
     let params = OptCcParams {
-        vdata: vec![
-            identity_bytes,
-            condition(EVAL_IDENTITY_REVOKE, revocation_authority).to_chunk()?,
-            condition(EVAL_IDENTITY_RECOVER, recovery_authority).to_chunk()?,
-        ],
+        vdata: vec![identity_bytes, revoke.to_chunk()?, recover.to_chunk()?],
         ..OptCcParams::one_of_one(EVAL_IDENTITY_PRIMARY, Destination::Identity(identity_id))
     };
     cc_script(&master, &params)
@@ -506,6 +559,90 @@ mod tests {
         // would render 128 as `8080` and 40_000_000 as a 0xfe-prefixed LE word.
         assert_ne!(hex::encode(var_int(128)), "8080");
         assert_eq!(var_int(40_000_000).len(), 4);
+    }
+
+    /// Output 0 of `sdknftbeta`'s launch on VRSCTEST,
+    /// `4ad8fb14e5f1be8df45fb3b65be44a9c88005b894c556863e908a25e9a977d7e` — the
+    /// only shape of identity output that carries a tokenized-control recovery
+    /// condition.
+    const GOLDEN_NFT_IDENTITY_OUTPUT: &str = "47040300010315049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b15049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b15049bd668e1e4c5091dc39d226dda6d78dff5ae6a0bcc4cee04030e010115049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b4c8403000000050000000114485ec79f34a411df3e3eea999c75903bea91023401000000a6ef9ea235635e328124ff3429db9f9e91b64e2d0a73646b6e66746265746100009bd668e1e4c5091dc39d226dda6d78dff5ae6a0b9bd668e1e4c5091dc39d226dda6d78dff5ae6a0b00a6ef9ea235635e328124ff3429db9f9e91b64e2d000000001b04030f010115049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b30040310010215049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b14b6aff598ba595562ed96e7a4841936ed236cf3bd75";
+    /// `sdknftbeta`'s own id, which is also its revocation and recovery
+    /// authority.
+    const NFT_IDENTITY: [u8; 20] = [
+        0x9b, 0xd6, 0x68, 0xe1, 0xe4, 0xc5, 0x09, 0x1d, 0xc3, 0x9d, 0x22, 0x6d, 0xda, 0x6d, 0x78,
+        0xdf, 0xf5, 0xae, 0x6a, 0x0b,
+    ];
+
+    /// The serialized identity from that output — everything between the
+    /// `4c84` push and the revoke condition that follows it.
+    fn nft_identity_bytes() -> Vec<u8> {
+        let script = hex::decode(GOLDEN_NFT_IDENTITY_OUTPUT).unwrap();
+        let start = script
+            .windows(2)
+            .position(|w| w == [OP_PUSHDATA1, 0x84])
+            .unwrap()
+            + 2;
+        script[start..start + 0x84].to_vec()
+    }
+
+    /// Rebuilding a live tokenized-control identity output byte for byte.
+    ///
+    /// Without the contract destination the launch is refused as `-25:
+    /// bad-txns-failed-precheck`, which names neither the output nor the field.
+    #[test]
+    fn reproduces_a_live_tokenized_control_identity_output() {
+        let script = identity_primary_script(
+            NFT_IDENTITY,
+            nft_identity_bytes(),
+            NFT_IDENTITY,
+            NFT_IDENTITY,
+            true,
+        )
+        .unwrap();
+        assert_eq!(hex::encode(script), GOLDEN_NFT_IDENTITY_OUTPUT);
+    }
+
+    /// The flag changes exactly one condition: **recovery** grows a second
+    /// destination and becomes `1-of-2`. Revocation is untouched — matching
+    /// `CIdentity::IdentityUpdateOutputScript`, which pushes the contract key
+    /// hash onto `dests3` and only `dests3`.
+    ///
+    /// Putting it on the revoke condition instead would hand revocation to a
+    /// contract while leaving recovery unreachable, and the resulting script is
+    /// the same length, so a test that only counted bytes would pass.
+    #[test]
+    fn tokenized_control_changes_recovery_and_not_revocation() {
+        let build = |tokenized| {
+            hex::encode(
+                identity_primary_script(
+                    NFT_IDENTITY,
+                    nft_identity_bytes(),
+                    NFT_IDENTITY,
+                    NFT_IDENTITY,
+                    tokenized,
+                )
+                .unwrap(),
+            )
+        };
+        let id = hex::encode(NFT_IDENTITY);
+        let contract = hex::encode(IDENTITY_RECOVER_KEYHASH);
+
+        // PUSH(len) version 3, eval, m, n, then the destinations.
+        let revoke = format!("1b04030f0101 1504{id}").replace(' ', "");
+        let recover_plain = format!("1b040310 0101 1504{id}").replace(' ', "");
+        let recover_tokenized = format!("30040310 0102 1504{id} 14{contract}").replace(' ', "");
+
+        let plain = build(false);
+        assert!(plain.contains(&revoke), "{plain}");
+        assert!(plain.ends_with(&format!("{recover_plain}75")), "{plain}");
+        assert!(!plain.contains(&contract), "{plain}");
+
+        let tokenized = build(true);
+        assert!(tokenized.contains(&revoke), "{tokenized}");
+        assert!(
+            tokenized.ends_with(&format!("{recover_tokenized}75")),
+            "{tokenized}"
+        );
     }
 
     #[test]
