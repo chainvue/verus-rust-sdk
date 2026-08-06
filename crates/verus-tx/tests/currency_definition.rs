@@ -1,9 +1,14 @@
-//! Rebuild all 25 daemon currency definitions byte-for-byte.
+//! Rebuild all 26 daemon currency definitions byte-for-byte.
 //!
 //! The vectors in `fixtures/daemon/currency_definitions.json` are output scripts
 //! `verusd` 1.2.17-2 produced on VRSCTEST. Each carries the daemon's own JSON
 //! view of the definition alongside the bytes, so the encoder is driven from the
 //! description and checked against the script.
+//!
+//! One of them, `nft_tokenized_control`, is not a capture of our own request but
+//! output 1 of a real NFT launch on VRSCTEST. It was the shape with no coverage
+//! at all, and an NFT is the one definition whose fields cannot be read off the
+//! type — see `CurrencyDefinition::nft`.
 //!
 //! That makes this test self-validating in a useful way: if any field were read
 //! wrongly — an amount off by a factor, a vector in the wrong order, a varint
@@ -158,10 +163,10 @@ fn vectors() -> serde_json::Map<String, serde_json::Value> {
 #[test]
 fn every_daemon_definition_is_reproduced_byte_for_byte() {
     let vectors = vectors();
-    assert_eq!(vectors.len(), 25, "all the captured permutations");
+    assert_eq!(vectors.len(), 26, "all the captured permutations");
 
     // Collect every mismatch rather than stopping at the first. Stopping hides
-    // how wide a problem is, and with 25 vectors the difference between "one
+    // how wide a problem is, and across 26 vectors the difference between "one
     // field" and "everything" is the whole diagnosis.
     let mut failures = Vec::new();
     for (name, vector) in &vectors {
@@ -204,6 +209,167 @@ fn the_vectors_cover_both_tokens_and_fractional_baskets() {
     }
     assert!(tokens >= 10, "only {tokens} plain tokens");
     assert!(fractional >= 10, "only {fractional} fractional baskets");
+}
+
+/// **`CurrencyDefinition::nft` reproduces a real NFT.**
+///
+/// Not "builds something plausible": the constructor's output is encoded and
+/// compared against the definition script the daemon itself wrote for
+/// `sdknftbeta` on VRSCTEST. Five fields have to agree for consensus to accept
+/// an NFT and four of them are not guessable from the type, so this is exactly
+/// the claim the constructor makes.
+///
+/// Two things are taken from the fixture rather than left as the constructor
+/// set them, because they are the caller's to choose: the option bits beyond
+/// `NFT_TOKEN` (this launch also set `SINGLECURRENCY`, which 13 of the 15 NFTs
+/// on chain leave clear) and the parent's fee schedule.
+#[test]
+fn the_nft_constructor_reproduces_a_daemon_built_nft() {
+    let vector = &vectors()["nft_tokenized_control"];
+    let expected = vector["definition_script"].as_str().expect("script");
+    let daemon = from_daemon_json(&vector["definition"]);
+
+    let holder = daemon.preallocations[0].recipient;
+    let mut built =
+        CurrencyDefinition::nft(daemon.parent, &daemon.name, daemon.start_block, holder);
+    built.options = daemon.options;
+    built.id_registration_fees = daemon.id_registration_fees;
+    built.id_referral_levels = daemon.id_referral_levels;
+    built.id_import_fees = daemon.id_import_fees;
+
+    assert_eq!(
+        built, daemon,
+        "the constructor's definition differs from the daemon's"
+    );
+    assert_eq!(
+        hex::encode(currency_definition_script(&built).expect("encode")),
+        expected,
+        "and so do the bytes"
+    );
+}
+
+/// An NFT under a **sub-identity** parent still reserves the system's currency.
+///
+/// The fixture NFT is defined at the root, where parent and system are the same
+/// id — so it cannot tell the two apart, and a constructor following the parent
+/// would pass every other test here. Seven of the fifteen NFTs on VRSCTEST are
+/// this shape: `currencies == [systemid]` holds for all fifteen, `== [parent]`
+/// for only eight.
+#[test]
+fn an_nft_under_a_sub_parent_reserves_the_system_not_the_parent() {
+    let system = i_address("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq");
+    let sub_parent = i_address("i77n5FCqSBkXAK3UWHpdrPpdtXRc8sqjoz");
+
+    // `token` sets the system to the parent; a currency under a sub-identity
+    // lives on the chain's system, so the caller corrects it — and `currencies`
+    // has to follow, which is the pair the encoder checks.
+    let mut definition = CurrencyDefinition::nft(sub_parent, "under", 1_000, [0x2b; 20]);
+    definition.system_id = system;
+    definition.launch_system_id = system;
+    definition.currencies = vec![system];
+    assert!(
+        currency_definition_script(&definition).is_ok(),
+        "the system as reserve is the shape every NFT on chain has"
+    );
+
+    // Leaving `currencies` on the parent after moving the system is refused,
+    // not silently encoded into a definition consensus would reject.
+    let mut mismatched = definition.clone();
+    mismatched.currencies = vec![sub_parent];
+    let error = currency_definition_script(&mismatched)
+        .expect_err("a reserve that is not the system is refused")
+        .to_string();
+    assert!(error.contains("reserve currency is its system"), "{error}");
+}
+
+/// The rules consensus enforces on an NFT, each broken on its own.
+///
+/// Consensus rejects every one of these with `-25: bad-txns-failed-precheck`,
+/// which names neither the field nor what it wanted — `main.cpp:1513` replaces
+/// the specific message with one generic string before it reaches the client.
+/// Turning that into a local error with a name is most of the value here; the
+/// rules are fixed rather than judgement calls.
+#[test]
+fn an_nft_that_cannot_be_valid_is_refused_locally() {
+    let parent = i_address("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq");
+    let good = CurrencyDefinition::nft(parent, "anft", 1_000, [0x2b; 20]);
+    assert!(
+        currency_definition_script(&good).is_ok(),
+        "the constructor's own output must encode"
+    );
+
+    // Each case breaks exactly one rule and asserts the refusal names it. A
+    // test that only checked `is_err()` would pass on a definition refused for
+    // an unrelated reason, which is how the generic per-reserve check masked
+    // the empty-`currencies` case until the NFT rules were moved ahead of it.
+    let refused = |label: &str, broken: &CurrencyDefinition, expected: &str| {
+        let error = currency_definition_script(broken)
+            .expect_err(&format!("{label}: consensus would refuse this"))
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "{label}: the refusal must name what is wrong, got: {error}"
+        );
+    };
+
+    let mut no_preallocation = good.clone();
+    no_preallocation.preallocations.clear();
+    refused("no preallocation at all", &no_preallocation, "one satoshi");
+
+    let mut whole_coin = good.clone();
+    whole_coin.preallocations[0].amount = Amount::from_sat(100_000_000);
+    refused(
+        "a whole coin instead of one satoshi",
+        &whole_coin,
+        "one satoshi",
+    );
+
+    let mut no_max = good.clone();
+    no_max.max_preconversion.clear();
+    refused("no max_preconversion", &no_max, "max_preconversion");
+
+    let mut nonzero_max = good.clone();
+    nonzero_max.max_preconversion = vec![Amount::from_sat(1)];
+    refused(
+        "a non-zero max_preconversion",
+        &nonzero_max,
+        "max_preconversion",
+    );
+
+    let mut no_reserve = good.clone();
+    no_reserve.currencies.clear();
+    refused("no reserve currency", &no_reserve, "reserve currency");
+
+    // The trap the chain settles: seven of the fifteen NFTs on VRSCTEST sit
+    // under a non-root parent and still hold the system's currency, so
+    // following the parent here is wrong.
+    let mut parent_as_reserve = good.clone();
+    parent_as_reserve.parent = i_address("i77n5FCqSBkXAK3UWHpdrPpdtXRc8sqjoz");
+    parent_as_reserve.currencies = vec![parent_as_reserve.parent];
+    refused(
+        "the parent as reserve, where it is not the system",
+        &parent_as_reserve,
+        "reserve currency is its system",
+    );
+
+    let mut declared_supply = good.clone();
+    declared_supply.initial_supply = Amount::from_sat(100_000_000);
+    refused(
+        "a declared initial supply",
+        &declared_supply,
+        "initial_supply must be zero",
+    );
+}
+
+/// The checks are for NFTs only. A plain token preallocates nothing, carries no
+/// reserve and declares a supply — every one of the rules above — and must
+/// still encode.
+#[test]
+fn the_nft_rules_do_not_touch_an_ordinary_token() {
+    let parent = i_address("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq");
+    let mut token = CurrencyDefinition::token(parent, "atoken", 1_000);
+    token.initial_supply = Amount::from_sat(100_000_000);
+    assert!(currency_definition_script(&token).is_ok());
 }
 
 /// A gateway or PBaaS definition carries trailing fields this does not write, so
