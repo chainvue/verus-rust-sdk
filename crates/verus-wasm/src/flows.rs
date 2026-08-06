@@ -1151,13 +1151,27 @@ pub enum JsCommitmentStatus {
         /// What was noticed.
         detail: String,
     },
-    /// The node has never seen the commitment. It may never have been posted,
-    /// or it may have been dropped from the mempool.
+    /// The node has never seen the commitment, and it can still be mined. It
+    /// may never have been posted, or it may have been dropped from the
+    /// mempool. Re-broadcast it.
     ///
     /// The default only because a drift check needs one, and this is the
     /// variant that claims least.
     #[default]
     Gone,
+    /// The commitment can never be mined. **Start over** — this is not a
+    /// retry state.
+    ///
+    /// Its expiry is inside the signed bytes, so re-posting sends the same
+    /// doomed transaction and the node answers `-26: tx-expiring-soon`. The
+    /// salt in the stored `pending` is worthless now; discard it and make a
+    /// fresh reservation, which costs another commitment fee.
+    Expired {
+        /// The height it stopped being minable at.
+        expiry_height: u32,
+        /// Where the chain was when that was established.
+        tip: u32,
+    },
 }
 
 /// A registration transaction, built and signed. **Not broadcast.**
@@ -2136,6 +2150,9 @@ pub fn plan_commitment_status(
                     JsCommitmentStatus::Reorged { detail }
                 }
                 verus_flows::CommitmentStatus::CommitmentGone => JsCommitmentStatus::Gone,
+                verus_flows::CommitmentStatus::Expired { expiry_height, tip } => {
+                    JsCommitmentStatus::Expired { expiry_height, tip }
+                }
             }),
         },
     };

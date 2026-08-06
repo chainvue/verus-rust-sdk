@@ -122,6 +122,35 @@ pub enum FlowError {
     #[error("{0}")]
     NotReady(String),
 
+    /// The name commitment can never be mined, so the reservation is dead.
+    ///
+    /// **Retrying cannot fix this.** `expiryHeight` is inside the bytes the
+    /// signature covers, so re-broadcasting sends the same doomed transaction
+    /// and the node answers `-26: tx-expiring-soon`. A fresh reservation is
+    /// needed, and only the caller can make one — a `Pending` holds no keys.
+    ///
+    /// Typed rather than left to that node string because the two states a
+    /// caller can be in here need opposite actions: a commitment merely
+    /// dropped from a mempool should be re-broadcast, and one that expired
+    /// must be started over. See `CommitmentStatus::Expired`.
+    ///
+    /// The salt in the dead reservation is worthless: it only mattered while
+    /// the commitment was alive. Deleting it costs the commitment fee already
+    /// paid and nothing else.
+    #[error(
+        "the name commitment for {name} expired at block {expiry_height} and the chain is at \
+         {tip}; its expiry is inside the signed bytes, so re-broadcasting cannot help — start a \
+         fresh reservation"
+    )]
+    CommitmentExpired {
+        /// The name being claimed.
+        name: String,
+        /// The height the commitment stopped being minable at.
+        expiry_height: u32,
+        /// Where the chain was when that was established.
+        tip: u32,
+    },
+
     /// A node-reported fee too large to trust by default.
     ///
     /// H4: `operation`'s fee is BURNED — no output exists to recover it from —

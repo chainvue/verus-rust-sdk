@@ -1023,14 +1023,34 @@ export interface CommitmentReorged {
     detail: string;
 }
 
-/** The node has never seen the commitment. */
+/**
+ * The node has never seen the commitment, and it can still be mined.
+ * Re-broadcast it.
+ */
 export interface CommitmentGone {
     kind: "gone";
 }
 
+/**
+ * The commitment can never be mined. **Start over** — not a retry state.
+ *
+ * Its expiry is inside the signed bytes, so re-posting sends the same doomed
+ * transaction and the node answers `-26: tx-expiring-soon`. The salt in the
+ * stored `pending` is worthless; discard it and make a fresh reservation,
+ * which costs another commitment fee.
+ */
+export interface CommitmentExpired {
+    kind: "expired";
+    /** The height it stopped being minable at. */
+    expiryHeight: number;
+    /** Where the chain was when that was established. */
+    tip: number;
+}
+
 /** Where a commitment stands. */
 export type CommitmentStatus =
-    CommitmentWaiting | CommitmentReady | CommitmentReorged | CommitmentGone;
+    CommitmentWaiting | CommitmentReady | CommitmentReorged | CommitmentGone
+    | CommitmentExpired;
 
 /** A registration transaction, built and signed. **Not broadcast.** */
 export interface Registered {

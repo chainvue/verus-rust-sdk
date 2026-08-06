@@ -264,6 +264,193 @@ fn a_commitment_the_node_never_saw_is_reported_as_gone() {
     ));
 }
 
+/// **An expired commitment is not a gone one**, and the two need opposite
+/// actions: re-broadcast versus start over.
+///
+/// This is the whole point of the `Expired` variant. Before it, both landed on
+/// `CommitmentGone`, whose docs invited a re-broadcast — which for an expired
+/// commitment produces a transaction no node will ever accept, since
+/// `expiryHeight` is inside the bytes the signature covers.
+#[test]
+fn a_commitment_past_its_expiry_is_reported_as_expired_not_gone() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "toolate", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+
+    let expiry = pending.expiry_height().expect("the expiry was recorded");
+    assert_eq!(expiry, 1_020, "20 blocks past the tip it was prepared at");
+
+    // Same "the node has never heard of it" setup as the gone case above; only
+    // the tip differs. That is what makes this a test of the expiry rather
+    // than of the lookup.
+    let gone = funded_chain(1_000).with_confirmations(&"cd".repeat(32), 5);
+    assert!(matches!(
+        pending.poll(&gone).unwrap(),
+        CommitmentStatus::CommitmentGone
+    ));
+
+    gone.advance_to(expiry + 5);
+    match pending.poll(&gone).unwrap() {
+        CommitmentStatus::Expired { expiry_height, tip } => {
+            assert_eq!(expiry_height, expiry);
+            assert_eq!(tip, expiry + 5);
+        }
+        other => panic!("expected Expired, got {other:?}"),
+    }
+}
+
+/// A commitment still sitting in a mempool, past its expiry, is just as dead.
+///
+/// The node holding it changes nothing — it can never leave that mempool for a
+/// block. Reporting `Waiting` would tell a caller to keep polling for
+/// something that cannot happen.
+#[test]
+fn an_expired_commitment_the_node_still_holds_is_still_expired() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "held", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let txid = pending.commitment_txid.clone();
+    let expiry = pending.expiry_height().expect("recorded");
+
+    let mempool = funded_chain(1_000).with_confirmations(&txid, 0);
+    assert!(matches!(
+        pending.poll(&mempool).unwrap(),
+        CommitmentStatus::Waiting { .. }
+    ));
+
+    mempool.advance_to(expiry + 1);
+    assert!(matches!(
+        pending.poll(&mempool).unwrap(),
+        CommitmentStatus::Expired { .. }
+    ));
+}
+
+/// A **mined** commitment is past caring about its expiry.
+///
+/// The height gates entry to a block and it is already in one. Calling a
+/// confirmed commitment expired would strand a registration that is perfectly
+/// fine — the opposite mistake, and the more expensive one.
+#[test]
+fn a_confirmed_commitment_is_ready_even_past_its_expiry() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "mined", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let expiry = pending.expiry_height().expect("recorded");
+
+    chain.advance_to(expiry + 50);
+    assert!(matches!(
+        pending.poll(&chain).unwrap(),
+        CommitmentStatus::Ready(_)
+    ));
+}
+
+/// A node refuses a transaction that expires *soon*, not only one that has
+/// expired, so the last blocks before the expiry are already unusable.
+///
+/// Reporting them as `Waiting` sends a caller to poll through a window that
+/// can only ever answer `-26`.
+#[test]
+fn the_blocks_just_below_the_expiry_are_already_too_late() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "margin", &options(), SALT).unwrap();
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let txid = pending.commitment_txid.clone();
+    let expiry = pending.expiry_height().expect("recorded");
+    let threshold = verus_flows::EXPIRING_SOON_THRESHOLD;
+
+    let mempool = funded_chain(1_000).with_confirmations(&txid, 0);
+
+    // One block before the window opens: still alive.
+    mempool.advance_to(expiry - threshold - 1);
+    assert!(
+        matches!(
+            pending.poll(&mempool).unwrap(),
+            CommitmentStatus::Waiting { .. }
+        ),
+        "a commitment outside the expiring-soon window is still waiting"
+    );
+
+    // The first block inside it: a node would already refuse it.
+    mempool.advance_to(expiry - threshold);
+    assert!(matches!(
+        pending.poll(&mempool).unwrap(),
+        CommitmentStatus::Expired { .. }
+    ));
+}
+
+/// `anchor` refuses rather than handing back bytes it can tell are dead.
+///
+/// It reads the tip anyway, so it is in a position to know. Returning the hex
+/// and leaving the caller to discover `-26: tx-expiring-soon` is the
+/// workaround this removes — and `broadcast_commitment` goes through `anchor`,
+/// so a fee is not spent on a certain rejection either.
+#[test]
+fn anchoring_an_expired_commitment_is_refused_by_name() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "refused", &options(), SALT).unwrap();
+    let expiry = pending.expiry_height().expect("recorded");
+
+    chain.advance_to(expiry + 1);
+    let error = pending
+        .anchor(&chain)
+        .expect_err("anchoring a dead commitment must fail");
+    assert!(
+        matches!(error, FlowError::CommitmentExpired { .. }),
+        "expected CommitmentExpired, got {error:?}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("refused"),
+        "names the reservation: {message}"
+    );
+    assert!(
+        message.contains("re-broadcasting cannot help"),
+        "says plainly that retrying is pointless: {message}"
+    );
+
+    // The anchor is not written: recording where the chain was when we noticed
+    // would make the corpse look freshly anchored to the next poll.
+    assert!(pending.anchored_at.is_none());
+
+    // The same refusal reaches the broadcasting path, so nothing is spent.
+    assert!(matches!(
+        pending.broadcast_commitment(&chain, &chain),
+        Err(FlowError::CommitmentExpired { .. })
+    ));
+    assert!(chain.broadcasts().is_empty());
+}
+
+/// A `Pending` written before the expiry was recorded still loads, and is never
+/// declared dead on a guess.
+///
+/// `#[serde(default)]` lands the field as `0`. Zero on the wire means *never
+/// expires*, so reading a missing value that way would call every old
+/// reservation immortal; reading it as an expiry at genesis would call them all
+/// dead. Neither is true, so `expiry_height()` reports "not recorded" and
+/// `is_expired` answers `false` — exactly the behaviour that existed before the
+/// field did.
+#[test]
+fn a_pending_saved_before_the_expiry_existed_is_not_declared_dead() {
+    let chain = funded_chain(1_000);
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "legacy", &options(), SALT).unwrap();
+    pending.expiry_height = 0;
+
+    assert_eq!(pending.expiry_height(), None);
+    assert!(!pending.is_expired(u32::MAX));
+
+    chain.advance_to(9_999);
+    assert!(
+        pending.anchor(&chain).is_ok(),
+        "an unknown expiry must not block the one action that could still work"
+    );
+}
+
 /// The chain got shorter. Anything read before is suspect, including whether
 /// the commitment is still in a block.
 #[test]
