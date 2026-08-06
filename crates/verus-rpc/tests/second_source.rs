@@ -132,6 +132,27 @@ impl ChainReader for Node {
         )
     }
 
+    fn currency_definition(
+        &self,
+        name_or_id: &str,
+    ) -> Result<verus_rpc::CurrencySummary, RpcError> {
+        self.record(
+            &format!("getcurrency {name_or_id}"),
+            verus_rpc::CurrencySummary {
+                currency_id: self.chain_id.to_string(),
+                name: self.name.to_string(),
+                fully_qualified_name: self.name.to_string(),
+                parent: None,
+                system_id: self.chain_id.to_string(),
+                start_block: 0,
+                end_block: 0,
+                options: 0,
+                proof_protocol: 1,
+                definition: serde_json::json!({}),
+            },
+        )
+    }
+
     fn block_count(&self) -> Result<u32, RpcError> {
         self.record("getblockcount", 1_000)
     }
