@@ -29,10 +29,25 @@
 //! * The launch fee is read from the parent's chain policy (or pinned by the
 //!   caller), and a zero fee is refused: it means the parent's definition does
 //!   not carry one, and a transaction built around zero is rejected on chain.
+//!
+//! # Which fee a launch pays
+//!
+//! Two fields, chosen by the definition's own `NFT_TOKEN` bit, because that is
+//! what consensus does — `CCurrencyDefinition::GetCurrencyImportFee` returns
+//! `idImportFees` for a tokenized-control currency and `currencyImportFee` for
+//! everything else:
+//!
+//! | definition | field read | VRSCTEST |
+//! |---|---|---|
+//! | token, basket | `currency_registration_fee` | 200 |
+//! | NFT | `id_import_fee` | 0.02 |
+//!
+//! Four orders of magnitude apart, and half of whichever it is becomes the
+//! reserve deposit at output 5 — so the wrong field is not a cosmetic error.
 
 use verus_keys::PrivateKey;
 use verus_rpc::{Broadcaster, ChainReader};
-use verus_tx::currency_definition::CurrencyDefinition;
+use verus_tx::currency_definition::{option, CurrencyDefinition};
 use verus_tx::currency_launch::{build_currency_launch, LaunchContext, LaunchParams};
 use verus_tx::identity::FLAG_ACTIVE_CURRENCY;
 use verus_tx::{Amount, Expiry, Utxo, DEFAULT_EXPIRY_BLOCKS};
@@ -53,6 +68,10 @@ pub struct Launched {
     /// The height conversions become possible and preconversions stop.
     pub start_block: u64,
     /// The launch fee that was paid, read from chain policy or pinned.
+    ///
+    /// This is the figure a wallet shows before the user consents, so which
+    /// field it came from matters: an NFT pays the parent's `id_import_fee`,
+    /// everything else its `currency_registration_fee`. See the module docs.
     pub launch_fee: Amount,
 }
 
@@ -182,17 +201,48 @@ pub fn prepare_launch(
             definition.parent.to_bytes(),
         )
         .to_string();
-        let reported = reader.currency(&parent)?.currency_registration_fee;
+        let policy = reader.currency(&parent)?;
+        // Consensus picks between two fields, and so must this.
+        // `CCurrencyDefinition::GetCurrencyImportFee` (`crosschainrpc.h:1020`)
+        // returns `idImportFees` for a tokenized-control currency and
+        // `currencyImportFee` for everything else, and every call site passes
+        // `def.ChainOptions() & def.OPTION_NFT_TOKEN` as that bit.
+        //
+        // The difference is four orders of magnitude — 0.02 against 200 on
+        // VRSCTEST — and it is not inert: half the fee becomes the reserve
+        // deposit at output 5, so the wrong field puts 100 VRSCTEST of real
+        // value into an output consensus is not expecting. Confirmed against
+        // the chain: both NFT launches on VRSCTEST, `sdknftbeta`
+        // (`4ad8fb14…7d7e`) and `kmerg` (`8d8671d4…b6b3`), carry a reserve
+        // deposit of 0.01, which is `fee - fee/2` for a fee of 0.02.
+        //
+        // It is also what a wallet shows on the confirmation panel before the
+        // user consents, so getting it wrong misstates the price by 10,000x.
+        let reported = if definition.options & option::NFT_TOKEN != 0 {
+            policy.id_import_fee
+        } else {
+            policy.currency_registration_fee
+        };
         // H4: node-supplied and BURNED outright — see
         // `check_trusted_node_fee`. A caller who pins the fee explicitly
         // has taken responsibility for it, so it skips this bar and is
         // checked against `MAX_DECLARED_BURN` instead, later at assembly.
+        //
+        // The bar is a ceiling only, so an NFT's much smaller fee passes it
+        // unchanged — there is no floor to trip from below.
         check_trusted_node_fee("currency launch", reported)?
     };
     if launch_fee == Amount::ZERO {
-        return Err(FlowError::NotReady(
-            "the parent reports no currency registration fee; pin one if you know better".into(),
-        ));
+        // Name the field that was actually read, since the two live in
+        // different places in the parent's definition.
+        let field = if definition.options & option::NFT_TOKEN != 0 {
+            "identity import fee, which is what an NFT launch is charged"
+        } else {
+            "currency registration fee"
+        };
+        return Err(FlowError::NotReady(format!(
+            "the parent reports no {field}; pin one if you know better"
+        )));
     }
 
     let from = keys[0].address();
