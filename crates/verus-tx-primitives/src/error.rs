@@ -390,6 +390,26 @@ pub enum TxError {
         reason: String,
     },
 
+    /// A spend of funds an identity's timelock still holds.
+    ///
+    /// [`TimelockRefused`](Self::TimelockRefused) is about changing the lock;
+    /// this is about spending *under* one, which consensus enforces on a
+    /// different path and refuses just as anonymously.
+    ///
+    /// `unlock_at` is `None` when the identity carries a delay rather than a
+    /// height. That is not "unknown" — no unlock has been requested, so there
+    /// is no height to wait for, and the funds stay held until someone starts
+    /// the countdown.
+    #[error("{}", match .unlock_at {
+        Some(height) => format!("the identity's funds are locked until block {height}"),
+        None => "the identity is locked and no unlock has been started, so its funds have no \
+                 unlock height yet".to_string(),
+    })]
+    FundsTimelocked {
+        /// The height the funds open at, if a countdown is running.
+        unlock_at: Option<u32>,
+    },
+
     /// The output being spent does not hold the identity being updated.
     #[error("the output being spent does not hold this identity")]
     IdentityOutputMismatch,
