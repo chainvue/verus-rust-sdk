@@ -202,6 +202,14 @@ pub mod signature {
 /// the same-chain case can be built offline at all.
 #[cfg(feature = "transparent")]
 pub mod currency {
+    /// The option bits a definition's `options` field is built from.
+    ///
+    /// [`CurrencyDefinition::token`] sets [`option::TOKEN`] on its own, which is
+    /// why the simple case never needed these. Anything else — a fractional
+    /// basket, an NFT, referral-paying sub-identity registration — has to name
+    /// the bit, and a facade that hands out the struct but not its constants
+    /// leaves that caller reaching past it into `verus_tx`.
+    pub use verus_tx::currency_definition::option;
     pub use verus_tx::currency_definition::{
         currency_definition_script, serialize_definition, CurrencyDefinition, Preallocation,
     };
