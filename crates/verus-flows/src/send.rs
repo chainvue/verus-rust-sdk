@@ -8,8 +8,8 @@ use verus_keys::{Address, PrivateKey};
 use verus_rpc::{Broadcaster, ChainReader};
 use verus_tx::{
     build_token_send, build_transparent_send, plan_transparent_send, Amount, CurrencyId, Expiry,
-    InputKind, PartialTransaction, Recipient, SendParams, SignedTransaction, TokenRecipient,
-    TokenSendParams, DEFAULT_EXPIRY_BLOCKS,
+    InputKind, PartialTransaction, Recipient, SendParams, SignedTransaction, Timelock,
+    TokenRecipient, TokenSendParams, DEFAULT_EXPIRY_BLOCKS, FLAG_LOCKED,
 };
 
 use crate::broadcast::Unsent;
@@ -206,10 +206,44 @@ pub fn send_from_identity(
     prepare_send_from_identity(reader, keys, identity, to, amount)?.broadcast(broadcaster)
 }
 
+/// The timelock as `getidentity` renders it, read the way [`Timelock::of`]
+/// reads the decoded object: the flag and the height together.
+///
+/// The flag must be masked, not merely compared against zero — `flags` also
+/// carries `FLAG_ACTIVE_CURRENCY` and `FLAG_TOKENIZED_CONTROL`. `VRSCTEST@`
+/// itself reports `flags = 1`, which is an active currency and not a lock.
+///
+/// A node that omits either field is read as unlocked, which is the direction
+/// that lets the spend proceed to consensus rather than refusing on a missing
+/// key. The node is not trusted to be right here, only to be answering about
+/// the identity that was asked for — the same standing every other check in
+/// [`prepare_send_from_identity`] gives it.
+fn timelock_of(identity: &serde_json::Value) -> Timelock {
+    let flags = u32::try_from(identity["flags"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
+    let unlock_after =
+        u32::try_from(identity["timelock"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
+    if flags & FLAG_LOCKED != 0 {
+        Timelock::DelayAfterUnlock(unlock_after)
+    } else if unlock_after != 0 {
+        Timelock::UntilBlock(unlock_after)
+    } else {
+        Timelock::None
+    }
+}
+
 /// Build an identity-funded payment without sending it.
 ///
 /// The read-only half of [`send_from_identity`]; every check that function
 /// makes is made here, because all of them are reads.
+///
+/// # Timelocks
+///
+/// An identity whose funds are still held by a timelock is refused here with
+/// [`TxError::FundsTimelocked`](verus_tx::TxError::FundsTimelocked), naming the
+/// height they open at. Consensus refuses the same spend with
+/// `mandatory-script-verify-flag-failed`, which names neither the identity nor
+/// the lock nor the height — and a caller with no way to tell that from a wrong
+/// key or a stale identity guesses, usually at their node.
 pub fn prepare_send_from_identity(
     reader: &impl ChainReader,
     keys: &[&PrivateKey],
@@ -268,6 +302,23 @@ pub fn prepare_send_from_identity(
     let utxos = funding::identity_held(reader, &record.identity_address);
     let tip = reader.block_count();
     let (utxos, tip) = (utxos?, tip?);
+
+    // A timelock holds the funds, not just the identity object. Consensus
+    // refuses the spend on a path the lifecycle flows' `check_timelock` never
+    // sees — that one guards changes *to* the lock — and refuses it with the
+    // same `mandatory-script-verify-flag-failed` that names nothing.
+    //
+    // Read from the node's rendering, like the revoked and primary-address
+    // checks above, and free: the tip was already needed for the expiry.
+    let timelock = timelock_of(&record.identity);
+    if !timelock.spendable_at(tip) {
+        return Err(FlowError::Tx(verus_tx::TxError::FundsTimelocked {
+            unlock_at: match timelock {
+                Timelock::UntilBlock(height) => Some(height),
+                _ => None,
+            },
+        }));
+    }
 
     let recipients = [Recipient {
         address: to,
@@ -371,4 +422,120 @@ pub fn prepare_send_token(
         Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
     );
     Ok(build_token_send(key, &params)?.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::ScriptedReader;
+    use serde_json::json;
+    use verus_rpc::IdentityRecord;
+    use verus_tx::Txid;
+
+    const TIP: u32 = 1_170_800;
+    const ID: [u8; 20] = [0x3f; 20];
+
+    fn key() -> PrivateKey {
+        PrivateKey::from_bytes(&[0x7c; 32], true).expect("a valid scalar")
+    }
+
+    fn i_address() -> String {
+        Address::new(verus_keys::AddressKind::Identity, ID).to_string()
+    }
+
+    /// A node answering about an identity that holds one spendable output.
+    ///
+    /// `flags` and `timelock` are given raw, because the point of these tests is
+    /// what this crate makes of the two together.
+    fn reader_for(flags: u32, timelock: u32) -> ScriptedReader {
+        let address = i_address();
+        let script = verus_tx::identity_payment_script(ID).expect("the pay-to-identity script");
+        ScriptedReader::new(TIP)
+            .with_script_utxo(&address, 1_170_000, 500_000_000, script)
+            .with_identity(
+                "app@",
+                IdentityRecord {
+                    fully_qualified_name: "app@".into(),
+                    identity_address: address.clone(),
+                    status: "active".into(),
+                    outpoint: (Txid::from_internal([0x22; 32]), 0),
+                    block_height: 1_170_000,
+                    identity: json!({
+                        "identityaddress": address,
+                        "primaryaddresses": [key().address().to_string()],
+                        "minimumsignatures": 1,
+                        "flags": flags,
+                        "timelock": timelock,
+                    }),
+                },
+            )
+    }
+
+    fn send(reader: &ScriptedReader) -> Result<Unsent<crate::Sent>, FlowError> {
+        let k = key();
+        prepare_send_from_identity(
+            reader,
+            &[&k],
+            "app@",
+            &k.address().to_string(),
+            Amount::from_sat(100_000_000),
+        )
+    }
+
+    /// The baseline, so the refusals below are not just "nothing ever builds".
+    #[test]
+    fn an_unlocked_identity_spends_normally() {
+        send(&reader_for(0, 0)).expect("an unlocked identity can spend what it holds");
+    }
+
+    /// `flags` is a bitfield, and the common non-zero value is not a lock.
+    ///
+    /// `VRSCTEST@` itself reports `flags = 1` — `FLAG_ACTIVE_CURRENCY`. Testing
+    /// the field against zero rather than masking `FLAG_LOCKED` would freeze
+    /// every currency-bearing identity on the chain out of its own funds.
+    #[test]
+    fn an_active_currency_flag_is_not_a_lock() {
+        // 0x1 is `FLAG_ACTIVE_CURRENCY`, spelled out because `verus_tx`
+        // re-exports `FLAG_LOCKED` and `FLAG_TOKENIZED_CONTROL` but not this one.
+        const ACTIVE_CURRENCY: u32 = 0x1;
+        assert_eq!(
+            timelock_of(&json!({"flags": ACTIVE_CURRENCY, "timelock": 0})),
+            Timelock::None
+        );
+        send(&reader_for(ACTIVE_CURRENCY, 0)).expect("an active currency is not a timelock");
+    }
+
+    /// A running countdown holds the funds, and the refusal says until when.
+    #[test]
+    fn a_countdown_still_running_refuses_the_spend_and_names_the_height() {
+        let err = send(&reader_for(0, TIP + 39)).expect_err("the funds are still held");
+        let message = format!("{err}");
+        assert!(
+            message.contains(&(TIP + 39).to_string()),
+            "the caller needs the height to know when to retry: {message}"
+        );
+    }
+
+    /// A delay lock has no unlock height at all, and saying so is the honest
+    /// answer — "when does this open" has no answer until someone asks it to.
+    #[test]
+    fn a_delay_lock_says_no_unlock_has_been_started() {
+        let err = send(&reader_for(FLAG_LOCKED, 100)).expect_err("a delay lock holds the funds");
+        let message = format!("{err}");
+        assert!(
+            message.contains("no unlock has been started"),
+            "a delay is not a height and must not be reported as one: {message}"
+        );
+        assert!(
+            !message.contains("100"),
+            "100 is a delay, not a block to wait for: {message}"
+        );
+    }
+
+    /// The state every previously-unlocked identity rests in — see #104. The
+    /// stale height is behind the tip, so it holds nothing.
+    #[test]
+    fn an_elapsed_countdown_does_not_hold_the_funds() {
+        send(&reader_for(0, TIP - 300)).expect("a countdown the chain has passed holds nothing");
+    }
 }
