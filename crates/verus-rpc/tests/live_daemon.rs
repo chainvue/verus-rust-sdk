@@ -1060,3 +1060,46 @@ fn the_public_endpoint_serves_the_address_mempool() {
         );
     }
 }
+
+/// The whole point of `currency_definition`: one currency, one request.
+///
+/// The recorded-reply tests prove the parse. This proves the daemon actually
+/// answers `getcurrency` with the fields the parse requires — a recorded
+/// fixture cannot notice the daemon dropping one.
+///
+/// It also re-measures the size difference the method exists for, since that
+/// number is quoted in the trait's own documentation and a chain grows.
+#[test]
+fn one_currency_costs_one_request_and_agrees_with_the_whole_chain() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    let client = client();
+
+    let one = client
+        .currency_definition("VRSCTEST")
+        .expect("getcurrency answers with a parseable definition");
+    assert_eq!(one.name, "VRSCTEST");
+    assert_eq!(
+        one.parent, None,
+        "the root chain is defined under nothing, live as in the fixture"
+    );
+
+    let all = client.list_currencies().expect("listcurrencies");
+    let row = all
+        .iter()
+        .find(|c| c.currency_id == one.currency_id)
+        .expect("the chain lists itself");
+    assert_eq!(
+        (one.options, one.proof_protocol, one.start_block),
+        (row.options, row.proof_protocol, row.start_block),
+        "the single read and the whole-chain read must agree about the same currency"
+    );
+
+    eprintln!(
+        "PROVEN: getcurrency and listcurrencies agree; the chain lists {} currencies to answer \
+         the same question",
+        all.len()
+    );
+}

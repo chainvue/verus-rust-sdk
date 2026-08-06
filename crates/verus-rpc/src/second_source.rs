@@ -380,6 +380,16 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
         self.primary.estimate_conversion(from, to, amount, via)
     }
 
+    /// Primary only, unlike [`ChainReader::currency`] just above.
+    ///
+    /// That one is compared because a wrong `idregistrationfees` is discovered
+    /// after a name commitment has been spent. This one answers what a currency
+    /// *is* — nothing is spent against it, so a disagreement here costs a
+    /// mislabelled row in a wallet rather than money.
+    fn currency_definition(&self, name_or_id: &str) -> Result<CurrencySummary, RpcError> {
+        self.primary.currency_definition(name_or_id)
+    }
+
     fn currency_state(&self, name_or_id: &str) -> Result<Value, RpcError> {
         self.primary.currency_state(name_or_id)
     }

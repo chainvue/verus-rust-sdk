@@ -197,7 +197,33 @@ pub trait ChainReader {
     fn address_balance(&self, addresses: &[&str]) -> Result<AddressBalance, RpcError>;
     /// Registration policy for a currency: the fee, referral levels and
     /// proofprotocol a registration under it needs.
+    ///
+    /// This is the *policy* view — what it costs to register under this
+    /// currency. For what the currency **is**, see
+    /// [`ChainReader::currency_definition`].
     fn currency(&self, name_or_id: &str) -> Result<CurrencyPolicy, RpcError>;
+    /// What a currency is: its kind, its lifetime, and its definition in full.
+    ///
+    /// The same [`CurrencySummary`] [`ChainReader::list_currencies`] yields per
+    /// entry, for one currency and one request. Both parse the same object
+    /// through the same function; `listcurrencies` merely nests it under
+    /// `currencydefinition` while `getcurrency` returns it bare.
+    ///
+    /// # Why this exists next to `list_currencies`
+    ///
+    /// Until 2026-08-06 the only route to `options`, `proof_protocol` and the
+    /// raw definition was `list_currencies`, which returns every currency on the
+    /// chain. Measured against `api.verustest.net`:
+    ///
+    /// | | bytes |
+    /// |---|---|
+    /// | `getcurrency VRSCTEST` | 2,018 |
+    /// | `listcurrencies` | 464,365 |
+    ///
+    /// 230× for one lookup, growing with the chain rather than with the
+    /// question — so a wallet that had just launched a currency could not say
+    /// what it launched without pulling half a megabyte.
+    fn currency_definition(&self, name_or_id: &str) -> Result<CurrencySummary, RpcError>;
     /// What a conversion is expected to yield.
     ///
     /// Ask before signing, and treat the answer as advisory: the conversion runs
@@ -748,6 +774,13 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         let raw: RawCurrency<'_> = serde_json::from_str(result.get())
             .map_err(|e| RpcError::Unexpected(format!("getcurrency: {e}")))?;
         raw.into_typed()
+    }
+
+    fn currency_definition(&self, name_or_id: &str) -> Result<CurrencySummary, RpcError> {
+        // `getcurrency` returns the definition bare, where `listcurrencies`
+        // nests it — so this hands the whole result to the shared parser.
+        let definition: serde_json::Value = self.call(Method::GetCurrency, json!([name_or_id]))?;
+        crate::types::summary_from_definition(definition)
     }
 
     fn estimate_conversion(

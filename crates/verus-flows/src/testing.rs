@@ -38,6 +38,7 @@ pub struct ScriptedReader {
     /// reads an identity at two different heights cannot be tested at all.
     identity_history: RefCell<Vec<(String, u32, IdentityRecord)>>,
     policy: RefCell<Option<CurrencyPolicy>>,
+    definition: RefCell<Option<verus_rpc::CurrencySummary>>,
     confirmations: RefCell<Vec<(String, u32)>>,
     /// Heights handed out by successive `block_count` calls, consumed in order.
     /// Empty means "the tip does not move".
@@ -75,6 +76,7 @@ impl ScriptedReader {
             identity_content: RefCell::new(std::collections::BTreeMap::new()),
             identity_history: RefCell::new(Vec::new()),
             policy: RefCell::new(None),
+            definition: RefCell::new(None),
             confirmations: RefCell::new(Vec::new()),
             heights: RefCell::new(Vec::new()),
             requests: RefCell::new(0),
@@ -237,6 +239,13 @@ impl ScriptedReader {
     /// The registration policy `currency` returns.
     pub fn with_policy(self, policy: CurrencyPolicy) -> Self {
         *self.policy.borrow_mut() = Some(policy);
+        self
+    }
+
+    /// What `getcurrency` says a currency *is*, as opposed to what registering
+    /// under it costs — the answer [`ChainReader::currency_definition`] gives.
+    pub fn with_currency_definition(self, definition: verus_rpc::CurrencySummary) -> Self {
+        *self.definition.borrow_mut() = Some(definition);
         self
     }
 
@@ -565,6 +574,17 @@ impl ChainReader for ScriptedReader {
     fn currency(&self, name_or_id: &str) -> Result<CurrencyPolicy, RpcError> {
         self.count();
         self.policy.borrow().clone().ok_or(RpcError::Node {
+            code: -5,
+            message: format!("currency {name_or_id} not found"),
+        })
+    }
+
+    fn currency_definition(
+        &self,
+        name_or_id: &str,
+    ) -> Result<verus_rpc::CurrencySummary, RpcError> {
+        self.count();
+        self.definition.borrow().clone().ok_or(RpcError::Node {
             code: -5,
             message: format!("currency {name_or_id} not found"),
         })

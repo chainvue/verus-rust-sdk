@@ -1119,3 +1119,64 @@ fn an_address_with_nothing_pending_is_an_empty_list() {
         .expect("an empty list is a real answer");
     assert!(rows.is_empty());
 }
+
+/// One currency, one request — and the same object either way.
+///
+/// `getcurrency` and `listcurrencies` carry the same definition in different
+/// wrappers: bare in one, nested under `currencydefinition` in the other. Both
+/// go through `summary_from_definition`, and this asserts they land on the same
+/// typed value rather than trusting that they do.
+///
+/// The drift this guards against is quiet: a single-currency read that reported
+/// a different `options` than the whole-chain read would mislabel exactly the
+/// currency a wallet just launched and cares most about.
+#[test]
+fn a_single_currency_reads_the_same_as_its_row_in_the_whole_chain() {
+    let one = client("getcurrency_vrsctest")
+        .currency_definition("VRSCTEST")
+        .unwrap();
+    let all = client("listcurrencies_vrsctest").list_currencies().unwrap();
+    let row = all
+        .iter()
+        .find(|c| c.currency_id == one.currency_id)
+        .expect("VRSCTEST is in the recorded listcurrencies reply");
+
+    assert_eq!(one.name, row.name);
+    assert_eq!(one.fully_qualified_name, row.fully_qualified_name);
+    assert_eq!(one.parent, row.parent);
+    assert_eq!(one.system_id, row.system_id);
+    assert_eq!(one.start_block, row.start_block);
+    assert_eq!(one.end_block, row.end_block);
+    assert_eq!(one.options, row.options);
+    assert_eq!(one.proof_protocol, row.proof_protocol);
+}
+
+/// The fields that were unreachable without pulling every currency on the chain.
+///
+/// `options` says what kind of currency it is and `proof_protocol` decides the
+/// fee-output shape a sub-identity registration must carry. Neither is in
+/// `CurrencyPolicy`, which is the fee-policy view of the same reply.
+#[test]
+fn a_currency_definition_carries_what_the_policy_view_drops() {
+    let summary = client("getcurrency_vrsctest")
+        .currency_definition("VRSCTEST")
+        .unwrap();
+
+    assert_eq!(summary.currency_id, "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq");
+    assert_eq!(summary.options, 264);
+    assert_eq!(summary.proof_protocol, 1);
+    assert_eq!(
+        summary.parent, None,
+        "a root chain is defined under nothing, and absence means that here"
+    );
+
+    // And the long tail stays reachable rather than being typed and truncated.
+    assert!(
+        summary.definition.get("preallocations").is_some(),
+        "the whole definition is kept alongside for the fields not typed above"
+    );
+    assert!(
+        summary.definition.get("definitiontxid").is_some(),
+        "including the txid that proves where the definition came from"
+    );
+}

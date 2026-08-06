@@ -928,51 +928,63 @@ pub(crate) struct RawCurrencyEntry {
 
 impl RawCurrencyEntry {
     pub(crate) fn into_typed(self) -> Result<CurrencySummary, RpcError> {
-        let definition = self.currencydefinition;
-        let text = |key: &str| -> Result<String, RpcError> {
-            definition
-                .get(key)
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| RpcError::Unexpected(format!("a currency definition has no {key}")))
-        };
-        // Required, not defaulted — the opposite of what a "sensible default"
-        // instinct suggests, and for a concrete reason. All four of these are
-        // present, integral and within `u32` on every one of the 290
-        // currencies, so `unwrap_or(0)` could never fire on an honest reply;
-        // it could only turn a missing, negative or oversized value into a
-        // convincing zero. And zero is never neutral here: `proofprotocol` is
-        // 1, 2 or 3 and decides the fee-output shape a sub-identity
-        // registration must carry, `options` decides what kind of currency
-        // this is, and an `endblock` of zero means "never ends".
-        let number = |key: &'static str| -> Result<u32, RpcError> {
-            definition
-                .get(key)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| {
-                    RpcError::Unexpected(format!("a currency definition has no usable {key}"))
-                })
-        };
-
-        Ok(CurrencySummary {
-            currency_id: text("currencyid")?,
-            name: text("name")?,
-            fully_qualified_name: text("fullyqualifiedname")?,
-            // Absent on a root chain, and that is the one case where absence
-            // means something rather than being a gap in the reply.
-            parent: definition
-                .get("parent")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            system_id: text("systemid")?,
-            start_block: number("startblock")?,
-            end_block: number("endblock")?,
-            options: number("options")?,
-            proof_protocol: number("proofprotocol")?,
-            definition,
-        })
+        summary_from_definition(self.currencydefinition)
     }
+}
+
+/// One currency definition, typed.
+///
+/// Shared by the two RPCs that carry the same object in different wrappers:
+/// `listcurrencies` nests it under `currencydefinition`, `getcurrency` returns
+/// it bare. Parsing them through one function is what keeps a single-currency
+/// read from drifting away from the whole-chain one — the two answered
+/// differently would be worse than either being wrong.
+pub(crate) fn summary_from_definition(
+    definition: serde_json::Value,
+) -> Result<CurrencySummary, RpcError> {
+    let text = |key: &str| -> Result<String, RpcError> {
+        definition
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| RpcError::Unexpected(format!("a currency definition has no {key}")))
+    };
+    // Required, not defaulted — the opposite of what a "sensible default"
+    // instinct suggests, and for a concrete reason. All four of these are
+    // present, integral and within `u32` on every one of the 290
+    // currencies, so `unwrap_or(0)` could never fire on an honest reply;
+    // it could only turn a missing, negative or oversized value into a
+    // convincing zero. And zero is never neutral here: `proofprotocol` is
+    // 1, 2 or 3 and decides the fee-output shape a sub-identity
+    // registration must carry, `options` decides what kind of currency
+    // this is, and an `endblock` of zero means "never ends".
+    let number = |key: &'static str| -> Result<u32, RpcError> {
+        definition
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| {
+                RpcError::Unexpected(format!("a currency definition has no usable {key}"))
+            })
+    };
+
+    Ok(CurrencySummary {
+        currency_id: text("currencyid")?,
+        name: text("name")?,
+        fully_qualified_name: text("fullyqualifiedname")?,
+        // Absent on a root chain, and that is the one case where absence
+        // means something rather than being a gap in the reply.
+        parent: definition
+            .get("parent")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        system_id: text("systemid")?,
+        start_block: number("startblock")?,
+        end_block: number("endblock")?,
+        options: number("options")?,
+        proof_protocol: number("proofprotocol")?,
+        definition,
+    })
 }
 
 /// One converter, whose definition hides behind a **key that is its own id**.
