@@ -118,6 +118,7 @@ fn identity_utxo(identity: &Identity) -> Utxo {
             identity.to_bytes().unwrap(),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .unwrap(),
     }

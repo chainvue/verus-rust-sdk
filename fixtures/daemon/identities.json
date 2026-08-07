@@ -355,6 +355,50 @@
         "timelock": 0,
         "version": 3
       }
+    },
+    {
+      "name": "sdknftbeta.VRSCTEST@",
+      "identity_address": "iHgX2Ft17dp3woZxCSZUtbmjSooucc8Cn9",
+      "script": "47040300010315049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b15049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b15049bd668e1e4c5091dc39d226dda6d78dff5ae6a0bcc4cee04030e010115049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b4c8403000000050000000114485ec79f34a411df3e3eea999c75903bea91023401000000a6ef9ea235635e328124ff3429db9f9e91b64e2d0a73646b6e66746265746100009bd668e1e4c5091dc39d226dda6d78dff5ae6a0b9bd668e1e4c5091dc39d226dda6d78dff5ae6a0b00a6ef9ea235635e328124ff3429db9f9e91b64e2d000000001b04030f010115049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b30040310010215049bd668e1e4c5091dc39d226dda6d78dff5ae6a0b14b6aff598ba595562ed96e7a4841936ed236cf3bd75",
+      "getidentity": {
+        "contentmap": {},
+        "contentmultimap": {},
+        "flags": 5,
+        "identityaddress": "iHgX2Ft17dp3woZxCSZUtbmjSooucc8Cn9",
+        "minimumsignatures": 1,
+        "name": "sdknftbeta",
+        "parent": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "primaryaddresses": [
+          "RFsrGjz7hLiA2kUNhMzkreNPm6qmrZ8Ztg"
+        ],
+        "recoveryauthority": "iHgX2Ft17dp3woZxCSZUtbmjSooucc8Cn9",
+        "revocationauthority": "iHgX2Ft17dp3woZxCSZUtbmjSooucc8Cn9",
+        "systemid": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "timelock": 0,
+        "version": 3
+      }
+    },
+    {
+      "name": "kmerg.VRSCTEST@",
+      "identity_address": "i4saPv8g6LPx7gmrZ37gX7ghinVv8JEATr",
+      "script": "47040300010315040f542a851b1d74e4f391d3f4843bbd6b2bdc193015040f542a851b1d74e4f391d3f4843bbd6b2bdc193015040f542a851b1d74e4f391d3f4843bbd6b2bdc1930cc4ce904030e010115040f542a851b1d74e4f391d3f4843bbd6b2bdc19304c7f0300000005000000011495083c76b8be40dca6e3c8321c387f73093132d501000000a6ef9ea235635e328124ff3429db9f9e91b64e2d056b6d65726700000f542a851b1d74e4f391d3f4843bbd6b2bdc19300f542a851b1d74e4f391d3f4843bbd6b2bdc193000a6ef9ea235635e328124ff3429db9f9e91b64e2d000000001b04030f010115040f542a851b1d74e4f391d3f4843bbd6b2bdc193030040310010215040f542a851b1d74e4f391d3f4843bbd6b2bdc193014b6aff598ba595562ed96e7a4841936ed236cf3bd75",
+      "getidentity": {
+        "contentmap": {},
+        "contentmultimap": {},
+        "flags": 5,
+        "identityaddress": "i4saPv8g6LPx7gmrZ37gX7ghinVv8JEATr",
+        "minimumsignatures": 1,
+        "name": "kmerg",
+        "parent": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "primaryaddresses": [
+          "RNsCdMnAFWVmtbhvVGfzyeUcEQ3o1h5hZh"
+        ],
+        "recoveryauthority": "i4saPv8g6LPx7gmrZ37gX7ghinVv8JEATr",
+        "revocationauthority": "i4saPv8g6LPx7gmrZ37gX7ghinVv8JEATr",
+        "systemid": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "timelock": 0,
+        "version": 3
+      }
     }
   ]
 }

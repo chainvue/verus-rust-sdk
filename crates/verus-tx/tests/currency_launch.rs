@@ -260,6 +260,55 @@ fn a_preallocating_definition_still_builds() {
     assert!(build_launch_outputs(&definition, &context(&fixture)).is_ok());
 }
 
+/// The identity output of an NFT launch carries a destination no other launch
+/// does, and omitting it is refused by consensus with `-25:
+/// bad-txns-failed-precheck` — which names nothing.
+///
+/// `CIdentity::IdentityUpdateOutputScript` (`src/key_io.cpp:1881`) pushes the
+/// `EVAL_IDENTITY_RECOVER` contract key hash onto the recovery condition's
+/// destinations under `HasTokenizedControl()`. `build_launch_outputs` sets that
+/// flag for an NFT, so the script it builds has to agree with the flag it just
+/// set.
+#[test]
+fn an_nft_launch_puts_the_recover_contract_in_the_identity_output() {
+    let fixture = fixture();
+    let mut definition = token_definition(&fixture);
+    definition.options |= option::NFT_TOKEN;
+
+    let outputs = build_launch_outputs(&definition, &context(&fixture)).unwrap();
+    let script = hex::encode(&outputs.outputs[0].script_pubkey);
+
+    // The whole recovery condition, not just the key hash: `1-of-2` over the
+    // recovery authority — which is not the identity's own address — and the
+    // contract. A test for the hash alone would pass on a script that pushed it
+    // into the wrong condition.
+    let (id, _) = identity(&fixture);
+    let recovery = format!(
+        "300403100102 1504{} 14{}",
+        hex::encode(id.recovery_authority),
+        hex::encode(verus_tx::cc::IDENTITY_RECOVER_KEYHASH)
+    )
+    .replace(' ', "");
+    assert!(
+        script.ends_with(&format!("{recovery}75")),
+        "an NFT launch's identity output must end in the tokenized-control \
+         recovery condition\n  built: {script}\n  wanted tail: {recovery}75"
+    );
+}
+
+/// The same launch without the NFT bit must not carry it — the destination is
+/// not harmless padding, it hands the recovery path to a contract.
+#[test]
+fn a_plain_token_launch_leaves_the_recover_contract_out() {
+    let fixture = fixture();
+    let outputs = build_launch_outputs(&token_definition(&fixture), &context(&fixture)).unwrap();
+    let script = hex::encode(&outputs.outputs[0].script_pubkey);
+    assert!(
+        !script.contains(&hex::encode(verus_tx::cc::IDENTITY_RECOVER_KEYHASH)),
+        "a token launch must not carry the recover contract destination"
+    );
+}
+
 // ----------------------------------------------------------------- assembling
 
 use verus_keys::PrivateKey;
@@ -288,6 +337,7 @@ fn identity_utxo(identity: &Identity, address: [u8; 20]) -> Utxo {
             identity.to_bytes().unwrap(),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .unwrap(),
     }

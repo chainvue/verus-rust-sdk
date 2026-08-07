@@ -438,8 +438,14 @@ fn referrer_identity(hash: [u8; 20]) -> Vec<u8> {
             .hash(),
         unlock_after: 0,
     };
-    verus_tx::identity_primary_script(hash, identity.to_bytes().unwrap(), hash, hash)
-        .expect("identity script")
+    verus_tx::identity_primary_script(
+        hash,
+        identity.to_bytes().unwrap(),
+        hash,
+        hash,
+        identity.has_tokenized_control(),
+    )
+    .expect("identity script")
 }
 
 /// A referrer that exists on chain and was itself registered WITHOUT a

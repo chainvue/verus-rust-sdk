@@ -205,6 +205,7 @@ fn every_on_chain_identity_output_re_encodes_byte_for_byte() {
             identity.to_bytes().expect("encode"),
             identity.revocation_authority,
             identity.recovery_authority,
+            identity.has_tokenized_control(),
         )
         .expect("build");
 
