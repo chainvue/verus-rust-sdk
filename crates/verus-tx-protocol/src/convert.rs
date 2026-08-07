@@ -47,7 +47,7 @@
 //!
 //! [`estimateconversion`]: https://api.verus.services
 
-use verus_keys::{Address, PrivateKey};
+use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_wire::TxOut;
 
 use crate::decode::{read_compact_size, read_var_int};
@@ -517,6 +517,38 @@ const FLAG_DEST_GATEWAY: u8 = 128;
 /// must still read as its base kind rather than as an unknown type.
 const FLAG_MASK: u8 = 16 | 32 | FLAG_DEST_AUX | FLAG_DEST_GATEWAY;
 
+/// The transfer destination for an address, keeping its kind.
+///
+/// A `CTransferDestination` carries a **type byte**, and
+/// [`destination_type`] already writes `4` for an identity — the encoding was
+/// never the gap. What was missing is that this flattened every address to
+/// `PubKeyHash`, so an `i` address paid the R-form of the same 20 bytes: an
+/// address nobody holds a key to. The callers therefore had to refuse an
+/// identity outright, which is why a token could not be paid to a VerusID at
+/// all.
+///
+/// Paying an identity is ordinary Verus usage, not an edge case —
+/// `sendcurrency` builds one whenever a user names an identity, and
+/// `reserves.cpp` constructs `CTransferDestination(DEST_ID, ...)` on the
+/// import side.
+///
+/// **Minting to the controlling identity is not special-cased.** That was the
+/// open question when this was written, and the chain answers it: eight
+/// centralized currencies on VRSCTEST hold their own token at their issuing
+/// identity's address — `IlikeCoffe` 100000, `TheMarket` 200000, `TST` 200.
+/// An identity's treasury is the ordinary place for issued supply, and it is
+/// the destination a caller reaches for first.
+///
+/// A script hash is still refused: no template here writes one, and guessing
+/// an untested encoding for money is not worth the convenience.
+fn destination_for(address: &Address) -> Result<Destination, TxError> {
+    match address.kind() {
+        AddressKind::PubKeyHash => Ok(Destination::PubKeyHash(address.hash())),
+        AddressKind::Identity => Ok(Destination::Identity(address.hash())),
+        AddressKind::ScriptHash => Err(TxError::UnsupportedRecipient),
+    }
+}
+
 fn destination_type(destination: &Destination) -> u8 {
     match destination {
         Destination::PubKey(_) => 1,
@@ -790,7 +822,7 @@ pub fn build_conversion(
     // aux-flagged one.
     let destination = match kind {
         ConversionKind::Burn | ConversionKind::Mint { .. } => {
-            TransferDestination::plain(Destination::PubKeyHash(recipient.hash()))
+            TransferDestination::plain(destination_for(&recipient)?)
         }
         // `refund`, not `recipient`. The two are the same when you convert for
         // yourself, which is how every daemon template here was captured — so
@@ -802,8 +834,8 @@ pub fn build_conversion(
         // `min_preconversion` refunds **every** contribution, so the refund
         // path is the ordinary outcome rather than a rare one.
         _ => TransferDestination::converting_with_refund(
-            Destination::PubKeyHash(recipient.hash()),
-            Destination::PubKeyHash(refund.hash()),
+            destination_for(&recipient)?,
+            destination_for(&refund)?,
         ),
     };
 
@@ -1006,6 +1038,118 @@ mod tests {
             1027
         );
         assert_eq!(ConversionKind::Burn.flags(), 641);
+    }
+
+    /// **A VerusID is a destination, and it is written as one.**
+    ///
+    /// `destination_type` has returned `4` for an identity since it was
+    /// written; nothing ever constructed one. Every address was flattened to
+    /// `PubKeyHash`, so naming an identity paid the R-form of the same 20
+    /// bytes — an address nobody holds a key to. The callers had to refuse an
+    /// identity outright, which is why a token could not be paid to a VerusID
+    /// at all.
+    ///
+    /// The **type byte** is the whole claim: the payload is the same 20 bytes
+    /// either way, so a test comparing only the hash would pass against the
+    /// bug.
+    #[test]
+    fn an_identity_is_written_with_its_own_type_byte() {
+        let identity =
+            verus_keys::Address::new(verus_keys::AddressKind::Identity, recipient().hash());
+
+        for kind in [
+            ConversionKind::Burn,
+            ConversionKind::Mint {
+                currency: CurrencyId::from_bytes(SHYLOCK),
+            },
+            ConversionKind::IntoFractional {
+                fractional: CurrencyId::from_bytes(SHYLOCK),
+            },
+        ] {
+            let built = build_conversion(
+                CurrencyId::from_bytes(VRSCTEST),
+                Amount::from_sat(1),
+                kind.clone(),
+                identity,
+                recipient(),
+                CurrencyId::from_bytes(VRSCTEST),
+                Amount::from_sat(1),
+            )
+            .expect("an identity is a destination the wire has a byte for");
+
+            assert_eq!(
+                destination_type(&built.destination.recipient),
+                4,
+                "{kind:?}: an identity must be written as DEST_ID, not as a key hash"
+            );
+            assert_eq!(
+                built.destination.recipient,
+                Destination::Identity(identity.hash()),
+                "{kind:?}: carrying the identity's own 20 bytes"
+            );
+        }
+    }
+
+    /// The refund destination keeps its kind too.
+    ///
+    /// It is a separate address from the recipient and went through the same
+    /// flattening. A preconvert that misses its minimum refunds **every**
+    /// contribution, so a refund to an identity that silently became an
+    /// R-address would lose the money on the ordinary path, not a rare one.
+    #[test]
+    fn a_refund_to_an_identity_keeps_its_kind() {
+        let identity =
+            verus_keys::Address::new(verus_keys::AddressKind::Identity, recipient().hash());
+        let built = build_conversion(
+            CurrencyId::from_bytes(VRSCTEST),
+            Amount::from_sat(1),
+            ConversionKind::IntoFractional {
+                fractional: CurrencyId::from_bytes(SHYLOCK),
+            },
+            recipient(),
+            identity,
+            CurrencyId::from_bytes(VRSCTEST),
+            Amount::from_sat(1),
+        )
+        .unwrap();
+
+        assert_eq!(
+            destination_type(&built.destination.recipient),
+            2,
+            "the recipient is still an R-address"
+        );
+        assert_eq!(
+            built.destination.auxiliary.len(),
+            1,
+            "a conversion carries its refund"
+        );
+        assert_eq!(
+            destination_type(&built.destination.auxiliary[0]),
+            4,
+            "and the refund keeps the identity kind it was given"
+        );
+    }
+
+    /// A script hash is still refused.
+    ///
+    /// No template here writes one, so emitting an untested encoding for money
+    /// is not worth the convenience of accepting it.
+    #[test]
+    fn a_script_hash_destination_is_still_refused() {
+        let script =
+            verus_keys::Address::new(verus_keys::AddressKind::ScriptHash, recipient().hash());
+        assert!(matches!(
+            build_conversion(
+                CurrencyId::from_bytes(VRSCTEST),
+                Amount::from_sat(1),
+                ConversionKind::Burn,
+                script,
+                recipient(),
+                CurrencyId::from_bytes(VRSCTEST),
+                Amount::from_sat(1),
+            ),
+            Err(TxError::UnsupportedRecipient)
+        ));
     }
 
     /// A burn carries no auxiliary destination and a conversion carries one.
