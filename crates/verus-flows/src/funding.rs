@@ -16,6 +16,32 @@
 //! *whether or not* it is a coinbase, so its origin does not matter. Only
 //! outputs younger than that can be immature, and there are rarely many. So this
 //! checks exactly those and leaves the rest alone.
+//!
+//! # A confirmed output can already be spent
+//!
+//! `getaddressutxos` is confirmed-only by design, so an output consumed by a
+//! transaction still in the mempool is *still reported as unspent*. Selecting
+//! it again is worse than a wasted attempt, because everything downstream is
+//! deterministic: `select_utxos` orders by value and RFC6979 signs
+//! reproducibly, so a second payment of the same amount to the same recipient
+//! at the same tip rebuilds the first **byte for byte**, txid included. Not a
+//! conflicting spend a node explains — a duplicate.
+//!
+//! So the mempool is read too, and any output it already spends is withheld.
+//! The daemon does the same thing, via `CWalletTx::IsTrusted`.
+//!
+//! **Best-effort, not a guarantee.** A mempool belongs to one node. A coin
+//! filtered here may be free elsewhere, and a node that has not seen the
+//! spending transaction cannot report it. This avoids conflicting with
+//! yourself; it is not a correctness claim about the network.
+//!
+//! **Not yet done: spending your own unconfirmed change.** The daemon allows
+//! it (`-spendzeroconfchange`, default on), and without it a wallet still has
+//! to wait for a block between payments. It is deliberately left out here
+//! rather than bundled in: it is a risk decision, not a correction, and Verus
+//! sharpens it — a parent that expires unmined takes every child built on its
+//! change with it, which upstream's non-expiring transactions never do. It
+//! also needs an opt-in plumbed through every flow that funds itself.
 
 use verus_rpc::{AddressUtxo, ChainReader, COINBASE_MATURITY};
 use verus_tx::{Amount, Utxo};
@@ -54,6 +80,20 @@ pub struct Funding {
     /// Handed back rather than dropped, because a token transfer needs exactly
     /// these — see `verus_tx::token` and `verus_flows::convert`.
     pub other: Vec<AddressUtxo>,
+    /// Outputs an unconfirmed transaction already spends.
+    ///
+    /// Confirmed on chain and still reported by `getaddressutxos`, which is
+    /// confirmed-only — but gone, as soon as the spending transaction is mined.
+    ///
+    /// Deliberately **not** folded into [`Funding::immature`]: that list means
+    /// "wait", and these are not waiting for anything. Telling a user to wait a
+    /// hundred blocks for a coin they have already spent would be worse than
+    /// saying nothing.
+    ///
+    /// A wallet showing "pending" can use this: it is precisely the money that
+    /// has left but not yet settled. See the module docs for why this is
+    /// best-effort — a mempool belongs to one node.
+    pub spent_unconfirmed: Vec<AddressUtxo>,
 }
 
 impl Funding {
@@ -66,19 +106,30 @@ impl Funding {
 
 /// Gather what `address` can spend at the current tip.
 ///
-/// Costs two requests, plus one per output younger than
+/// Costs three requests, plus one per output younger than
 /// [`COINBASE_MATURITY`] — see the module docs for why that is the right
 /// number and not one per output.
+///
+/// The third is the mempool. It is not optional: offering a coin some
+/// unconfirmed transaction has already spent is what makes a second payment
+/// rebuild the first byte for byte.
 pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, FlowError> {
-    // Issued together, unwrapped after: neither read needs the other, and
+    // Issued together, unwrapped after: none of the three needs another, and
     // against a driver that cannot answer immediately the `?` would stop the
     // operation at the first one. See [`crate::drive`].
     let tip = reader.block_count();
     let found = reader.address_utxos(&[address]);
-    let (tip, found) = (tip?, found?);
+    let pending = reader.address_mempool(&[address]);
+    let (tip, found, pending) = (tip?, found?, pending?);
+
+    let spent_in_mempool = already_spent(&pending);
 
     let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
     let mature = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
+    let mature: Vec<Utxo> = mature
+        .into_iter()
+        .filter(|u| !spent_in_mempool.contains(&(u.txid, u.vout)))
+        .collect();
     let mature_outpoints: Vec<_> = mature.iter().map(|u| (u.txid, u.vout)).collect();
 
     // A native builder can only spend P2PKH. Everything else is separated here
@@ -91,9 +142,15 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
 
     let mut immature = Vec::new();
     let mut non_native = Vec::new();
+    let mut spent_unconfirmed = Vec::new();
     for utxo in found {
         let outpoint = (utxo.utxo.txid, utxo.utxo.vout);
-        if other_outpoints.contains(&outpoint) {
+        if spent_in_mempool.contains(&outpoint) {
+            // Checked first: this one is gone, whatever else it also is. A
+            // mempool-spent coin classified as immature would be reported as
+            // "wait a hundred blocks" for something that is never coming back.
+            spent_unconfirmed.push(utxo);
+        } else if other_outpoints.contains(&outpoint) {
             non_native.push(utxo);
         } else if !mature_outpoints.contains(&outpoint) {
             immature.push(utxo);
@@ -110,7 +167,30 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
         total,
         immature,
         other: non_native,
+        spent_unconfirmed,
     })
+}
+
+/// The outpoints an unconfirmed transaction already consumes.
+///
+/// `spends` is `Some` exactly when the row is a spend, and
+/// [`verus_rpc::ChainReader::address_mempool`] refuses a reply where those two
+/// disagree — so this cannot read a receipt as a spend and withhold a coin
+/// that was arriving rather than leaving.
+///
+/// Shared by [`spendable`] and [`identity_held`] so the two cannot drift, the
+/// same reason `probe_coinbase_heights` is shared.
+fn already_spent(pending: &[verus_rpc::MempoolDelta]) -> Vec<(verus_tx::Txid, u32)> {
+    pending
+        .iter()
+        // Redundant with the `filter_map` below, and kept anyway. The reader
+        // guarantees `spends.is_some()` exactly when `spending`, so selecting
+        // on either field alone gives the same rows — no test can tell the two
+        // apart without constructing a reply the reader would have refused.
+        // Stating the condition that actually matters is worth one line.
+        .filter(|row| row.spending)
+        .filter_map(|row| row.spends)
+        .collect()
 }
 
 /// The heights of the coinbase outputs in `found` that could still be
@@ -206,7 +286,8 @@ pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Ut
     // same reason — see [`crate::drive`].
     let tip = reader.block_count();
     let found = reader.address_utxos(&[identity]);
-    let (tip, found) = (tip?, found?);
+    let pending = reader.address_mempool(&[identity]);
+    let (tip, found, pending) = (tip?, found?, pending?);
 
     // Coinbase maturity applies here exactly as in `spendable` — an identity
     // that stakes is paid in coinbase outputs carrying this very script, and
@@ -215,9 +296,15 @@ pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Ut
     // that names nothing.
     let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
 
+    // And the same is true of an output some unconfirmed transaction already
+    // spends — more so, because "consumes every output" means one stale coin
+    // poisons the whole spend rather than merely shrinking it.
+    let spent_in_mempool = already_spent(&pending);
+
     Ok(verus_rpc::spendable_at(&found, tip, &coinbase_heights)
         .into_iter()
         .filter(|utxo| utxo.script_pubkey == expected)
+        .filter(|utxo| !spent_in_mempool.contains(&(utxo.txid, utxo.vout)))
         .collect())
 }
 
@@ -275,8 +362,11 @@ mod tests {
             .with_utxo("R1", 30, 1);
         let funding = spendable(&reader, "R1").unwrap();
         assert_eq!(funding.utxos.len(), 3);
-        // getblockcount + getaddressutxos, and nothing per output.
-        assert_eq!(reader.requests(), 2);
+        // getblockcount + getaddressutxos + getaddressmempool, and nothing per
+        // output. The mempool read is flat: one call covers every candidate,
+        // which is why excluding already-spent coins costs a constant rather
+        // than scaling with the wallet.
+        assert_eq!(reader.requests(), 3);
     }
 
     /// Only the young ones are looked up, and only they.
@@ -287,8 +377,10 @@ mod tests {
             .with_utxo("R1", 950, 1)
             .with_utxo("R1", 960, 1);
         spendable(&reader, "R1").unwrap();
-        // Two lookups: 950 and 960 are within 100 of the tip, 10 is not.
-        assert_eq!(reader.requests(), 4);
+        // Three flat reads, then two lookups: 950 and 960 are within 100 of
+        // the tip, 10 is not. The per-output cost is what this pins, and it is
+        // unchanged.
+        assert_eq!(reader.requests(), 5);
     }
 
     /// The bug this separation exists for: a wallet holding one token could not
@@ -316,6 +408,31 @@ mod tests {
         let funding = spendable(&reader, "R1").unwrap();
         assert_eq!(funding.total.to_sat(), 0);
         assert!(funding.utxos.is_empty());
+    }
+
+    /// An identity's funding is filtered by the mempool too, and it matters
+    /// more here than for an ordinary send.
+    ///
+    /// An identity spend consumes **every** output it is handed, so a single
+    /// already-spent coin does not merely shrink the funding — it makes the
+    /// whole transaction conflict. Exactly the reasoning the coinbase-maturity
+    /// filter already carries, for the same list.
+    #[test]
+    fn an_identity_does_not_offer_a_coin_the_mempool_already_spends() {
+        const IDENTITY: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
+        let address: verus_keys::Address = IDENTITY.parse().unwrap();
+        let script = verus_tx::identity_payment_script(address.hash()).unwrap();
+
+        let reader = ScriptedReader::new(1_000).with_script_utxo(IDENTITY, 200, 5_000, script);
+        let held = identity_held(&reader, IDENTITY).unwrap();
+        assert_eq!(held.len(), 1, "the identity holds one spendable output");
+        let outpoint = (held[0].txid, held[0].vout);
+
+        let after = reader.with_mempool_spend(IDENTITY, outpoint, 5_000);
+        assert!(
+            identity_held(&after, IDENTITY).unwrap().is_empty(),
+            "a coin already spent in the mempool must not be offered again"
+        );
     }
 
     #[test]
