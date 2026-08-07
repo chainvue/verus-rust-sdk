@@ -9,7 +9,7 @@ use verus_flows::testing::ScriptedReader;
 use verus_flows::{launch_currency, prepare_launch, FlowError};
 use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_rpc::{CurrencyPolicy, IdentityRecord};
-use verus_tx::currency_definition::{option, CurrencyDefinition};
+use verus_tx::currency_definition::CurrencyDefinition;
 use verus_tx::identity::{Identity, FLAG_ACTIVE_CURRENCY};
 use verus_tx::{identity_id, identity_primary_script, Amount, CurrencyId, Destination, Txid};
 use verus_wire::TxV4;
@@ -103,6 +103,19 @@ fn definition() -> CurrencyDefinition {
     CurrencyDefinition::token(CurrencyId::from_bytes(parent()), NAME, 1_060)
 }
 
+/// A **valid** NFT, not a token with the bit flipped.
+///
+/// Five fields have to agree; `NFT_TOKEN` alone produces something consensus
+/// refuses, and `serialize_definition` refuses it here first.
+fn nft_definition() -> CurrencyDefinition {
+    CurrencyDefinition::nft(
+        CurrencyId::from_bytes(parent()),
+        NAME,
+        1_060,
+        identity_address(),
+    )
+}
+
 /// The whole choreography: seven outputs, funded, conserved, broadcast.
 #[test]
 fn launches_a_token_end_to_end() {
@@ -154,11 +167,16 @@ fn launches_a_token_end_to_end() {
 ///
 /// Confirmed against the chain: both NFT launches on VRSCTEST carry a reserve
 /// deposit of 0.01, which is `fee - fee/2` for a fee of 0.02.
+///
+/// Built through `CurrencyDefinition::nft` rather than by setting the bit on a
+/// token, because those are not the same thing: the option bit alone leaves a
+/// definition consensus refuses, and `serialize_definition` now says so
+/// locally. This test asserted the fee on a definition that could never have
+/// launched, which the fee fix on its own could not notice.
 #[test]
 fn an_nft_pays_the_parents_id_import_fee() {
     let chain = chain(0);
-    let mut definition = definition();
-    definition.options |= option::NFT_TOKEN;
+    let definition = nft_definition();
 
     let prepared =
         prepare_launch(&chain, &[&key()], &format!("{NAME}@"), &definition, None).expect("prepare");
@@ -207,11 +225,14 @@ fn a_parent_without_an_id_import_fee_refuses_an_nft_and_says_which_fee() {
         currency_registration_fee: Amount::from_coins_str("200").unwrap(),
         proof_protocol: 1,
     });
-    let mut definition = definition();
-    definition.options |= option::NFT_TOKEN;
-
-    let err = prepare_launch(&chain, &[&key()], &format!("{NAME}@"), &definition, None)
-        .expect_err("a zero fee is refused");
+    let err = prepare_launch(
+        &chain,
+        &[&key()],
+        &format!("{NAME}@"),
+        &nft_definition(),
+        None,
+    )
+    .expect_err("a zero fee is refused");
     let message = err.to_string();
     assert!(
         message.contains("identity import fee"),

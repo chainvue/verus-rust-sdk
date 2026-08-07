@@ -216,6 +216,84 @@ impl CurrencyDefinition {
         }
     }
 
+    /// An NFT: a token whose entire supply is **one satoshi**, held by
+    /// `holder`.
+    ///
+    /// Five fields have to agree for consensus to accept one, and four of them
+    /// are not guessable from the type. `pbaas.cpp:4598` refuses anything else:
+    ///
+    /// ```cpp
+    /// (GetTotalPreallocation() == 1 && maxPreconvert.size() == 1 && maxPreconvert[0] == 0)
+    /// ```
+    ///
+    /// `maxPreconvert.size() == 1` is the load-bearing part, and it has a
+    /// consequence that reads like a mistake: [`serialize_definition`] accepts
+    /// a per-reserve vector only at length `0` or `currencies.len()`, so **an
+    /// NFT carries one reserve currency even though [`option::FRACTIONAL`] is
+    /// clear**. Consensus calls that a currency-mapped token.
+    ///
+    /// The supply is likewise not `initial_supply`: it is exactly one satoshi,
+    /// as a preallocation, with `initial_supply` left at zero.
+    ///
+    /// # What the chain says, across all 15 NFTs on VRSCTEST
+    ///
+    /// Every one of them has `weights` empty, `min_preconversion` empty,
+    /// `conversions`/`max_preconversion`/`initial_contributions` of length one,
+    /// a total preallocation of one satoshi, and `initial_supply` zero.
+    ///
+    /// Two things vary, and both are why this takes the arguments it does:
+    ///
+    /// * **The reserve is the system, not the parent.** All 15 have
+    ///   `currencies == [system_id]`; only 8 have `currencies == [parent]`,
+    ///   because seven live under a non-root parent and still hold the chain's
+    ///   own currency. Change [`system_id`](Self::system_id) and you must
+    ///   change `currencies` with it — [`serialize_definition`] refuses the
+    ///   pair when they disagree rather than letting it reach a node.
+    /// * **`holder` is not the defining identity.** Only 5 of 15 send the
+    ///   satoshi to the NFT's own id; the other 10 send it elsewhere, which is
+    ///   the point of an NFT. It is a parameter because it cannot be derived.
+    ///
+    /// [`option::SINGLECURRENCY`] is deliberately **not** set: 13 of the 15
+    /// leave it clear.
+    ///
+    /// Fees are not set here, for the same reason [`token`](Self::token) does
+    /// not set them: there is no safe default for money.
+    #[must_use]
+    pub fn nft(
+        parent: CurrencyId,
+        name: impl Into<String>,
+        start_block: u64,
+        holder: [u8; 20],
+    ) -> Self {
+        let mut definition = Self::token(parent, name, start_block);
+        definition.options |= option::NFT_TOKEN;
+        definition.preallocations = vec![Preallocation {
+            recipient: holder,
+            amount: Amount::from_sat(1),
+        }];
+        // The reserve is the system's currency. `token` has just set
+        // `system_id` to the parent, so at this instant the two are the same
+        // value and this line is only saying which one it means. It stops
+        // being the same value the moment a caller moves the currency under a
+        // sub-identity parent — and `serialize_definition` is what enforces
+        // the pair then, not this.
+        definition.currencies = vec![definition.system_id];
+        definition.conversions = vec![Amount::ZERO];
+        definition.max_preconversion = vec![Amount::ZERO];
+        definition.with_contributions(vec![Amount::ZERO])
+    }
+
+    /// Whether this is an NFT.
+    #[must_use]
+    pub fn is_nft(&self) -> bool {
+        self.options & option::NFT_TOKEN != 0
+    }
+
+    /// The whole preallocated supply.
+    fn total_preallocation(&self) -> Option<Amount> {
+        Amount::checked_sum(self.preallocations.iter().map(|p| p.amount))
+    }
+
     /// Set the initial contributions, and `preconverted` to match.
     ///
     /// The daemon initialises the two equal at definition time, and nothing in
@@ -303,6 +381,51 @@ pub fn serialize_definition(def: &CurrencyDefinition) -> Result<Vec<u8>, TxError
             name_bytes.len()
         )));
     }
+    // An NFT that cannot be valid, refused by name.
+    //
+    // Consensus checks this at `pbaas.cpp:4598` and rejects with `-25:
+    // bad-txns-failed-precheck` — which names neither the field nor what it
+    // wanted, because `main.cpp:1513` replaces the specific message built at
+    // each `state.Error` site with one generic string before it reaches the
+    // client. The reason survives only in the node's own debug log.
+    //
+    // These are fixed rules rather than judgement calls, so refusing here
+    // costs nothing and turns an anonymous rejection into a local error.
+    // `CurrencyDefinition::nft` satisfies all of them.
+    if def.is_nft() {
+        let preallocated = def.total_preallocation().ok_or(TxError::ValueOverflow)?;
+        if preallocated != Amount::from_sat(1) {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "an NFT's whole supply is one satoshi, preallocated; this one preallocates \
+                 {preallocated}. Build it with `CurrencyDefinition::nft`"
+            )));
+        }
+        if def.max_preconversion.len() != 1 || def.max_preconversion[0] != Amount::ZERO {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "an NFT needs exactly one max_preconversion entry, zero; this one has {:?}. \
+                 Build it with `CurrencyDefinition::nft`",
+                def.max_preconversion
+            )));
+        }
+        // The reserve follows the system, not the parent — they differ for an
+        // NFT defined under a sub-identity, and every NFT on chain holds the
+        // system's currency.
+        if def.currencies != [def.system_id] {
+            return Err(TxError::InvalidCurrencyDefinition(
+                "an NFT's reserve currency is its system; `currencies` must be exactly \
+                 `[system_id]`. Build it with `CurrencyDefinition::nft`"
+                    .into(),
+            ));
+        }
+        if def.initial_supply != Amount::ZERO {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "an NFT's supply is its one-satoshi preallocation, so initial_supply must be \
+                 zero; this one declares {}",
+                def.initial_supply
+            )));
+        }
+    }
+
     // Every per-reserve vector is indexed by the same reserve list. A short one
     // silently shifts which currency an amount belongs to.
     let reserves = def.currencies.len();
