@@ -409,6 +409,41 @@ pub fn build_launch_outputs(
         ));
     }
 
+    // A declared contribution needs an output this builder does not make.
+    //
+    // The daemon funds one with an extra value-bearing output per contributed
+    // reserve, ahead of the fee's reserve deposit. It is visible in this
+    // repository's own captures: every vector in
+    // `fixtures/daemon/currency_definitions.json` without contributions is a
+    // seven-output transaction paying [100 deposit, 5 change], and the three
+    // with `initialcontributions: [3.0]` are EIGHT outputs paying
+    // [3.00095018, 100, 1.99904982]. The extra one carries the contribution.
+    //
+    // This builder emits seven regardless, so it cannot honour the field. It
+    // refuses rather than declaring reserves nothing pays for — for a
+    // fractional currency that is a launch which reaches its start block with
+    // empty reserves and refunds.
+    //
+    // Encoding such a definition stays legal: `serialize_definition` has to
+    // re-encode the daemon's own, contributions included. It is *launching*
+    // one that cannot be built, which is why the refusal lives here.
+    //
+    // Seeding a basket is done by preconverting once the definition is on
+    // chain, which is a separate transaction and works today.
+    if definition
+        .initial_contributions
+        .iter()
+        .any(|c| *c != Amount::ZERO)
+    {
+        return Err(TxError::InvalidCurrencyDefinition(
+            "this definition declares initial_contributions, and a launch built here has no \
+             output that funds them — the daemon adds one per contributed reserve. Launch \
+             without contributions and seed the reserves by preconverting once the definition \
+             is on chain."
+                .into(),
+        ));
+    }
+
     let system = definition.system_id.to_bytes();
     let currency = context.identity_address;
     let fractional = definition.is_fractional();
