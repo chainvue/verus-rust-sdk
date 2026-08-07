@@ -110,12 +110,11 @@ pub fn plan_conversion(
     // happily, so converting into a token and pasting your identity's address
     // is the natural thing to try. `mint` has refused this since it was
     // written; conversions did not, and had no reason not to.
-    if recipient.kind() != verus_keys::AddressKind::PubKeyHash {
-        return Err(FlowError::NotReady(format!(
-            "a conversion pays an R-address recipient, and {recipient} is not one — an \
-             identity address here would pay the R-form of the same bytes, which nobody controls"
-        )));
-    }
+    // No kind guard here any more. It existed because the builder flattened
+    // every address to a key hash, so an `i` address silently paid the R-form
+    // of the same bytes — an address nobody controls. The builder now writes
+    // the identity destination the wire has always had a type byte for, so
+    // naming a VerusID means what it says.
 
     let (to, via) = match &kind {
         ConversionKind::IntoFractional { fractional }
@@ -337,14 +336,11 @@ pub fn prepare_mint(
 ) -> Result<Unsent<Sent>, FlowError> {
     let currency_id = currency_of(currency)?;
     let recipient: Address = recipient.parse()?;
-    if recipient.kind() != verus_keys::AddressKind::PubKeyHash {
-        // The transfer destination is written as a key hash — the daemon's own
-        // template shape. An `i` address here would silently pay the R-form of
-        // the same hash, which nobody controls on purpose.
-        return Err(FlowError::NotReady(
-            "mint pays an R-address recipient; convert the destination first".into(),
-        ));
-    }
+    // A mint may pay a VerusID, and minting to the *controlling* identity is
+    // the ordinary treasury pattern rather than a special case — eight
+    // centralized currencies on VRSCTEST hold their own token at their issuing
+    // identity's address. The guard that used to be here existed only because
+    // the builder flattened the address kind away.
 
     // All three reads are issued before any is unwrapped: none needs another's
     // answer, and a `?` between them would cost a network round trip each
@@ -514,24 +510,23 @@ mod tests {
         assert_eq!(node.broadcasts()[0], sent.hex);
     }
 
-    /// **An identity address is not a conversion recipient.**
+    /// **A conversion may pay a VerusID.**
     ///
-    /// `build_conversion` writes the destination as a key hash, always. So an
-    /// `i` address here does not pay that identity — it pays the R-form of the
-    /// same twenty bytes, which is a name hash nobody holds a key for, and the
-    /// value is gone.
+    /// This test is the inverse of the one it replaces. That one asserted an
+    /// identity address was refused, and it was right to: the builder
+    /// flattened every address to a key hash, so an `i` address paid the
+    /// R-form of the same 20 bytes — an address nobody holds a key to.
     ///
-    /// It is a live mistake rather than a theoretical one: funds on Verus
-    /// routinely live under identities and `send` takes an `i` address happily,
-    /// so converting and pasting your identity's address is the natural thing
-    /// to try. `mint` has refused it since it was written; conversions did not.
+    /// The refusal was the correct response to that bug, not a rule about
+    /// Verus. `CTransferDestination` has carried a type byte for an identity
+    /// all along, and `destination_type` already wrote `4` for one.
     #[test]
-    fn an_identity_address_cannot_receive_a_conversion() {
+    fn a_conversion_can_pay_a_verusid() {
         let node = chain(1_000, 1_49165329);
         let identity =
             verus_keys::Address::new(verus_keys::AddressKind::Identity, key().address().hash());
 
-        let error = prepare_conversion(
+        let to_identity = prepare_conversion(
             &node,
             &key(),
             VRSCTEST,
@@ -542,12 +537,12 @@ mod tests {
             None,
             &[],
         )
-        .expect_err("an identity address would pay the R-form of its own bytes");
-        assert!(format!("{error}").contains("R-address"), "{error}");
+        .expect("an identity is a destination the wire has always had a byte for");
 
-        // The same bytes under the R prefix are fine, and are what the caller
-        // meant if they own that key.
-        assert!(prepare_conversion(
+        // Not merely accepted: the bytes must differ from the R-address form.
+        // Both carry the same 20 bytes, so a builder that still flattened the
+        // kind would produce an identical transaction and pass a weaker test.
+        let to_r_address = prepare_conversion(
             &node,
             &key(),
             VRSCTEST,
@@ -558,7 +553,13 @@ mod tests {
             None,
             &[],
         )
-        .is_ok());
+        .expect("the R-address form still works");
+
+        assert_ne!(
+            to_identity.hex, to_r_address.hex,
+            "paying an identity must not build the same transaction as paying \
+             the R-address that shares its bytes"
+        );
     }
 
     /// **Converting for somebody else must not refund to them.**
