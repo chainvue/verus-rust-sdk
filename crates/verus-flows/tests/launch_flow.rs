@@ -6,10 +6,10 @@
 //! would only reject after the fee, funds correctly and broadcasts.
 
 use verus_flows::testing::ScriptedReader;
-use verus_flows::{launch_currency, FlowError};
+use verus_flows::{launch_currency, prepare_launch, FlowError};
 use verus_keys::{Address, AddressKind, PrivateKey};
 use verus_rpc::{CurrencyPolicy, IdentityRecord};
-use verus_tx::currency_definition::CurrencyDefinition;
+use verus_tx::currency_definition::{option, CurrencyDefinition};
 use verus_tx::identity::{Identity, FLAG_ACTIVE_CURRENCY};
 use verus_tx::{identity_id, identity_primary_script, Amount, CurrencyId, Destination, Txid};
 use verus_wire::TxV4;
@@ -141,6 +141,85 @@ fn launches_a_token_end_to_end() {
     assert!(
         consumed >= 100_00000000,
         "the consensus-consumed half of the fee is funded: {consumed}"
+    );
+}
+
+/// An NFT is charged the parent's **identity import fee**, not its currency
+/// registration fee.
+///
+/// Consensus picks between the two on the definition's own `NFT_TOKEN` bit —
+/// `CCurrencyDefinition::GetCurrencyImportFee` returns `idImportFees` for a
+/// tokenized-control currency. On VRSCTEST that is 0.02 against 200, four
+/// orders of magnitude, and half of it becomes the reserve deposit at output 5.
+///
+/// Confirmed against the chain: both NFT launches on VRSCTEST carry a reserve
+/// deposit of 0.01, which is `fee - fee/2` for a fee of 0.02.
+#[test]
+fn an_nft_pays_the_parents_id_import_fee() {
+    let chain = chain(0);
+    let mut definition = definition();
+    definition.options |= option::NFT_TOKEN;
+
+    let prepared =
+        prepare_launch(&chain, &[&key()], &format!("{NAME}@"), &definition, None).expect("prepare");
+
+    assert_eq!(
+        prepared.outcome.launch_fee,
+        Amount::from_coins_str("0.02").unwrap(),
+        "an NFT pays idimportfees, not currencyregistrationfee"
+    );
+
+    // Not just the reported figure: the reserve deposit is built from it, and
+    // that is where the money actually goes.
+    let tx = TxV4::deserialize(&hex::decode(&prepared.hex).unwrap()).unwrap();
+    assert_eq!(
+        tx.outputs[5].value,
+        Amount::from_coins_str("0.01").unwrap().to_sat(),
+        "output 5 holds the ceiling half of the fee"
+    );
+}
+
+/// The same definition without the NFT bit still pays 200 — the fee is chosen
+/// by the bit, not by anything else that changed alongside it.
+#[test]
+fn a_token_still_pays_the_currency_registration_fee() {
+    let chain = chain(0);
+    let prepared = prepare_launch(&chain, &[&key()], &format!("{NAME}@"), &definition(), None)
+        .expect("prepare");
+    assert_eq!(
+        prepared.outcome.launch_fee,
+        Amount::from_coins_str("200").unwrap()
+    );
+}
+
+/// A parent that carries no identity import fee refuses an NFT launch, and the
+/// refusal names the field that was actually read — the two live in different
+/// places in the parent's definition, so naming the wrong one sends the caller
+/// to fix the wrong number.
+#[test]
+fn a_parent_without_an_id_import_fee_refuses_an_nft_and_says_which_fee() {
+    let chain = chain(0).with_policy(CurrencyPolicy {
+        currency_id: VRSCTEST.into(),
+        name: "vrsctest".into(),
+        id_registration_fee: Amount::from_coins_str("100").unwrap(),
+        id_referral_levels: 3,
+        id_import_fee: Amount::ZERO,
+        currency_registration_fee: Amount::from_coins_str("200").unwrap(),
+        proof_protocol: 1,
+    });
+    let mut definition = definition();
+    definition.options |= option::NFT_TOKEN;
+
+    let err = prepare_launch(&chain, &[&key()], &format!("{NAME}@"), &definition, None)
+        .expect_err("a zero fee is refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("identity import fee"),
+        "the refusal must name the field an NFT reads: {message}"
+    );
+    assert!(
+        !message.contains("currency registration fee"),
+        "and not the one it does not: {message}"
     );
 }
 

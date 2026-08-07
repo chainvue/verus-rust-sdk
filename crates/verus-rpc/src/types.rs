@@ -547,6 +547,12 @@ pub struct CurrencyPolicy {
     /// `idreferrallevels` — how many referrers get paid.
     pub id_referral_levels: u32,
     /// `idimportfees`, burned natively by a sub-identity registration.
+    ///
+    /// **Also what an NFT launch is charged**, in place of
+    /// [`currency_registration_fee`](Self::currency_registration_fee) —
+    /// consensus picks between the two on the definition's `NFT_TOKEN` bit
+    /// (`CCurrencyDefinition::GetCurrencyImportFee`). 0.02 against 200 on
+    /// VRSCTEST, so reading the wrong one is off by four orders of magnitude.
     pub id_import_fee: Amount,
     /// `currencyregistrationfee` — what it costs to define a currency under
     /// this one.
@@ -556,6 +562,10 @@ pub struct CurrencyPolicy {
     /// by consensus, so a wrong number produces a transaction the daemon
     /// rejects. 200 native on VRSCTEST at the time of writing, but read it
     /// rather than assume it — it is chain policy and can change.
+    ///
+    /// **Not what an NFT pays** — that is
+    /// [`id_import_fee`](Self::id_import_fee). `flows::prepare_launch` picks
+    /// between them for you.
     ///
     /// Absent from a currency whose definition does not carry one, in which case
     /// this is zero.
