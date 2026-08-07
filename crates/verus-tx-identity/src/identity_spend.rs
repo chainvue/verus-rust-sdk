@@ -25,9 +25,10 @@
 
 use verus_keys::{Address, AddressKind, PrivateKey};
 
-use verus_tx_primitives::cc::identity_payment_script;
+use verus_tx_primitives::cc::{identity_payment_script, reserve_output_script_to, Destination};
 use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
 use verus_tx_primitives::Amount;
+use verus_tx_primitives::CurrencyId;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
 use verus_tx_primitives::Utxo;
@@ -151,6 +152,200 @@ pub fn build_identity_spend(
     )
 }
 
+/// What to build for a **token** an identity holds.
+///
+/// The token counterpart of [`IdentitySpendParams`], and separate from it for
+/// a reason that only shows up in the outputs: a token an identity holds is a
+/// *reserve output* paying the identity, and a reserve output carries **no
+/// native value**. `aaa@` on VRSCTEST holds 1,000,000,000 units in an output
+/// whose satoshi value is zero.
+///
+/// So this spend cannot pay its own miner fee the way a native identity spend
+/// does. It needs two kinds of input at once — the identity's token outputs
+/// for the value, signed by a fulfillment, and ordinary coins for the fee,
+/// signed by a key. That is why `fee_funding` exists here and has no
+/// counterpart on the native params.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct IdentityTokenSpendParams<'a> {
+    /// The identity holding the token — its 20-byte `i` hash.
+    pub identity: [u8; 20],
+    /// The token being moved.
+    pub currency: CurrencyId,
+    /// Reserve outputs paying `identity` and carrying `currency`. Each is
+    /// spent whole and the surplus returns to the identity.
+    pub identity_utxos: &'a [Utxo],
+    /// P2PKH coins belonging to `fee_key`, to pay the miner fee.
+    ///
+    /// Not optional in practice: the token outputs carry no satoshis, so
+    /// without these there is nothing to pay a fee with.
+    pub fee_funding: &'a [Utxo],
+    /// Who receives the token, and how much.
+    pub recipient: Address,
+    /// How much of `currency` to send.
+    pub amount: Amount,
+    /// Where native change from `fee_funding` returns.
+    pub change_address: Address,
+    /// When the transaction stops being minable.
+    pub expiry: Expiry,
+    /// Fee rate in satoshis per kilobyte.
+    pub fee_per_kb: u64,
+}
+
+impl<'a> IdentityTokenSpendParams<'a> {
+    /// A token spend of `identity`'s holdings.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        identity: [u8; 20],
+        currency: CurrencyId,
+        identity_utxos: &'a [Utxo],
+        fee_funding: &'a [Utxo],
+        recipient: Address,
+        amount: Amount,
+        change_address: Address,
+        expiry: Expiry,
+    ) -> Self {
+        Self {
+            identity,
+            currency,
+            identity_utxos,
+            fee_funding,
+            recipient,
+            amount,
+            change_address,
+            expiry,
+            fee_per_kb: DEFAULT_FEE_PER_KB,
+        }
+    }
+
+    /// Override the fee rate.
+    pub fn with_fee_per_kb(mut self, fee_per_kb: u64) -> Self {
+        self.fee_per_kb = fee_per_kb;
+        self
+    }
+}
+
+/// Move a token an identity holds.
+///
+/// `keys` are the identity's primary keys, meeting its `minsigs` — the same
+/// authority a native identity spend needs. `fee_key` owns
+/// [`IdentityTokenSpendParams::fee_funding`] and signs those inputs
+/// ordinarily.
+///
+/// # Why this exists
+///
+/// A token's supply is the sum of its `preallocations`, and a preallocation
+/// names an **identity**. For a currency that cannot be minted every unit that
+/// will ever exist is created at launch into an identity-held output and never
+/// passes through a key-held address. Without this, that supply cannot move:
+/// the key-signed token path refuses an identity-held reserve output by
+/// design, and the identity-funded path only ever accepted the plain
+/// pay-to-identity script.
+///
+/// # Token change returns to the identity
+///
+/// Every token input is spent whole and the remainder comes back as a reserve
+/// output paying the identity, for the same reason native change does: money
+/// under an identity's authority must not migrate to a bare key because a
+/// builder wanted a simpler output. Native change from `fee_funding` goes to
+/// `change_address`, because that is the fee payer's own money.
+pub fn build_identity_token_spend(
+    keys: &[&PrivateKey],
+    fee_key: &PrivateKey,
+    params: &IdentityTokenSpendParams<'_>,
+) -> Result<SignedTransaction, TxError> {
+    params.expiry.check()?;
+    if keys.is_empty() {
+        return Err(TxError::NoSignatures);
+    }
+    if params.amount == Amount::ZERO {
+        return Err(TxError::ZeroValueOutput { index: 0 });
+    }
+    if params.identity_utxos.is_empty() {
+        return Err(TxError::InsufficientTokens {
+            currency: hex::encode(params.currency.to_bytes()),
+            missing: params.amount.to_sat(),
+        });
+    }
+
+    // Every input must be a reserve output paying THIS identity and carrying
+    // exactly this currency. A multi-currency input is refused rather than
+    // spent: the others would have to come back as change too, and silently
+    // destroying them is the failure worth designing out.
+    let mut held: u64 = 0;
+    for utxo in params.identity_utxos {
+        match verus_tx_protocol::decode::decode_output_script(&utxo.script_pubkey)? {
+            verus_tx_protocol::decode::OutputKind::ReserveOutput {
+                tokens,
+                destination,
+            } => {
+                if destination != Destination::Identity(params.identity) {
+                    return Err(TxError::IdentityOutputMismatch);
+                }
+                if tokens.len() != 1 || tokens[0].0 != params.currency {
+                    return Err(TxError::InvalidConversion(
+                        "a token input does not carry exactly the currency being sent".into(),
+                    ));
+                }
+                held = held
+                    .checked_add(tokens[0].1)
+                    .ok_or(TxError::ValueOverflow)?;
+            }
+            _ => return Err(TxError::IdentityOutputMismatch),
+        }
+    }
+
+    let change =
+        held.checked_sub(params.amount.to_sat())
+            .ok_or_else(|| TxError::InsufficientTokens {
+                currency: hex::encode(params.currency.to_bytes()),
+                missing: params.amount.to_sat().saturating_sub(held),
+            })?;
+
+    let to = match params.recipient.kind() {
+        AddressKind::PubKeyHash => Destination::PubKeyHash(params.recipient.hash()),
+        AddressKind::Identity => Destination::Identity(params.recipient.hash()),
+        _ => return Err(TxError::UnsupportedRecipient),
+    };
+    let mut outputs = vec![verus_wire::TxOut {
+        value: 0,
+        script_pubkey: reserve_output_script_to(to, params.currency, params.amount.to_sat())?,
+    }];
+    if change > 0 {
+        outputs.push(verus_wire::TxOut {
+            value: 0,
+            script_pubkey: reserve_output_script_to(
+                Destination::Identity(params.identity),
+                params.currency,
+                change,
+            )?,
+        });
+    }
+    let output_count = outputs.len() as u64 + 1;
+
+    assemble(
+        fee_key,
+        keys,
+        Assembly {
+            // Identity-signed, by a fulfillment.
+            leading: params.identity_utxos,
+            // Key-signed, and the only source of native value here.
+            funding: params.fee_funding,
+            outputs,
+            burn: Amount::ZERO,
+            fee_output_count: output_count,
+            change_address: &params.change_address,
+            change_script: None,
+            // The token outputs carry no satoshis, so the leading inputs bring
+            // no native value to the fee arithmetic. Saying otherwise would
+            // credit the fee with money that is not there.
+            value_bearing_leading: false,
+            expiry: params.expiry,
+            fee_per_kb: params.fee_per_kb,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +374,89 @@ mod tests {
             satoshis: Amount::from_sat(satoshis),
             script_pubkey: identity_payment_script(identity()).unwrap(),
         }
+    }
+
+    const TOKEN: CurrencyId = CurrencyId::from_bytes([0x5c; 20]);
+
+    fn token_held(currency: CurrencyId, amount: u64, vout: u32) -> Utxo {
+        Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout,
+            // Zero, as every reserve output is — the reason a fee key exists.
+            satoshis: Amount::ZERO,
+            script_pubkey: reserve_output_script_to(
+                Destination::Identity(identity()),
+                currency,
+                amount,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn fee_coin() -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([0xbb; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(100_000_000),
+            script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
+        }
+    }
+
+    /// The builder is public, so its checks have to hold against a caller who
+    /// passes the wrong thing — the flow filters by currency before it gets
+    /// here, which means nothing else exercises this.
+    #[test]
+    fn an_input_carrying_another_currency_is_refused() {
+        let wrong = token_held(CurrencyId::from_bytes([0x9d; 20]), 1_000, 0);
+        let fee = [fee_coin()];
+        let inputs = [wrong];
+        let params = IdentityTokenSpendParams::new(
+            identity(),
+            TOKEN,
+            &inputs,
+            &fee,
+            key().address(),
+            Amount::from_sat(1),
+            key().address(),
+            Expiry::AtHeight(1_170_820),
+        );
+        assert!(matches!(
+            build_identity_token_spend(&[&key()], &key(), &params),
+            Err(TxError::InvalidConversion(_))
+        ));
+    }
+
+    /// An output paying a different identity is refused before signing.
+    #[test]
+    fn an_input_paying_another_identity_is_refused() {
+        let theirs = Utxo {
+            script_pubkey: reserve_output_script_to(
+                Destination::Identity([0xc7; 20]),
+                TOKEN,
+                1_000,
+            )
+            .unwrap(),
+            ..token_held(TOKEN, 1_000, 0)
+        };
+        let fee = [fee_coin()];
+        let inputs = [theirs];
+        let params = IdentityTokenSpendParams::new(
+            identity(),
+            TOKEN,
+            &inputs,
+            &fee,
+            key().address(),
+            Amount::from_sat(1),
+            key().address(),
+            Expiry::AtHeight(1_170_820),
+        );
+        assert!(matches!(
+            build_identity_token_spend(&[&key()], &key(), &params),
+            Err(TxError::IdentityOutputMismatch)
+        ));
     }
 
     fn recipient(satoshis: u64) -> Recipient {

@@ -87,9 +87,10 @@
 pub use verus_tx_currency::{currency_definition, currency_launch};
 pub use verus_tx_identity::{
     build_identity_recovery, build_identity_registration, build_identity_revocation,
-    build_identity_spend, build_identity_update, build_name_commitment, CommitmentParams,
-    IdentitySpendParams, NameReservation, RecoveryParams, RegistrationParams, RevocationParams,
-    SignedRegistration, UpdateParams, CENTRALIZED_PROOF_PROTOCOL,
+    build_identity_spend, build_identity_token_spend, build_identity_update, build_name_commitment,
+    CommitmentParams, IdentitySpendParams, IdentityTokenSpendParams, NameReservation,
+    RecoveryParams, RegistrationParams, RevocationParams, SignedRegistration, UpdateParams,
+    CENTRALIZED_PROOF_PROTOCOL,
 };
 pub use verus_tx_identity::{identity_spend, register, revoke, signature, update};
 pub use verus_tx_market::{multisig, offer, partial};
