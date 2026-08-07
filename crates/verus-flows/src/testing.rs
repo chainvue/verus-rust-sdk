@@ -214,6 +214,33 @@ impl ScriptedReader {
         self
     }
 
+    /// An unconfirmed transaction that **spends** an output of `address`.
+    ///
+    /// The other half of the mempool, and the one funding cares about:
+    /// `getaddressutxos` is confirmed-only, so the spent output is still
+    /// reported as unspent and would be selected again.
+    ///
+    /// `spends` names the outpoint being consumed, which is what
+    /// `funding::spendable` subtracts. `satoshis` is negative on a spend row,
+    /// as the daemon reports it.
+    pub fn with_mempool_spend(self, address: &str, spends: (Txid, u32), satoshis: i64) -> Self {
+        let row = MempoolDelta {
+            address: address.to_string(),
+            // The spending transaction's own id, distinct from the outpoint it
+            // consumes — a test that conflated them would pass against code
+            // that matched on the wrong field.
+            txid: Txid::from_internal([0xfe; 32]),
+            index: 0,
+            satoshis: verus_rpc::SignedAmount::from_sat(-satoshis.abs()),
+            currency_values: std::collections::BTreeMap::new(),
+            spending: true,
+            spends: Some(spends),
+            timestamp: 1_785_894_733,
+        };
+        self.address_mempool.borrow_mut().push(row);
+        self
+    }
+
     /// Serve blocks that carry no `finalsaplingroot` at all.
     ///
     /// A node that omits the field must not read as agreement, and the default

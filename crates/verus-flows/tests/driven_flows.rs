@@ -44,6 +44,12 @@ fn replies() -> HashMap<&'static str, String> {
         // has to agree with the capture above or every output would look
         // immature. `getinfo` reports 1167555 for the same capture.
         ("getblockcount", r#"{"result":1167555}"#.to_string()),
+        // An empty mempool. `funding::spendable` reads it to withhold coins an
+        // unconfirmed transaction already spends; with nothing pending, every
+        // captured output stays spendable and these fixtures keep meaning what
+        // they meant. It is issued in the same round as the two reads above,
+        // which is what the round-count assertions below check.
+        ("getaddressmempool", r#"{"result":[]}"#.to_string()),
     ])
 }
 
@@ -321,7 +327,10 @@ fn preparing_a_payment_resolves_in_a_single_round() {
     assert_eq!(rounds.len(), 1, "one round: {rounds:#?}");
     let mut methods: Vec<String> = rounds[0].iter().map(|b| method_of(b)).collect();
     methods.sort();
-    assert_eq!(methods, ["getaddressutxos", "getblockcount"]);
+    assert_eq!(
+        methods,
+        ["getaddressmempool", "getaddressutxos", "getblockcount"]
+    );
 }
 
 /// The bytes a browser would sign must be the bytes a native caller signs.
@@ -519,8 +528,14 @@ fn preparing_a_mint_resolves_in_a_single_round() {
     methods.sort();
     assert_eq!(
         methods,
-        ["getaddressutxos", "getblockcount", "getidentity", "getinfo"],
-        "all four reads must go out together"
+        [
+            "getaddressmempool",
+            "getaddressutxos",
+            "getblockcount",
+            "getidentity",
+            "getinfo"
+        ],
+        "all five reads must go out together"
     );
 }
 
@@ -637,7 +652,12 @@ fn preparing_a_publish_costs_the_one_round_it_cannot_avoid() {
     first.sort();
     assert_eq!(
         first,
-        ["getaddressutxos", "getblockcount", "getidentity"],
+        [
+            "getaddressmempool",
+            "getaddressutxos",
+            "getblockcount",
+            "getidentity"
+        ],
         "the funding lookup does not wait on the identity"
     );
     assert_eq!(
