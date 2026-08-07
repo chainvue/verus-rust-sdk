@@ -1213,6 +1213,101 @@ console.log("\nflows, driven with no network");
     ok("a key the identity does not list is refused by name, not by the daemon");
   }
 
+  // -- a token a VerusID holds, moved from a page ---------------------------
+  //
+  // The reason `planSendTokenFromIdentity` exists. A non-mintable token's
+  // supply is preallocated to its defining identity, so every unit lives in a
+  // reserve output paying that identity and never touches a key-held address.
+  // Nothing else on this binding can reach it: `planSendToken` is key-signed
+  // and refuses an identity-held reserve output by design.
+  //
+  // The output below is the real one — `aaa@` on VRSCTEST
+  // (iQmq5ota52pquV5RJvqynYo8AAro2b5bXn), whose 1,000,000,000 units were
+  // stranded until this landed. Real bytes rather than a synthesised script,
+  // because the shape is the whole point.
+  {
+    const HOLDER = "iQmq5ota52pquV5RJvqynYo8AAro2b5bXn";
+    const TOKEN = HOLDER;                       // a currency IS its identity
+    const TOKEN_OUTPUT =
+      "1b04030001011504e9a0725e95d34445accf81b5190485ebf1e64d11cc3a04030901011504e9a0" +
+      "725e95d34445accf81b5190485ebf1e64d111e01e9a0725e95d34445accf81b5190485ebf1e64d" +
+      "1180b0d0ae84eba6ff0075";
+
+    // Two addresses are asked about — the identity's, for the token, and this
+    // key's, for the miner fee — so the reply has to depend on WHICH, not just
+    // on the method. The client refuses an output belonging to an address it
+    // did not ask about, which is what makes a single shared answer wrong.
+    const identityPost = (body) => {
+      const { method, params } = JSON.parse(body);
+      const asked = params?.[0]?.addresses?.[0];
+      if (method === "getaddressutxos") {
+        return JSON.stringify({
+          result: asked === HOLDER
+            ? [{
+                address: HOLDER, blocktime: 1785262420, height: HEIGHT, isspendable: 1,
+                outputIndex: 0, satoshis: 0, script: TOKEN_OUTPUT, txid: TXID,
+              }]
+            : [{
+                address, blocktime: 1785262420, height: HEIGHT, isspendable: 1,
+                outputIndex: 1, satoshis: SATS, script: SCRIPT, txid: TXID,
+              }],
+        });
+      }
+      if (method === "getidentity") {
+        return JSON.stringify({
+          result: {
+            blockheight: HEIGHT, fullyqualifiedname: "aaa.VRSCTEST@", status: "active",
+            txid: TXID, vout: 0,
+            identity: {
+              identityaddress: HOLDER, minimumsignatures: 1, name: "aaa",
+              primaryaddresses: [address], version: 3, flags: 0, timelock: 0,
+            },
+          },
+        });
+      }
+      return post(body);
+    };
+
+    const a = new Answers();
+    let planned;
+    for (let i = 0; i < 8; i += 1) {
+      const s = key.planSendTokenFromIdentity(
+        { identity: "aaa.VRSCTEST@", currency: TOKEN, to: PAYEE, amount: "100000000" },
+        a,
+      );
+      if (s.kind === "ready") { planned = s.value; break; }
+      for (const body of s.ask) a.record(body, identityPost(body));
+    }
+    a.free();
+
+    assert.ok(planned, "the plan must resolve");
+    assert.equal(typeof planned.hex, "string");
+    assert.ok(planned.hex.length > 0);
+    // Money crosses as a string here as everywhere else.
+    assert.equal(typeof planned.fee, "string");
+    ok("a token a VerusID holds can be moved from a page");
+
+    // The sanitizer guards this request like every other: an undeclared field
+    // is refused rather than ignored. `expiryHieght` once produced a validly
+    // signed, permanently minable transaction, which is why this is checked
+    // per DTO and not once.
+    const b = new Answers();
+    let thrown;
+    try {
+      key.planSendTokenFromIdentity(
+        { identity: "aaa.VRSCTEST@", currency: TOKEN, to: PAYEE, amount: "1", extra: 1 },
+        b,
+      );
+    } catch (e) { thrown = e; }
+    b.free();
+    assert.ok(thrown, "an undeclared field must be refused");
+    // `UnknownField`, not the `InvalidArgument` a mistyped VALUE raises — the
+    // sanitizer distinguishes "this key does not belong here" from "this key's
+    // value is the wrong shape", and a caller can act on the difference.
+    assert.equal(thrown.name, "UnknownField");
+    ok("planSendTokenFromIdentity refuses a field it does not declare");
+  }
+
   // -- a token send needs its token outputs named ---------------------------
   {
     const a = new Answers();
@@ -2058,7 +2153,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 91;
+const EXPECTED_CHECKS = 93;
 assert.equal(
   checks,
   EXPECTED_CHECKS,
