@@ -269,11 +269,20 @@ fn a_preallocating_definition_still_builds() {
 /// destinations under `HasTokenizedControl()`. `build_launch_outputs` sets that
 /// flag for an NFT, so the script it builds has to agree with the flag it just
 /// set.
+///
+/// Built through `CurrencyDefinition::nft` rather than by setting the bit on a
+/// token: those are not the same thing, and `serialize_definition` refuses the
+/// second — an NFT needs five fields to agree, not one.
 #[test]
 fn an_nft_launch_puts_the_recover_contract_in_the_identity_output() {
     let fixture = fixture();
-    let mut definition = token_definition(&fixture);
-    definition.options |= option::NFT_TOKEN;
+    let (_, address) = identity(&fixture);
+    let token = token_definition(&fixture);
+    let mut definition =
+        CurrencyDefinition::nft(token.parent, &token.name, token.start_block, address);
+    // The parent's fee schedule is chain policy, carried over from the vector.
+    definition.id_registration_fees = token.id_registration_fees;
+    definition.id_import_fees = token.id_import_fees;
 
     let outputs = build_launch_outputs(&definition, &context(&fixture)).unwrap();
     let script = hex::encode(&outputs.outputs[0].script_pubkey);
