@@ -795,6 +795,10 @@ console.log("\nflows, driven with no network");
         index: 0, satoshis: SATS, txid: TXID,
       }],
     }),
+    // An empty mempool. Funding reads it to withhold coins an unconfirmed
+    // transaction already spends; with nothing pending, the captured output
+    // above stays spendable and this fixture keeps meaning what it meant.
+    getaddressmempool: JSON.stringify({ result: [] }),
   };
 
   let posted = [];
@@ -819,10 +823,10 @@ console.log("\nflows, driven with no network");
     for (const body of step.ask) answers.record(body, post(body));
   }
 
-  assert.equal(rounds, 1, "the tip and the outputs go out together");
+  assert.equal(rounds, 1, "the tip, the outputs and the mempool go out together");
   assert.deepEqual(
     posted.map((body) => JSON.parse(body).method).sort(),
-    ["getaddressutxos", "getblockcount"],
+    ["getaddressmempool", "getaddressutxos", "getblockcount"],
   );
   ok("a payment plans in one round trip");
 
