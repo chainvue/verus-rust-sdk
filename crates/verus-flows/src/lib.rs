@@ -121,8 +121,8 @@ pub use lifecycle::{
 pub use login::{sign_login, verify_login, LoggedIn, LoginPolicy, LoginRequest};
 pub use offer::{browse, inspect, prepare_take, take, Demand, Listing, OfferTerms, Taken, Taking};
 pub use send::{
-    prepare_send, prepare_send_from_identity, prepare_send_token, prepare_unsigned_send, send,
-    send_from_identity, send_token, Sent,
+    prepare_send, prepare_send_from_identity, prepare_send_token, prepare_send_token_from_identity,
+    prepare_unsigned_send, send, send_from_identity, send_token, send_token_from_identity, Sent,
 };
 pub use vdxf::{
     key_address, prepare_publish, publish, read, read_all, read_history, Namespace, Published,

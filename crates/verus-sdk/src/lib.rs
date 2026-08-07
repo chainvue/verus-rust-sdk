@@ -122,7 +122,10 @@ pub mod identity {
         build_identity_recovery, build_identity_revocation, RecoveryParams, RevocationParams,
     };
     pub use verus_tx::update::{build_identity_update, UpdateParams};
-    pub use verus_tx::{build_identity_spend, IdentitySpendParams};
+    pub use verus_tx::{
+        build_identity_spend, build_identity_token_spend, IdentitySpendParams,
+        IdentityTokenSpendParams,
+    };
     pub use verus_tx::{identity_payment_script, identity_primary_script};
     pub use verus_tx::{Timelock, MAX_UNLOCK_DELAY};
 }

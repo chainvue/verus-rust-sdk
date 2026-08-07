@@ -31,7 +31,9 @@ pub mod revoke;
 pub mod signature;
 pub mod update;
 
-pub use identity_spend::{build_identity_spend, IdentitySpendParams};
+pub use identity_spend::{
+    build_identity_spend, build_identity_token_spend, IdentitySpendParams, IdentityTokenSpendParams,
+};
 pub use register::{
     build_identity_registration, build_name_commitment, CommitmentParams, NameReservation,
     RegistrationParams, SignedRegistration, CENTRALIZED_PROOF_PROTOCOL,

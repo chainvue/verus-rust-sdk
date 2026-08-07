@@ -268,6 +268,81 @@ pub fn require(funding: &Funding, needed: Amount, address: &str) -> Result<(), F
     })
 }
 
+/// Gather the **token-bearing** outputs a VerusID holds, for one currency.
+///
+/// The companion to [`identity_held`], which deliberately returns only the
+/// plain pay-to-identity outputs — native value. A token an identity holds is
+/// a *reserve output* whose destination is the identity: a different script,
+/// so `identity_held` never matches it and never finds it.
+///
+/// # Why this exists at all
+///
+/// A token's supply is the sum of its `preallocations`, and a preallocation
+/// names an **identity**. So for a currency that cannot be minted
+/// (`proofprotocol` 1) every unit that will ever exist is created at launch
+/// into an output held by the defining identity, and never passes through a
+/// key-held address. Without a way to locate those outputs the whole supply is
+/// unreachable — which is exactly what happened to `aaa@` on VRSCTEST, whose
+/// 1,000,000,000 units sit in one reserve output nothing could find.
+///
+/// # What it returns
+///
+/// Outputs paying `identity` that carry `currency` and nothing else. A
+/// multi-currency reserve output is skipped rather than returned: the
+/// conversion builder refuses one, because spending it would have to account
+/// for the currencies nobody asked about, and silently destroying them is the
+/// failure worth designing out.
+///
+/// Maturity and the mempool are applied exactly as in [`identity_held`], for
+/// the same reasons — an identity spend consumes every output it is handed, so
+/// one unusable coin poisons the whole transaction rather than shrinking it.
+pub fn identity_held_tokens(
+    reader: &impl ChainReader,
+    identity: &str,
+    currency: verus_tx::CurrencyId,
+) -> Result<Vec<Utxo>, FlowError> {
+    let address: verus_keys::Address = identity
+        .parse()
+        .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
+
+    let tip = reader.block_count();
+    let found = reader.address_utxos(&[identity]);
+    let pending = reader.address_mempool(&[identity]);
+    let (tip, found, pending) = (tip?, found?, pending?);
+
+    let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
+    let spent_in_mempool = already_spent(&pending);
+
+    Ok(verus_rpc::spendable_at(&found, tip, &coinbase_heights)
+        .into_iter()
+        .filter(|utxo| !spent_in_mempool.contains(&(utxo.txid, utxo.vout)))
+        .filter(|utxo| holds_only(utxo, address.hash(), currency))
+        .collect())
+}
+
+/// Whether `utxo` is a reserve output paying `identity` and carrying exactly
+/// `currency`.
+///
+/// Decoded rather than pattern-matched on the script bytes: the payload's
+/// amount varies, so there is no fixed script to compare against the way
+/// [`identity_held`] can.
+fn holds_only(utxo: &Utxo, identity: [u8; 20], currency: verus_tx::CurrencyId) -> bool {
+    match verus_tx::decode_output_script(&utxo.script_pubkey) {
+        Ok(verus_tx::OutputKind::ReserveOutput {
+            tokens,
+            destination,
+        }) => {
+            destination == verus_tx::Destination::Identity(identity)
+                && tokens.len() == 1
+                && tokens[0].0 == currency
+        }
+        // Anything else is the identity's own output, native value, or a shape
+        // no builder here spends. Not an error: an identity legitimately holds
+        // a mixture, and this is a filter rather than a validator.
+        _ => false,
+    }
+}
+
 /// Gather the outputs a VerusID holds — the standard pay-to-identity outputs
 /// for `identity`, mature and ready to fund an identity-authorised spend or a
 /// mint.

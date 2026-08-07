@@ -333,6 +333,156 @@ pub fn prepare_send_from_identity(
     Ok(verus_tx::build_identity_spend(keys, &params)?.into())
 }
 
+/// Move a token a VerusID holds, to any address.
+///
+/// The gap this closes: a token's supply is the sum of its `preallocations`,
+/// and a preallocation names an **identity**. So for a currency that cannot be
+/// minted, every unit that will ever exist is created at launch into an
+/// identity-held output and never passes through a key-held address — and
+/// nothing could move it. `aaa@` on VRSCTEST has 1,000,000,000 units sitting
+/// in one such output.
+///
+/// # Unlike [`prepare_send_token`], the outputs ARE discovered here
+///
+/// That function asks the caller for `token_utxos`, and says why: recognising
+/// a reserve output means decoding each script, and a wallet tracking its own
+/// tokens already knows them. Neither applies to an identity's holdings. The
+/// caller may not control the identity's outputs at all — they hold its keys —
+/// and there is a definite question to ask, "what does this identity hold of
+/// this currency", which [`funding::identity_held_tokens`] answers.
+///
+/// # Two kinds of input, and why
+///
+/// A reserve output carries **no native value**, so this spend cannot pay its
+/// own miner fee the way a native identity spend does. `key` supplies ordinary
+/// coins for that and signs them; `keys` are the identity's primary keys and
+/// sign the token inputs by fulfillment. Native change goes back to `key`,
+/// because it is the fee payer's own money; token change returns to the
+/// identity.
+// Eight, and each names a distinct thing the transaction cannot be built
+// without: who authorises (`keys`), who pays the fee (`fee_key` — a separate
+// party, because a token output carries no native value and the identity's
+// primary key need not hold coins), which identity, which currency, to whom,
+// and how much. Bundling them into a struct would move the arity rather than
+// reduce it.
+#[allow(clippy::too_many_arguments)]
+pub fn send_token_from_identity(
+    reader: &impl ChainReader,
+    broadcaster: &impl Broadcaster,
+    keys: &[&PrivateKey],
+    fee_key: &PrivateKey,
+    identity: &str,
+    currency: CurrencyId,
+    to: &str,
+    amount: Amount,
+) -> Result<Sent, FlowError> {
+    prepare_send_token_from_identity(reader, keys, fee_key, identity, currency, to, amount)?
+        .broadcast(broadcaster)
+}
+
+/// Build the move without sending it.
+///
+/// The read-only half of [`send_token_from_identity`], including every check
+/// the chain would otherwise refuse late and namelessly.
+pub fn prepare_send_token_from_identity(
+    reader: &impl ChainReader,
+    keys: &[&PrivateKey],
+    fee_key: &PrivateKey,
+    identity: &str,
+    currency: CurrencyId,
+    to: &str,
+    amount: Amount,
+) -> Result<Unsent<Sent>, FlowError> {
+    if keys.is_empty() {
+        return Err(FlowError::Tx(verus_tx::TxError::NoSignatures));
+    }
+    let to: Address = to.parse()?;
+    let record = crate::error::look_up_identity(reader, identity)?
+        .ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
+
+    // The same prechecks the native identity spend makes, and for the same
+    // reason: consensus refuses each of these with a message that names
+    // nothing.
+    if record.is_revoked() {
+        return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
+    }
+    let primaries: Vec<String> = record.identity["primaryaddresses"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for key in keys {
+        let address = key.address().to_string();
+        if !primaries.contains(&address) {
+            return Err(FlowError::Tx(verus_tx::TxError::NotAPrimaryAddress {
+                address,
+            }));
+        }
+    }
+    let mut distinct: Vec<String> = keys.iter().map(|k| k.address().to_string()).collect();
+    distinct.sort();
+    distinct.dedup();
+    let min_sigs = record.identity["minimumsignatures"].as_u64().unwrap_or(1);
+    if (distinct.len() as u64) < min_sigs {
+        return Err(FlowError::Tx(verus_tx::TxError::NotEnoughSigners {
+            supplied: distinct.len(),
+            required: u32::try_from(min_sigs).unwrap_or(u32::MAX),
+        }));
+    }
+
+    let identity_address: Address = record
+        .identity_address
+        .parse()
+        .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
+
+    let token_utxos =
+        crate::funding::identity_held_tokens(reader, &record.identity_address, currency)?;
+    let fee_from = fee_key.address();
+    let fee_funding = crate::funding::spendable(reader, &fee_from.to_string())?;
+
+    // A timelock holds the identity's funds whatever kind they are — the token
+    // outputs are spent under the same condition the native ones are. Checked
+    // here for the same reason it is checked on the native path: consensus
+    // refuses with `mandatory-script-verify-flag-failed`, which names neither
+    // the identity nor the lock nor the height.
+    let timelock = timelock_of(&record.identity);
+    if !timelock.spendable_at(fee_funding.tip) {
+        return Err(FlowError::Tx(verus_tx::TxError::FundsTimelocked {
+            unlock_at: match timelock {
+                Timelock::UntilBlock(height) => Some(height),
+                _ => None,
+            },
+        }));
+    }
+
+    if token_utxos.is_empty() {
+        return Err(FlowError::NotReady(format!(
+            "{identity} holds no outputs of that currency"
+        )));
+    }
+    if fee_funding.utxos.is_empty() {
+        return Err(FlowError::NotReady(format!(
+            "a token output carries no native value, so the miner fee must come from \
+             elsewhere — {fee_from} has nothing spendable"
+        )));
+    }
+
+    let params = verus_tx::IdentityTokenSpendParams::new(
+        identity_address.hash(),
+        currency,
+        &token_utxos,
+        &fee_funding.utxos,
+        to,
+        amount,
+        fee_from,
+        Expiry::within(fee_funding.tip, DEFAULT_EXPIRY_BLOCKS),
+    );
+    Ok(verus_tx::build_identity_token_spend(keys, fee_key, &params)?.into())
+}
+
 /// Pay a token to one address.
 ///
 /// The token moves as a reserve output while the miner fee is still paid in
@@ -441,6 +591,237 @@ mod tests {
 
     fn i_address() -> String {
         Address::new(verus_keys::AddressKind::Identity, ID).to_string()
+    }
+
+    /// The currency `aaa@` on VRSCTEST holds all of, in the shape it holds it.
+    const TOKEN: verus_tx::CurrencyId = verus_tx::CurrencyId::from_bytes([0x5c; 20]);
+
+    /// A node where the identity holds a TOKEN — a reserve output paying it,
+    /// carrying no native value — and the fee key holds ordinary coins.
+    ///
+    /// This is the shape a non-mintable token's whole supply is created in: a
+    /// preallocation names an identity, so every unit lands here and never
+    /// passes through a key-held address.
+    fn reader_holding_a_token(token_amount: u64) -> ScriptedReader {
+        let address = i_address();
+        let reserve = verus_tx::cc::reserve_output_script_to(
+            verus_tx::Destination::Identity(ID),
+            TOKEN,
+            token_amount,
+        )
+        .expect("a reserve output paying the identity");
+        ScriptedReader::new(TIP)
+            // Zero satoshis: that is the whole reason a fee key is needed.
+            .with_script_utxo(&address, 1_170_000, 0, reserve)
+            .with_utxo(&key().address().to_string(), 1_170_000, 500_000_000)
+            .with_identity(
+                "app@",
+                IdentityRecord {
+                    fully_qualified_name: "app@".into(),
+                    identity_address: address.clone(),
+                    status: "active".into(),
+                    outpoint: (Txid::from_internal([0x22; 32]), 0),
+                    block_height: 1_170_000,
+                    identity: json!({
+                        "identityaddress": address,
+                        "primaryaddresses": [key().address().to_string()],
+                        "minimumsignatures": 1,
+                        "flags": 0,
+                        "timelock": 0,
+                    }),
+                },
+            )
+    }
+
+    /// **A non-mintable token's supply can be moved.**
+    ///
+    /// The reported bug: every unit exists only in an identity-held reserve
+    /// output, and nothing could spend one. The key-signed token path refuses
+    /// it by design, and the identity-funded path only ever accepted the plain
+    /// pay-to-identity script.
+    #[test]
+    fn a_token_an_identity_holds_can_be_sent() {
+        let chain = reader_holding_a_token(100_000_000_000_000_000);
+        let unsent = prepare_send_token_from_identity(
+            &chain,
+            &[&key()],
+            &key(),
+            "app@",
+            TOKEN,
+            &key().address().to_string(),
+            Amount::from_sat(100_000_000),
+        )
+        .expect("an identity's token is spendable");
+
+        let tx = verus_wire::TxV4::deserialize(&hex::decode(&unsent.hex).unwrap()).unwrap();
+
+        // Two kinds of input in one transaction: the identity's token output,
+        // signed by fulfillment, and the fee key's coins, signed ordinarily.
+        assert_eq!(tx.inputs.len(), 2, "the token input and the fee input");
+
+        // The recipient's token output, and change back to the IDENTITY.
+        let reserves: Vec<_> = tx
+            .outputs
+            .iter()
+            .filter_map(|o| match verus_tx::decode_output_script(&o.script_pubkey) {
+                Ok(verus_tx::OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                }) => Some((destination, tokens)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reserves.len(), 2, "the payment and the token change");
+        assert_eq!(
+            reserves[0].0,
+            verus_tx::Destination::PubKeyHash(key().address().hash())
+        );
+        assert_eq!(reserves[0].1, vec![(TOKEN, 100_000_000)]);
+        assert_eq!(
+            reserves[1].0,
+            verus_tx::Destination::Identity(ID),
+            "token change must return to the identity, not to a bare key"
+        );
+        assert_eq!(
+            reserves[1].1,
+            vec![(TOKEN, 100_000_000_000_000_000 - 100_000_000)]
+        );
+    }
+
+    /// The fee cannot come from the token itself.
+    ///
+    /// A reserve output carries no satoshis, so without native coins there is
+    /// nothing to pay a miner with. Saying so beats building a transaction
+    /// whose fee arithmetic credits value that is not there.
+    #[test]
+    fn a_token_send_from_an_identity_needs_native_coins_for_the_fee() {
+        let address = i_address();
+        let reserve = verus_tx::cc::reserve_output_script_to(
+            verus_tx::Destination::Identity(ID),
+            TOKEN,
+            1_000,
+        )
+        .unwrap();
+        // The identity holds the token; the fee key holds nothing.
+        let chain = ScriptedReader::new(TIP)
+            .with_script_utxo(&address, 1_170_000, 0, reserve)
+            .with_identity(
+                "app@",
+                IdentityRecord {
+                    fully_qualified_name: "app@".into(),
+                    identity_address: address.clone(),
+                    status: "active".into(),
+                    outpoint: (Txid::from_internal([0x22; 32]), 0),
+                    block_height: 1_170_000,
+                    identity: json!({
+                        "identityaddress": address,
+                        "primaryaddresses": [key().address().to_string()],
+                        "minimumsignatures": 1,
+                        "flags": 0,
+                        "timelock": 0,
+                    }),
+                },
+            );
+
+        let error = prepare_send_token_from_identity(
+            &chain,
+            &[&key()],
+            &key(),
+            "app@",
+            TOKEN,
+            &key().address().to_string(),
+            Amount::from_sat(1),
+        )
+        .expect_err("no native coins, no fee");
+        assert!(
+            error.to_string().contains("no native value"),
+            "the refusal must say why: {error}"
+        );
+    }
+
+    /// An output paying a **different** identity is not this identity's.
+    ///
+    /// `getaddressutxos` on an identity's address also reports outputs
+    /// belonging to identities *under* it — the parent/child indexing this
+    /// repository documents in `fixtures/daemon/identities.json`. A finder that
+    /// checked only "is a reserve output of this currency" would hand back a
+    /// child's tokens, and since an identity spend consumes every input it is
+    /// given, one such output poisons the whole transaction.
+    #[test]
+    fn a_token_paying_a_different_identity_is_not_offered() {
+        let address = i_address();
+        let mine = verus_tx::cc::reserve_output_script_to(
+            verus_tx::Destination::Identity(ID),
+            TOKEN,
+            1_000,
+        )
+        .unwrap();
+        // Same currency, same indexed address, different owner.
+        let theirs = verus_tx::cc::reserve_output_script_to(
+            verus_tx::Destination::Identity([0xc7; 20]),
+            TOKEN,
+            9_999,
+        )
+        .unwrap();
+
+        let chain = ScriptedReader::new(TIP)
+            .with_script_utxo(&address, 1_170_000, 0, mine)
+            .with_script_utxo(&address, 1_170_000, 0, theirs);
+
+        let found = crate::funding::identity_held_tokens(&chain, &address, TOKEN)
+            .expect("the lookup succeeds");
+        assert_eq!(found.len(), 1, "only the identity's own output");
+        assert_eq!(
+            verus_tx::decode_output_script(&found[0].script_pubkey).unwrap(),
+            verus_tx::OutputKind::ReserveOutput {
+                tokens: vec![(TOKEN, 1_000)],
+                destination: verus_tx::Destination::Identity(ID),
+            }
+        );
+    }
+
+    /// A currency the identity does not hold is refused by name.
+    #[test]
+    fn a_currency_the_identity_does_not_hold_is_refused() {
+        let chain = reader_holding_a_token(1_000);
+        let other = verus_tx::CurrencyId::from_bytes([0x9d; 20]);
+        let error = prepare_send_token_from_identity(
+            &chain,
+            &[&key()],
+            &key(),
+            "app@",
+            other,
+            &key().address().to_string(),
+            Amount::from_sat(1),
+        )
+        .expect_err("the identity holds none of that currency");
+        assert!(
+            error.to_string().contains("no outputs of that currency"),
+            "{error}"
+        );
+    }
+
+    /// More than the identity holds is refused before signing.
+    #[test]
+    fn spending_more_of_the_token_than_is_held_is_refused() {
+        let chain = reader_holding_a_token(1_000);
+        let error = prepare_send_token_from_identity(
+            &chain,
+            &[&key()],
+            &key(),
+            "app@",
+            TOKEN,
+            &key().address().to_string(),
+            Amount::from_sat(5_000),
+        )
+        .expect_err("more than is held");
+        assert!(
+            matches!(
+                error,
+                FlowError::Tx(verus_tx::TxError::InsufficientTokens { .. })
+            ),
+            "{error:?}"
+        );
     }
 
     /// A node answering about an identity that holds one spendable output.
