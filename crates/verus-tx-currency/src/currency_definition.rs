@@ -299,6 +299,29 @@ impl CurrencyDefinition {
     /// The daemon initialises the two equal at definition time, and nothing in
     /// its RPC output reveals the second field, so setting one without the other
     /// is almost always a mistake. Do it by hand only when you know why.
+    ///
+    /// # A non-zero contribution cannot be launched from here
+    ///
+    /// [`build_launch_outputs`](crate::currency_launch::build_launch_outputs)
+    /// **refuses** a definition whose contributions are non-zero, so calling
+    /// this with real amounts produces a definition that cannot be launched by
+    /// this crate. That is deliberate: a contribution needs a value-bearing
+    /// output per reserve, which the launch builder does not emit, and a
+    /// definition declaring reserves nothing paid for is a fractional currency
+    /// that reaches its start block empty and refunds.
+    ///
+    /// Seen in this repository's own captures — every daemon launch without
+    /// contributions is seven outputs, and the three with
+    /// `initialcontributions: [3.0]` are eight, the extra one carrying the
+    /// contribution.
+    ///
+    /// **To seed a basket**, launch it without contributions and preconvert
+    /// once the definition is on chain. That is a separate transaction and it
+    /// works today.
+    ///
+    /// Passing all-zero amounts is fine and is what the field normally holds —
+    /// [`CurrencyDefinition::nft`] does exactly that, because the vector still
+    /// has to be the right *length* for its reserve list.
     #[must_use]
     pub fn with_contributions(mut self, contributions: Vec<Amount>) -> Self {
         self.preconverted = contributions.clone();

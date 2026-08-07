@@ -318,6 +318,72 @@ fn a_plain_token_launch_leaves_the_recover_contract_out() {
     );
 }
 
+/// A definition declaring contributions is **refused**, because no output here
+/// funds them.
+///
+/// The daemon adds one value-bearing output per contributed reserve. That is
+/// visible in this repository's own fixtures without asking a node: every
+/// vector without contributions is a seven-output transaction paying
+/// `[100 deposit, 5 change]`, and the three carrying
+/// `initialcontributions: [3.0]` are **eight** outputs paying
+/// `[3.00095018, 100, 1.99904982]`.
+///
+/// Building seven anyway would declare reserves nothing paid for — for a
+/// fractional currency, a launch that reaches its start block empty and
+/// refunds, with `initialcontributions` looking correctly set the whole time.
+#[test]
+fn a_definition_with_contributions_is_refused_by_the_launch_builder() {
+    let fixture = fixture();
+    let mut definition = fractional_definition(&fixture);
+    definition = definition.with_contributions(vec![coins("3.00000000")]);
+
+    let error = build_launch_outputs(&definition, &context(&fixture))
+        .expect_err("a contribution this cannot fund must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("initial_contributions"),
+        "the refusal must name the field: {message}"
+    );
+    assert!(
+        message.contains("preconvert"),
+        "and point at what does work: {message}"
+    );
+}
+
+/// All-zero contributions are the ordinary case and must still build.
+///
+/// The vector has to match the reserve list's *length*, so a fractional
+/// currency and every NFT carry zeros. Refusing on "the vector is non-empty"
+/// rather than "an amount is non-zero" would break both.
+#[test]
+fn zero_contributions_are_not_a_declaration_and_still_build() {
+    let fixture = fixture();
+    let definition = fractional_definition(&fixture);
+    assert_eq!(definition.initial_contributions, vec![Amount::ZERO]);
+    assert!(build_launch_outputs(&definition, &context(&fixture)).is_ok());
+
+    let nft = CurrencyDefinition::nft(
+        definition.parent,
+        &definition.name,
+        definition.start_block,
+        [0x2b; 20],
+    );
+    assert_eq!(nft.initial_contributions, vec![Amount::ZERO]);
+}
+
+/// Encoding a definition that declares contributions stays legal.
+///
+/// The refusal belongs to *launching*, not to serializing: this crate has to
+/// re-encode the daemon's own definitions byte for byte, and three of the
+/// committed vectors carry contributions. Refusing in `serialize_definition`
+/// would make those unreadable.
+#[test]
+fn a_contributing_definition_still_encodes() {
+    let fixture = fixture();
+    let definition = fractional_definition(&fixture).with_contributions(vec![coins("3.00000000")]);
+    assert!(verus_tx::currency_definition::currency_definition_script(&definition).is_ok());
+}
+
 // ----------------------------------------------------------------- assembling
 
 use verus_keys::PrivateKey;
