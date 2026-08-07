@@ -110,7 +110,7 @@ pub use funding::{identity_held, spendable, Funding};
 pub use history::{history, HistoryEntry};
 pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,
-    Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy,
+    Pending, ReadyToRegister, Registered, RegistrationOptions, WaitPolicy, EXPIRING_SOON_THRESHOLD,
 };
 pub use launch::{launch_currency, prepare_launch, Launched};
 pub use lifecycle::{

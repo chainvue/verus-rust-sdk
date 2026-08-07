@@ -116,10 +116,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CommitmentStatus::CommitmentGone => {
             // The node has never seen it: the broadcast may not have happened
             // (a crash between persisting and broadcasting lands here), or it
-            // expired. The salt in the state file is still good either way.
+            // was dropped from a mempool. The salt is still good and the bytes
+            // can still be mined, so re-broadcasting is the right move — the
+            // expired case is its own arm now, precisely because it is not.
             println!(
                 "the node has never seen the commitment — rebroadcast from {state_file} \
-                 (commitment_hex) or start over after inspecting it"
+                 (commitment_hex)"
+            );
+        }
+        CommitmentStatus::Expired { expiry_height, tip } => {
+            // The one arm that must not say "try again": the expiry is inside
+            // the signed bytes, so every retry earns the same rejection.
+            println!(
+                "the commitment expired at block {expiry_height} and the chain is at {tip} — \
+                 re-broadcasting cannot help, the expiry is inside the signed bytes. Delete \
+                 {state_file} and start over; the commitment fee already paid is lost."
             );
         }
     }

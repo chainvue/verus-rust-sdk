@@ -141,6 +141,22 @@ pub struct Pending<S> {
     /// `(height, best block hash)` when the commitment was broadcast, so a
     /// reorg underneath it can be noticed.
     pub anchored_at: Option<(u32, String)>,
+    /// The height `commitment_hex` stops being minable at.
+    ///
+    /// Recorded because it is otherwise unreachable: the expiry is inside the
+    /// bytes the signature covers, so it cannot be changed, and the only other
+    /// copy of it is in `commitment_hex` itself. Without it a caller has no
+    /// local way to tell an expired reservation from a slow one — see
+    /// [`Pending::is_expired`] and [`CommitmentStatus::Expired`].
+    ///
+    /// `#[serde(default)]` so a `Pending` written before this field existed
+    /// still loads, the same treatment [`Pending::referral_levels`] got. It
+    /// lands as `0`, which [`Pending::expiry_height`] reports as "not
+    /// recorded" rather than as "expires at genesis" — a zero expiry on the
+    /// wire means *never expires*, and reading a missing value as that would
+    /// call every old reservation permanently alive.
+    #[serde(default)]
+    pub expiry_height: u32,
     #[serde(skip)]
     state: PhantomData<S>,
 }
@@ -173,10 +189,73 @@ impl<S> Pending<S> {
             system_id: self.system_id,
             change_address: self.change_address,
             anchored_at: self.anchored_at,
+            expiry_height: self.expiry_height,
             state: PhantomData,
         }
     }
+
+    /// The height the commitment stops being minable at, if it was recorded.
+    ///
+    /// `None` for a `Pending` persisted before the field existed. That is not
+    /// the same as "never expires": the bytes carry a real expiry either way,
+    /// it just is not known here. [`Pending::is_expired`] answers `false` in
+    /// that case rather than guessing.
+    pub fn expiry_height(&self) -> Option<u32> {
+        (self.expiry_height != 0).then_some(self.expiry_height)
+    }
+
+    /// Whether the commitment can still be mined at `tip`.
+    ///
+    /// Once this is true, **re-broadcasting cannot help**. The expiry is inside
+    /// the bytes the signature covers, so `anchor` hands back the same doomed
+    /// transaction every time and the node answers
+    ///
+    /// ```text
+    /// -26: tx-expiring-soon: expiryheight is N but should be at least M
+    /// ```
+    ///
+    /// The reservation is dead and the name has to be started over. The salt in
+    /// it is worthless — it only ever mattered because the commitment was
+    /// alive.
+    ///
+    /// # The margin is not zero
+    ///
+    /// A node refuses a transaction that expires *soon*, not only one that has
+    /// expired: `TX_EXPIRING_SOON_THRESHOLD` is 3 blocks, so a commitment is
+    /// unusable from `expiry - 3` onward. Being honest about that is the whole
+    /// point — telling a caller to retry into a window that will be refused is
+    /// the failure this is fixing.
+    ///
+    /// Always `false` when no expiry was recorded, since guessing would
+    /// condemn a live reservation.
+    pub fn is_expired(&self, tip: u32) -> bool {
+        self.expiry_height()
+            .is_some_and(|expiry| tip.saturating_add(EXPIRING_SOON_THRESHOLD) >= expiry)
+    }
 }
+
+/// How close to its expiry a node stops accepting a transaction.
+///
+/// A node refuses a transaction that expires *soon*, not only one that has
+/// expired — `IsExpiringSoonTx` compares against `nextBlockHeight +
+/// TX_EXPIRING_SOON_THRESHOLD`. So there is a window just below the expiry in
+/// which a transaction is still technically minable and no node will relay it,
+/// and a caller told to keep waiting there is being told to wait for something
+/// that will not happen.
+///
+/// # Read from source, not measured
+///
+/// `TX_EXPIRING_SOON_THRESHOLD` is 3 in `src/main.h`. Unlike the timelock
+/// floor in `PROVEN.md`, that number has **not** been confirmed against a node
+/// here: doing so means broadcasting transactions at a range of expiry heights
+/// and reading which are refused, and nothing in this crate has done that.
+///
+/// Being wrong is not symmetric, which is why it is used at all. Too large and
+/// a caller is told to start over a few blocks early — they lose the
+/// commitment fee. Too small, or absent, and they are told to retry a
+/// transaction no node will ever accept, which is the failure this exists to
+/// remove.
+pub const EXPIRING_SOON_THRESHOLD: u32 = 3;
 
 /// Where a pending registration stands.
 #[derive(Clone, Debug)]
@@ -197,12 +276,38 @@ pub enum CommitmentStatus {
         /// What changed.
         detail: String,
     },
-    /// The node has never seen the commitment.
+    /// The node has never seen the commitment, and it can still be mined.
     ///
-    /// Either it never propagated, or it expired and was dropped. The salt is
-    /// still good, so the commitment can be re-broadcast — but if it expired,
-    /// a fresh one is needed.
+    /// It never propagated, or it was dropped from a mempool that had it.
+    /// The bytes are still good: [`Pending::anchor`] and re-broadcast.
+    ///
+    /// **This no longer covers the expired case.** It used to, and the two
+    /// need opposite actions — retry versus start over — so a caller following
+    /// the advice above was sent to retry a transaction no node would accept,
+    /// and learned that only from a raw `-26` string. See
+    /// [`CommitmentStatus::Expired`].
     CommitmentGone,
+    /// The commitment can never be mined. **Start over.**
+    ///
+    /// Not a wait state and not a retry state: the expiry is inside the bytes
+    /// the signature covers, so re-broadcasting hands back the same doomed
+    /// transaction and the node answers `-26: tx-expiring-soon`. The salt in
+    /// this `Pending` is worthless — it only mattered while the commitment was
+    /// alive — so the reservation can be deleted and the name claimed again,
+    /// paying a second commitment fee.
+    ///
+    /// Nothing here can re-sign: `Pending` holds no keys. "A fresh one is
+    /// needed" is genuinely the caller's job, and saying so is the point.
+    ///
+    /// Reported whether or not the node still holds the transaction: a
+    /// commitment sitting in a mempool it can never leave is dead in the same
+    /// way as one that was dropped.
+    Expired {
+        /// The height it stopped being minable at.
+        expiry_height: u32,
+        /// Where the chain was when that was decided.
+        tip: u32,
+    },
 }
 
 /// Options for a registration, all with sane defaults.
@@ -317,12 +422,11 @@ pub fn prepare_registration_with_salt(
     // starting if the registration that follows cannot be paid for.
     funding::require(&funding, fee, &from.to_string())?;
 
-    let params = CommitmentParams::new(
-        &funding.utxos,
-        &reservation,
-        from,
-        Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
-    );
+    // Kept, not just used: the expiry is inside the bytes the signature
+    // covers, so it can never change, and `Pending` is the only place it is
+    // reachable from without decoding `commitment_hex`.
+    let expiry = Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS);
+    let params = CommitmentParams::new(&funding.utxos, &reservation, from, expiry);
     let signed = build_name_commitment(key, &params)?;
 
     let primary_addresses = if options.primary_addresses.is_empty() {
@@ -347,6 +451,7 @@ pub fn prepare_registration_with_salt(
         system_id,
         change_address: from.to_string(),
         anchored_at: None,
+        expiry_height: expiry.to_height(),
         state: PhantomData,
     })
 }
@@ -382,6 +487,13 @@ impl Pending<AwaitingCommitment> {
     ///
     /// The outcome is `()` because there is nothing to hand back: the `Pending`
     /// was never taken from the caller.
+    ///
+    /// # Refuses an expired commitment
+    ///
+    /// It reads the tip anyway, so it can tell. Handing back bytes it knows a
+    /// node will reject is worse than an error: the caller broadcasts, gets
+    /// `-26: tx-expiring-soon`, and has to parse a string to learn that
+    /// retrying is hopeless. [`FlowError::CommitmentExpired`] says it directly.
     pub fn anchor(&mut self, reader: &impl ChainReader) -> Result<Unsent<()>, FlowError> {
         // A reorg is detected by comparing against where the chain was when
         // this was committed to.
@@ -398,6 +510,16 @@ impl Pending<AwaitingCommitment> {
         // height the first returned — so they are two rounds under a driver and
         // no reordering helps.
         let height = reader.block_count()?;
+        // Checked before the anchor is written and before any bytes leave:
+        // these are dead, and recording where the chain was when we noticed
+        // would only make the corpse look fresh to the next poll.
+        if self.is_expired(height) {
+            return Err(FlowError::CommitmentExpired {
+                name: self.reservation.name.clone(),
+                expiry_height: self.expiry_height,
+                tip: height,
+            });
+        }
         let hash = reader.block_hash(height)?;
         self.anchored_at = Some((height, hash));
         Ok(Unsent {
@@ -431,12 +553,38 @@ impl Pending<AwaitingCommitment> {
     /// The same reasoning made [`Pending::broadcast_commitment`] take
     /// `&mut self`. This one only reads, so a shared borrow is enough.
     pub fn poll(&self, reader: &impl ChainReader) -> Result<CommitmentStatus, FlowError> {
-        let confirmations = match reader.confirmations(&self.commitment_txid)? {
-            Some(confirmations) => confirmations,
-            None => return Ok(CommitmentStatus::CommitmentGone),
+        let confirmations = reader.confirmations(&self.commitment_txid)?;
+        // A mined commitment is past caring about its expiry: the height gates
+        // entry to a block, and it is already in one. Only an unconfirmed
+        // commitment can be too late.
+        let mined = matches!(confirmations, Some(count) if count > 0);
+
+        // One read, shared. The reorg check needs it only when this was
+        // anchored; the expiry check needs it whenever the commitment is still
+        // waiting to be mined.
+        let tip = if self.anchored_at.is_some() || !mined {
+            Some(reader.block_count()?)
+        } else {
+            None
         };
 
-        if let Some(status) = self.check_for_reorg(reader)? {
+        if !mined {
+            if let Some(tip) = tip {
+                if self.is_expired(tip) {
+                    return Ok(CommitmentStatus::Expired {
+                        expiry_height: self.expiry_height,
+                        tip,
+                    });
+                }
+            }
+        }
+
+        let Some(confirmations) = confirmations else {
+            // Still minable, the node just does not have it.
+            return Ok(CommitmentStatus::CommitmentGone);
+        };
+
+        if let Some(status) = self.check_for_reorg(reader, tip)? {
             return Ok(status);
         }
 
@@ -458,14 +606,21 @@ impl Pending<AwaitingCommitment> {
     /// backwards, so this compares the hash at the anchored height. A different
     /// hash there means that block was replaced; a tip below the anchor means
     /// the chain got shorter. Either way what was read before is suspect.
+    ///
+    /// `tip` is passed in rather than read here, so one `block_count` serves
+    /// both this and the expiry check in [`Pending::poll`].
     fn check_for_reorg(
         &self,
         reader: &impl ChainReader,
+        tip: Option<u32>,
     ) -> Result<Option<CommitmentStatus>, FlowError> {
         let Some((height, ref hash)) = self.anchored_at else {
             return Ok(None);
         };
-        let tip = reader.block_count()?;
+        let tip = match tip {
+            Some(tip) => tip,
+            None => reader.block_count()?,
+        };
         if tip < height {
             return Ok(Some(CommitmentStatus::Reorged {
                 detail: format!("tip is {tip}, below the height {height} this was anchored at"),

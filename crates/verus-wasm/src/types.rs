@@ -535,6 +535,7 @@ mod tests {
                 JsCommitmentStatus::Ready { .. } => "CommitmentReady",
                 JsCommitmentStatus::Reorged { .. } => "CommitmentReorged",
                 JsCommitmentStatus::Gone => "CommitmentGone",
+                JsCommitmentStatus::Expired { .. } => "CommitmentExpired",
             }
         }
 
@@ -547,6 +548,10 @@ mod tests {
                 detail: String::new(),
             },
             JsCommitmentStatus::Gone,
+            JsCommitmentStatus::Expired {
+                expiry_height: 0,
+                tip: 0,
+            },
         ];
         for sample in &samples {
             assert_declared(interface_of(sample), sample);
