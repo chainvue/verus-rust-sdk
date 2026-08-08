@@ -183,6 +183,33 @@ impl CurrencyDefinition {
     ///
     /// Amounts and fees still have to be set: there is no safe default for
     /// money.
+    ///
+    /// # This token has no supply, and that choice is made here
+    ///
+    /// What comes back preallocates nothing, declares `initial_supply` zero and
+    /// carries `proof_protocol` 1. Launched as-is it is a currency that can
+    /// **never hold anything**, because all three routes to a supply are closed
+    /// at definition time and none of them can be opened afterwards:
+    ///
+    /// | route | what it needs | set by |
+    /// |---|---|---|
+    /// | preallocation | [`preallocations`](Self::preallocations), naming an identity | this constructor leaves it empty |
+    /// | minting | `proof_protocol` 2 (`verus_tx::CENTRALIZED_PROOF_PROTOCOL`) | this constructor sets 1 |
+    /// | preconversion | reserve currencies in [`currencies`](Self::currencies) | this constructor leaves it empty |
+    ///
+    /// A definition is immutable once mined, and an identity may define exactly
+    /// one currency ever — so a token launched empty cannot be fixed, and the
+    /// name cannot be reused. The failure is silent at launch: the daemon
+    /// accepts the definition, and the emptiness only becomes visible when
+    /// someone tries to put something in it.
+    ///
+    /// For a fixed supply, set `preallocations`. For a supply you can add to
+    /// later, set `proof_protocol` to `verus_tx::CENTRALIZED_PROOF_PROTOCOL`
+    /// — `flows::prepare_mint` refuses anything else, by name.
+    ///
+    /// [`CurrencyDefinition::nft`](Self::nft) is the contrast worth reading: it
+    /// sets a one-satoshi preallocation precisely because that is the only way
+    /// an NFT gets its supply.
     #[must_use]
     pub fn token(parent: CurrencyId, name: impl Into<String>, start_block: u64) -> Self {
         Self {
