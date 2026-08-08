@@ -554,6 +554,19 @@ pub struct JsFunding {
     /// token send; this number is here so a balance screen can say "and 3
     /// outputs this cannot spend" rather than silently omitting them.
     pub other: usize,
+    /// Value in outputs an unconfirmed transaction already spends, in satoshis,
+    /// as a decimal string.
+    ///
+    /// Withheld from `utxos` because spending one again would build a
+    /// conflicting transaction. Kept out of `notYetSpendable` deliberately:
+    /// that figure means "wait", and this money is not waiting for anything —
+    /// it has left and is settling. This is what a wallet should label
+    /// "pending", not "unavailable".
+    ///
+    /// **Best-effort.** A mempool belongs to one node: another node, or this
+    /// one after a restart, may not have the spending transaction, in which
+    /// case this reads zero and the coins reappear in `utxos`.
+    pub spent_unconfirmed: String,
 }
 
 impl From<verus_flows::Funding> for JsFunding {
@@ -562,6 +575,7 @@ impl From<verus_flows::Funding> for JsFunding {
             tip: funding.tip,
             total: dto::sats_string(funding.total),
             not_yet_spendable: dto::sats_string(funding.immature_total()),
+            spent_unconfirmed: dto::sats_string(funding.spent_unconfirmed_total()),
             other: funding.other.len(),
             utxos: funding
                 .utxos
@@ -2178,6 +2192,26 @@ pub fn plan_commitment_status(
                 verus_flows::CommitmentStatus::CommitmentGone => JsCommitmentStatus::Gone,
                 verus_flows::CommitmentStatus::Expired { expiry_height, tip } => {
                     JsCommitmentStatus::Expired { expiry_height, tip }
+                }
+                // `CommitmentStatus` is `#[non_exhaustive]`, so a newer
+                // `verus-flows` can name a state this binding was built before.
+                //
+                // Refused rather than mapped onto the nearest known variant.
+                // Every arm above tells a wallet something different about
+                // money it has already committed — whether to keep waiting,
+                // re-register, or give up — and guessing wrong tells a user to
+                // wait for something dead, or to abandon a registration that
+                // was still live. An error names the mismatch; a wrong status
+                // hides it.
+                other => {
+                    return Err(WasmError::new(
+                        "UnknownCommitmentStatus",
+                        format!(
+                            "this build reports commitment states it knows; verus-flows \
+                             returned {other:?}, which postdates it. Rebuild the wasm module \
+                             against the same verus-flows version"
+                        ),
+                    ))
                 }
             }),
         },

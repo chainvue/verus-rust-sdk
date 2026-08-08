@@ -49,7 +49,13 @@ use verus_tx::{Amount, Utxo};
 use crate::error::FlowError;
 
 /// Spendable coins at an address, and the height they were assessed at.
+///
+/// `#[non_exhaustive]` because this is a report, not a request: callers read it
+/// and never build one. Naming a new category of withheld output — as
+/// `spent_unconfirmed` was — should not be a breaking change, and a caller who
+/// constructed this literally would silently omit whatever came next.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Funding {
     /// Outputs that can be spent now, ready for a builder.
     pub utxos: Vec<Utxo>,
@@ -102,6 +108,20 @@ impl Funding {
         Amount::checked_sum(self.immature.iter().map(|found| found.utxo.satoshis))
             .unwrap_or(Amount::ZERO)
     }
+
+    /// The value an unconfirmed transaction has already spent.
+    ///
+    /// What a wallet should show as "pending" — money that has left but has
+    /// not settled. Best-effort for the same reason
+    /// [`Funding::spent_unconfirmed`] is: it reflects one node's mempool.
+    pub fn spent_unconfirmed_total(&self) -> Amount {
+        Amount::checked_sum(
+            self.spent_unconfirmed
+                .iter()
+                .map(|found| found.utxo.satoshis),
+        )
+        .unwrap_or(Amount::ZERO)
+    }
 }
 
 /// Gather what `address` can spend at the current tip.
@@ -120,9 +140,28 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
     let tip = reader.block_count();
     let found = reader.address_utxos(&[address]);
     let pending = reader.address_mempool(&[address]);
-    let (tip, found, pending) = (tip?, found?, pending?);
+    let (tip, found) = (tip?, found?);
 
-    let spent_in_mempool = already_spent(&pending);
+    // The mempool read does NOT use `?`, and that is the whole point of
+    // calling this filter best-effort.
+    //
+    // It is an optimisation over the confirmed UTXO set: it withholds coins
+    // some unconfirmed transaction already spends. If the answer cannot be
+    // had — an endpoint that does not serve `getaddressmempool`, or a reply
+    // the reader refuses because a row's `spending` and `spends` disagree —
+    // the honest degradation is to withhold nothing and fund from what is
+    // confirmed, which is exactly what every flow did before this filter
+    // existed.
+    //
+    // Propagating it instead would turn a missing optimisation into a wallet
+    // that cannot spend at all: `send`, `mint`, `launch`, `publish`, `update`
+    // and `take_offer` all fund through here.
+    //
+    // The driver sentinel is the one error that must NOT be swallowed. Under
+    // `crate::drive` an unanswered read returns `RpcError::AnswerNeeded`, and
+    // treating that as "no mempool data" would make the driver believe the
+    // operation had finished with a stale candidate set.
+    let spent_in_mempool = best_effort_spent(pending)?;
 
     let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
     let mature = verus_rpc::spendable_at(&found, tip, &coinbase_heights);
@@ -169,6 +208,37 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
         other: non_native,
         spent_unconfirmed,
     })
+}
+
+/// The already-spent set, or an empty one when the mempool cannot be read.
+///
+/// The mempool filter is an **optimisation over the confirmed UTXO set**: it
+/// withholds coins some unconfirmed transaction already spends. When the answer
+/// cannot be had — an endpoint that does not serve `getaddressmempool`, or a
+/// reply the reader refuses because a row's `spending` and `spends` disagree —
+/// the honest degradation is to withhold nothing and fund from what is
+/// confirmed, which is what every flow did before the filter existed.
+///
+/// Propagating the error instead would turn a missing optimisation into a
+/// wallet that cannot spend at all: `send`, `mint`, `launch`, `publish`,
+/// `update` and `take_offer` all fund through here. That is the failure this
+/// exists to prevent, and it is why the module docs call the filter
+/// best-effort rather than a guarantee.
+///
+/// # The one error that must not be swallowed
+///
+/// [`RpcError::AnswerNeeded`](verus_rpc::RpcError::AnswerNeeded) is the
+/// driver's sentinel, not a node failure — see [`crate::drive`]. Reading it as
+/// "no mempool data" would make a driven caller believe the operation had
+/// finished against a candidate set that was never filtered.
+fn best_effort_spent(
+    pending: Result<Vec<verus_rpc::MempoolDelta>, verus_rpc::RpcError>,
+) -> Result<Vec<(verus_tx::Txid, u32)>, FlowError> {
+    match pending {
+        Ok(rows) => Ok(already_spent(&rows)),
+        Err(sentinel @ verus_rpc::RpcError::AnswerNeeded) => Err(FlowError::Rpc(sentinel)),
+        Err(_) => Ok(Vec::new()),
+    }
 }
 
 /// The outpoints an unconfirmed transaction already consumes.
@@ -308,10 +378,11 @@ pub fn identity_held_tokens(
     let tip = reader.block_count();
     let found = reader.address_utxos(&[identity]);
     let pending = reader.address_mempool(&[identity]);
-    let (tip, found, pending) = (tip?, found?, pending?);
+    let (tip, found) = (tip?, found?);
 
     let coinbase_heights = probe_coinbase_heights(reader, &found, tip)?;
-    let spent_in_mempool = already_spent(&pending);
+    // Best-effort, exactly as in `spendable` — see the note there.
+    let spent_in_mempool = best_effort_spent(pending)?;
 
     Ok(verus_rpc::spendable_at(&found, tip, &coinbase_heights)
         .into_iter()
@@ -362,7 +433,7 @@ pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Ut
     let tip = reader.block_count();
     let found = reader.address_utxos(&[identity]);
     let pending = reader.address_mempool(&[identity]);
-    let (tip, found, pending) = (tip?, found?, pending?);
+    let (tip, found) = (tip?, found?);
 
     // Coinbase maturity applies here exactly as in `spendable` — an identity
     // that stakes is paid in coinbase outputs carrying this very script, and
@@ -374,7 +445,9 @@ pub fn identity_held(reader: &impl ChainReader, identity: &str) -> Result<Vec<Ut
     // And the same is true of an output some unconfirmed transaction already
     // spends — more so, because "consumes every output" means one stale coin
     // poisons the whole spend rather than merely shrinking it.
-    let spent_in_mempool = already_spent(&pending);
+    //
+    // Best-effort, exactly as in `spendable` — see the note there.
+    let spent_in_mempool = best_effort_spent(pending)?;
 
     Ok(verus_rpc::spendable_at(&found, tip, &coinbase_heights)
         .into_iter()

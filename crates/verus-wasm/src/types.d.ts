@@ -563,6 +563,20 @@ export interface Funding {
      * tracks its own token outputs passes them to the token send directly.
      */
     other: number;
+    /**
+     * Value in outputs an unconfirmed transaction already spends, in satoshis
+     * as a decimal string.
+     *
+     * Withheld from `utxos` because spending one again would build a
+     * conflicting transaction, and kept out of `notYetSpendable` on purpose:
+     * that figure means "wait", and this money is not waiting — it has left and
+     * is settling. Label it "pending", not "unavailable".
+     *
+     * Best-effort: a mempool belongs to one node, so another node may not have
+     * the spending transaction, in which case this reads `"0"` and the coins
+     * reappear in `utxos`.
+     */
+    spentUnconfirmed: string;
 }
 
 /** Which identity's stored data to read. */

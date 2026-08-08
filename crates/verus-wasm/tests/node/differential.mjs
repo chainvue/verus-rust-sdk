@@ -1114,9 +1114,45 @@ console.log("\nflows, driven with no network");
     assert.equal(typeof funding.total, "string");
     assert.equal(funding.total, String(SATS));
     assert.equal(funding.notYetSpendable, "0");
+    assert.equal(funding.spentUnconfirmed, "0");
     assert.equal(funding.utxos.length, 1);
     assert.equal(funding.utxos[0].scriptPubKey, SCRIPT);
     ok("spendable coins are reported with the tip they were judged against");
+
+    // The same address, with the one output already spent by something in the
+    // mempool. `getaddressutxos` is confirmed-only and still reports it, so
+    // without the mempool read a page would rebuild that spend byte for byte —
+    // the duplicate, not a conflict a node explains.
+    //
+    // Reported separately from `notYetSpendable` on purpose: that figure means
+    // "wait", and this money is not waiting for anything. A wallet showing this
+    // as unavailable rather than pending tells a user their coins vanished.
+    const spentReplies = {
+      ...replies,
+      getaddressmempool: JSON.stringify({
+        result: [{
+          address, txid: "9f".repeat(32), index: 0, satoshis: -SATS,
+          spending: true, prevtxid: TXID, prevout: 1, timestamp: 1785262500,
+        }],
+      }),
+    };
+    const pendingFunding = (() => {
+      const a = new Answers();
+      for (;;) {
+        const s = planSpendable({ address }, a);
+        if (s.kind === "ready") { a.free(); return s.value; }
+        for (const body of s.ask) {
+          const { method } = JSON.parse(body);
+          a.record(body, spentReplies[method]);
+        }
+      }
+    })();
+
+    assert.deepEqual(pendingFunding.utxos, [], "a coin already spent is withheld");
+    assert.equal(pendingFunding.total, "0");
+    assert.equal(pendingFunding.notYetSpendable, "0", "it is not waiting for anything");
+    assert.equal(pendingFunding.spentUnconfirmed, String(SATS));
+    ok("money an unconfirmed transaction already spends is withheld and reported as pending");
   }
 
   // -- stored data, current versus accumulated ------------------------------
@@ -2153,7 +2189,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 93;
+const EXPECTED_CHECKS = 94;
 assert.equal(
   checks,
   EXPECTED_CHECKS,

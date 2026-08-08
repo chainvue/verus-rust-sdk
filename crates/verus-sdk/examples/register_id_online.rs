@@ -133,6 +133,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  {state_file} and start over; the commitment fee already paid is lost."
             );
         }
+        // `CommitmentStatus` is `#[non_exhaustive]`, so a later version can name
+        // a state this example predates. Keep the file and say nothing about
+        // what to do — the arms above disagree with each other about exactly
+        // that, and an example that guessed would be teaching the guess.
+        other => {
+            println!(
+                "the commitment is in a state this example does not know ({other:?}); \
+                 {state_file} is kept — do not delete it until you know which"
+            );
+        }
     }
     Ok(())
 }

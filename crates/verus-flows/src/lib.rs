@@ -106,7 +106,7 @@ pub use convert::{
     ConversionPlan,
 };
 pub use error::FlowError;
-pub use funding::{identity_held, spendable, Funding};
+pub use funding::{identity_held, identity_held_tokens, spendable, Funding};
 pub use history::{history, HistoryEntry};
 pub use identity::{
     prepare_registration, prepare_registration_with_salt, AwaitingCommitment, CommitmentStatus,

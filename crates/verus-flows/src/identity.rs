@@ -258,7 +258,13 @@ impl<S> Pending<S> {
 pub const EXPIRING_SOON_THRESHOLD: u32 = 3;
 
 /// Where a pending registration stands.
+///
+/// `#[non_exhaustive]` because the set of ways a commitment can fail to be
+/// usable is not closed — `Expired` was added once the expiry height was
+/// tracked, and an exhaustive `match` downstream would have stopped compiling.
+/// A caller must have a fallback arm for a state this version cannot name.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum CommitmentStatus {
     /// Not confirmed yet. Carries how many confirmations it has.
     Waiting {

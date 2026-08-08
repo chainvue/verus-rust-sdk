@@ -438,10 +438,14 @@ pub fn prepare_send_token_from_identity(
         .parse()
         .map_err(|e| FlowError::NoSuchIdentity(format!("{identity}: {e}")))?;
 
-    let token_utxos =
-        crate::funding::identity_held_tokens(reader, &record.identity_address, currency)?;
+    // The identity's token outputs and the fee payer's coins. Issued together,
+    // unwrapped after — neither needs the other's answer, so this is one round
+    // rather than two. See [`crate::drive`].
     let fee_from = fee_key.address();
-    let fee_funding = crate::funding::spendable(reader, &fee_from.to_string())?;
+    let token_utxos =
+        crate::funding::identity_held_tokens(reader, &record.identity_address, currency);
+    let fee_funding = crate::funding::spendable(reader, &fee_from.to_string());
+    let (token_utxos, fee_funding) = (token_utxos?, fee_funding?);
 
     // A timelock holds the identity's funds whatever kind they are — the token
     // outputs are spent under the same condition the native ones are. Checked
