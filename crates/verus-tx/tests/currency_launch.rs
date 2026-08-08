@@ -318,36 +318,28 @@ fn a_plain_token_launch_leaves_the_recover_contract_out() {
     );
 }
 
-/// A definition declaring contributions is **refused**, because no output here
-/// funds them.
+/// A contribution the builder cannot express is refused rather than guessed.
 ///
-/// The daemon adds one value-bearing output per contributed reserve. That is
-/// visible in this repository's own fixtures without asking a node: every
-/// vector without contributions is a seven-output transaction paying
-/// `[100 deposit, 5 change]`, and the three carrying
-/// `initialcontributions: [3.0]` are **eight** outputs paying
-/// `[3.00095018, 100, 1.99904982]`.
+/// Contributions are funded now — see
+/// `the_contribution_output_matches_the_daemon_byte_for_byte` — but only in the
+/// shape the captures prove: a single reserve, in the system's own currency.
 ///
-/// Building seven anyway would declare reserves nothing paid for — for a
-/// fractional currency, a launch that reaches its start block empty and
-/// refunds, with `initialcontributions` looking correctly set the whole time.
+/// A token contribution travels in the payload rather than the output's value
+/// and needs token inputs to fund it, and no capture in this repository shows
+/// that transaction. A currency definition is immutable and an identity defines
+/// exactly one currency ever, so building one on a guess is unrecoverable.
 #[test]
-fn a_definition_with_contributions_is_refused_by_the_launch_builder() {
+fn a_contribution_shape_no_capture_covers_is_refused() {
     let fixture = fixture();
     let mut definition = fractional_definition(&fixture);
+    let other = CurrencyId::from_bytes(i_address("i77n5FCqSBkXAK3UWHpdrPpdtXRc8sqjoz"));
+    definition.currencies = vec![other];
     definition = definition.with_contributions(vec![coins("3.00000000")]);
 
     let error = build_launch_outputs(&definition, &context(&fixture))
-        .expect_err("a contribution this cannot fund must be refused");
-    let message = error.to_string();
-    assert!(
-        message.contains("initial_contributions"),
-        "the refusal must name the field: {message}"
-    );
-    assert!(
-        message.contains("preconvert"),
-        "and point at what does work: {message}"
-    );
+        .expect_err("a token contribution is refused")
+        .to_string();
+    assert!(error.contains("system's own currency"), "{error}");
 }
 
 /// All-zero contributions are the ordinary case and must still build.
@@ -599,4 +591,166 @@ fn an_nft_the_chain_would_mine_but_nobody_wants_is_refused_by_the_builder() {
         .expect_err("a declared supply is refused")
         .to_string();
     assert!(error.contains("initial_supply should be zero"), "{error}");
+}
+
+/// The eighth output — the one that funds `initial_contributions` — rebuilt
+/// byte for byte against the daemon's own.
+///
+/// `fixtures/daemon/currency_definitions.json` carries a whole
+/// `full_transaction_hex` per vector, and `fractional_contrib` is **eight**
+/// outputs where every launch without contributions is seven. The extra one
+/// sits at index 5, immediately before the reserve deposit, and pays
+/// `3.00095018` for a declared contribution of `3.0`.
+///
+/// That gap is the conversion fee being grossed over, and reproducing it
+/// exactly is the whole point of this test — an approximate figure would leave
+/// the reserve holding slightly less than the definition claims, permanently.
+#[test]
+fn the_contribution_output_matches_the_daemon_byte_for_byte() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/daemon/currency_definitions.json"
+    );
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+    let vector = &file["vectors"]["fractional_contrib"];
+    let captured = decode_outputs(vector["full_transaction_hex"].as_str().expect("hex"));
+    assert_eq!(
+        captured.len(),
+        8,
+        "a contributed launch is eight outputs, not seven"
+    );
+
+    let definition = vector["definition"].clone();
+    let currency_id = i_address(definition["currencyid"].as_str().expect("currencyid"));
+
+    let mut built = CurrencyDefinition::token(
+        CurrencyId::from_bytes(i_address(definition["parent"].as_str().expect("parent"))),
+        definition["name"].as_str().expect("name"),
+        definition["startblock"].as_u64().expect("startblock"),
+    );
+    built.options = u32::try_from(definition["options"].as_u64().expect("options")).unwrap();
+    built.currencies = vec![CurrencyId::from_bytes(i_address(
+        definition["currencies"][0].as_str().expect("reserve"),
+    ))];
+    built.weights = vec![100_000_000];
+    built.initial_supply = Amount::from_sat(1000_00000000);
+    built = built.with_contributions(vec![Amount::from_sat(3_00000000)]);
+
+    let fixture = fixture();
+    let mut context = context(&fixture);
+    context.identity_address = currency_id;
+    // The capture's own start block is below this fixture's height. Only
+    // output 5 is asserted on and it carries no height, so moving the tip
+    // below the start block changes nothing this test reads.
+    context.height = 1_167_800;
+
+    let outputs = build_launch_outputs(&built, &context).expect("it builds");
+    assert_eq!(
+        outputs.outputs.len(),
+        8,
+        "the contribution output is emitted"
+    );
+
+    // Value AND script. The value is what the reserve receives; the script is
+    // where it goes and under what terms. Either alone would pass on a wrong
+    // transaction.
+    let (value, script) = &captured[5];
+    assert_eq!(
+        outputs.outputs[5].value, *value,
+        "the grossed-up contribution value must match the daemon exactly"
+    );
+    assert_eq!(
+        hex::encode(&outputs.outputs[5].script_pubkey),
+        *script,
+        "the contribution output's script must match the daemon exactly"
+    );
+
+    // And the deposit it was inserted ahead of is still where it belongs.
+    assert_eq!(outputs.outputs[6].value, captured[6].0);
+}
+
+/// Outputs of a raw transaction, as `(value, script hex)`.
+fn decode_outputs(raw: &str) -> Vec<(u64, String)> {
+    let bytes = hex::decode(raw).expect("hex");
+    let mut i = 8usize; // header + version group id
+
+    fn compact(bytes: &[u8], i: &mut usize) -> u64 {
+        let n = bytes[*i];
+        *i += 1;
+        match n {
+            0xfd => {
+                let v = u64::from(u16::from_le_bytes([bytes[*i], bytes[*i + 1]]));
+                *i += 2;
+                v
+            }
+            0xfe => {
+                let v = u64::from(u32::from_le_bytes(
+                    bytes[*i..*i + 4].try_into().expect("4 bytes"),
+                ));
+                *i += 4;
+                v
+            }
+            0xff => {
+                let v = u64::from_le_bytes(bytes[*i..*i + 8].try_into().expect("8 bytes"));
+                *i += 8;
+                v
+            }
+            small => u64::from(small),
+        }
+    }
+
+    let inputs = compact(&bytes, &mut i);
+    for _ in 0..inputs {
+        i += 36;
+        let len = usize::try_from(compact(&bytes, &mut i)).expect("a script length");
+        i += len + 4;
+    }
+    let count = compact(&bytes, &mut i);
+    (0..count)
+        .map(|_| {
+            let value = u64::from_le_bytes(bytes[i..i + 8].try_into().expect("8 bytes"));
+            i += 8;
+            let len = usize::try_from(compact(&bytes, &mut i)).expect("a script length");
+            let script = hex::encode(&bytes[i..i + len]);
+            i += len;
+            (value, script)
+        })
+        .collect()
+}
+
+/// The reserve deposit is still found once a contribution is inserted ahead of
+/// it, and the transaction still carries it.
+///
+/// Both of these were wrong in the first draft of contribution support and
+/// neither is visible in a byte comparison of the contribution output itself.
+/// `reserve_deposit_value` read a fixed index 5, which a contribution now
+/// occupies — so the burn arithmetic would have subtracted `3.00095018` from
+/// the launch fee instead of `100`, under-burning by the whole registration
+/// fee. And the builder truncated to a fixed six outputs, which would have
+/// dropped the deposit from the transaction entirely.
+#[test]
+fn a_contribution_does_not_displace_the_reserve_deposit() {
+    let fixture = fixture();
+    let plain = build_launch_outputs(&fractional_definition(&fixture), &context(&fixture))
+        .expect("a plain launch");
+    assert_eq!(plain.deposit_index, 5);
+    assert_eq!(plain.outputs.len(), 7);
+
+    let mut contributed = fractional_definition(&fixture);
+    contributed = contributed.with_contributions(vec![coins("3.00000000")]);
+    let built = build_launch_outputs(&contributed, &context(&fixture)).expect("a funded launch");
+
+    assert_eq!(built.outputs.len(), 8, "the contribution adds an output");
+    assert_eq!(built.deposit_index, 6, "and pushes the deposit along");
+    assert_eq!(
+        built.reserve_deposit_value(),
+        plain.reserve_deposit_value(),
+        "the deposit is the same money whether or not a contribution rides with it"
+    );
+    assert_eq!(
+        built.consensus_outputs(),
+        7,
+        "every output but the change slot is validated, so none may be truncated away"
+    );
 }

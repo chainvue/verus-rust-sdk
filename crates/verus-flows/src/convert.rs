@@ -113,6 +113,17 @@ pub fn plan_conversion(
         ConversionKind::ReserveToReserve { via, target } => (id_text(*target), Some(id_text(*via))),
         ConversionKind::Mint { currency } => (id_text(*currency), None),
         ConversionKind::Burn => (source.to_string(), None),
+        // A contribution exists only inside a `definecurrency`, emitted by the
+        // launch builder. There is nothing here to plan or price: it is not a
+        // transaction a caller submits.
+        ConversionKind::Contribution { .. } => {
+            return Err(FlowError::NotReady(
+                "a contribution is part of a currency's own definition transaction, not a \
+                 conversion; declare it with `CurrencyDefinition::with_contributions` and \
+                 launch"
+                    .into(),
+            ))
+        }
     };
 
     let estimated_out = if matches!(kind, ConversionKind::Burn) {

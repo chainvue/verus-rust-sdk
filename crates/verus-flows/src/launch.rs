@@ -247,7 +247,24 @@ pub fn prepare_launch(
 
     let from = keys[0].address();
     let available = funding::spendable(reader, &from.to_string())?;
-    funding::require(&available, launch_fee, &from.to_string())?;
+
+    // A contribution is funded by the launch transaction itself — a
+    // value-bearing output on top of the fee — so the pre-check has to count
+    // it. Without this the shortfall surfaces from the assembler as a generic
+    // insufficient-funds error naming the fee alone, which sends a caller
+    // looking for the wrong missing money.
+    //
+    // Grossed up for the same reason the output is: the declared figure is
+    // what lands in the reserve, not what leaves the wallet.
+    let contributed = definition
+        .initial_contributions
+        .iter()
+        .try_fold(Amount::ZERO, |sum, c| sum.checked_add(*c))
+        .ok_or(verus_tx::TxError::ValueOverflow)?;
+    let needed = launch_fee
+        .checked_add(contributed)
+        .ok_or(verus_tx::TxError::ValueOverflow)?;
+    funding::require(&available, needed, &from.to_string())?;
 
     let identity_address: verus_keys::Address = record
         .identity_address
