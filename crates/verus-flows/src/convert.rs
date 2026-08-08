@@ -436,6 +436,144 @@ pub fn prepare_mint(
 }
 
 /// Fund and sign a prepared transfer, without sending it.
+/// Convert a token a VerusID holds, without moving it out first.
+///
+/// The identity supplies the token; `key` signs both its fulfillment and the
+/// plain coins that pay the miner fee. Those coins are necessary rather than
+/// convenient: a token an identity holds is a reserve output carrying **zero
+/// satoshis**, so it cannot pay its own way, and an identity holding a token
+/// need not hold native coins at all.
+///
+/// # Why this exists rather than sending the token out and converting it
+///
+/// A token's supply is the sum of its `preallocations`, and a preallocation
+/// names an identity — so for `proofprotocol` 1 every unit exists on the
+/// defining identity and never touches a key-held address. Seeding a basket
+/// with it otherwise takes two transactions, and between them the supply sits
+/// at a bare address while the launch window runs down. A basket that reaches
+/// its start block with an empty reserve refunds its **entire** launch, and the
+/// name cannot be reused, because an identity defines exactly one currency.
+///
+/// One conversion funded from the identity removes that window.
+///
+/// # What comes back where
+///
+/// Token surplus returns to the **identity**; native change goes to `key`'s own
+/// address. Money under an identity's authority should not quietly migrate to a
+/// bare key, and the fee did not come from the identity in the first place.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_conversion_from_identity(
+    reader: &impl ChainReader,
+    key: &PrivateKey,
+    identity: &str,
+    source: &str,
+    amount: Amount,
+    kind: ConversionKind,
+    recipient: &str,
+    fee: Amount,
+) -> Result<Unsent<Sent>, FlowError> {
+    let source_id = currency_of(source)?;
+    let from = key.address();
+
+    // Three reads, issued together — none needs another's answer. The
+    // identity's own token outputs are NOT among them: `identity` may be a
+    // `name@`, and the address to ask about is the one the record reports. That
+    // is a real dependency and costs a second round, exactly as it does in
+    // `prepare_send_token_from_identity`. See [`crate::drive`].
+    let info = reader.chain_info();
+    let record = crate::error::look_up_identity(reader, identity);
+    let fee_funding = funding::spendable(reader, &from.to_string());
+    let (info, record, fee_funding) = (info?, record?, fee_funding?);
+
+    let chain_currency = currency_of(&info.chain_id)?;
+    let record = record.ok_or_else(|| FlowError::NoSuchIdentity(identity.to_string()))?;
+    if record.is_revoked() {
+        return Err(FlowError::Tx(verus_tx::TxError::AlreadyRevoked));
+    }
+
+    // The same point-in-time checks the identity spend paths make. Consensus
+    // refuses a short fulfillment with `mandatory-script-verify-flag-failed`,
+    // which names neither the identity nor the key nor the threshold.
+    let primaries = record.identity["primaryaddresses"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !primaries.contains(&from.to_string()) {
+        return Err(FlowError::Tx(verus_tx::TxError::NotAPrimaryAddress {
+            address: from.to_string(),
+        }));
+    }
+    let min_sigs = record.identity["minimumsignatures"].as_u64().unwrap_or(1);
+    if min_sigs > 1 {
+        return Err(FlowError::Tx(verus_tx::TxError::NotEnoughSigners {
+            supplied: 1,
+            required: u32::try_from(min_sigs).unwrap_or(u32::MAX),
+        }));
+    }
+
+    // A timelock holds the identity's token outputs exactly as it holds its
+    // native ones.
+    let timelock = crate::send::timelock_of(&record.identity);
+    if !timelock.spendable_at(fee_funding.tip) {
+        return Err(FlowError::Tx(verus_tx::TxError::FundsTimelocked {
+            unlock_at: match timelock {
+                verus_tx::Timelock::UntilBlock(height) => Some(height),
+                _ => None,
+            },
+        }));
+    }
+
+    // Asked for by the address the record reports, not by whatever the caller
+    // wrote — a `name@` has to be resolved before there is an address at all.
+    let held = crate::funding::identity_held_tokens(reader, &record.identity_address, source_id)?;
+    if held.is_empty() {
+        return Err(FlowError::NotReady(format!(
+            "{identity} holds no outputs of {source}"
+        )));
+    }
+    if fee_funding.utxos.is_empty() {
+        return Err(FlowError::NotReady(format!(
+            "a token output carries no native value, so the miner fee must come from \
+             elsewhere — {from} has nothing spendable"
+        )));
+    }
+
+    // A mint is authorised by the currency's own identity and a burn destroys
+    // value; neither is reachable by naming a different kind here.
+    if matches!(kind, ConversionKind::Mint { .. } | ConversionKind::Burn) {
+        return Err(FlowError::NotReady(
+            "a mint or a burn is not a conversion; use prepare_mint or prepare_burn".into(),
+        ));
+    }
+    let recipient: Address = recipient.parse()?;
+
+    let transfer = build_conversion(
+        source_id,
+        amount,
+        kind,
+        recipient,
+        // The refund goes back to the signer, as everywhere else here.
+        from,
+        chain_currency,
+        fee,
+    )?;
+
+    let params = ConversionParams::new(
+        &transfer,
+        &fee_funding.utxos,
+        chain_currency,
+        from,
+        Expiry::within(fee_funding.tip, DEFAULT_EXPIRY_BLOCKS),
+    )
+    .with_identity_funding(&held);
+
+    Ok(build_conversion_transaction(key, &params)?.into())
+}
+
 fn prepare_submission(
     reader: &impl ChainReader,
     key: &PrivateKey,

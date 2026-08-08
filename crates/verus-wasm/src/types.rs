@@ -64,6 +64,9 @@ extern "C" {
     /// TypeScript `PlanSendTokenFromIdentityRequest`.
     #[wasm_bindgen(typescript_type = "PlanSendTokenFromIdentityRequest")]
     pub type PlanSendTokenFromIdentityRequestValue;
+    /// TypeScript `PlanConvertFromIdentityRequest`.
+    #[wasm_bindgen(typescript_type = "PlanConvertFromIdentityRequest")]
+    pub type PlanConvertFromIdentityRequestValue;
     /// TypeScript `PlanPublishRequest`.
     #[wasm_bindgen(typescript_type = "PlanPublishRequest")]
     pub type PlanPublishRequestValue;
@@ -297,10 +300,10 @@ mod tests {
             ContentRequest, HistoryRequest, JsContentValue, JsCurrencyDefinition, JsFunding,
             JsHistoryEntry, JsLaunched, JsListing, JsLoggedIn, JsOfferTerms, JsPlannedTransaction,
             JsPlannedUpdate, JsPreallocation, JsTaken, LoginRequest, OfferTermsRequest,
-            OffersRequest, PlanBurnRequest, PlanConvertRequest, PlanLaunchRequest, PlanMintRequest,
-            PlanPublishRequest, PlanRegistrationRequest, PlanSendFromIdentityRequest,
-            PlanSendRequest, PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest,
-            VerifyLoginRequest,
+            OffersRequest, PlanBurnRequest, PlanConvertFromIdentityRequest, PlanConvertRequest,
+            PlanLaunchRequest, PlanMintRequest, PlanPublishRequest, PlanRegistrationRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, PlanStep,
+            SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -401,6 +404,13 @@ mod tests {
         assert_declared("TakeOfferRequest", &TakeOfferRequest::default());
         // Every optional populated: a `serde(default)` field is exactly the one
         // a drift check would otherwise never see.
+        assert_declared(
+            "PlanConvertFromIdentityRequest",
+            &PlanConvertFromIdentityRequest {
+                via: Some(String::new()),
+                ..PlanConvertFromIdentityRequest::default()
+            },
+        );
         assert_declared(
             "PlanConvertRequest",
             &PlanConvertRequest {
@@ -677,10 +687,10 @@ mod tests {
         use crate::dto::{JsRecipient, JsUtxo, Shape};
         use crate::flows::{
             ContentRequest, HistoryRequest, JsCurrencyDefinition, JsPreallocation, LoginRequest,
-            OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertRequest,
-            PlanLaunchRequest, PlanMintRequest, PlanPublishRequest, PlanRegistrationRequest,
-            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, SpendableRequest,
-            TakeOfferRequest, VerifyLoginRequest,
+            OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertFromIdentityRequest,
+            PlanConvertRequest, PlanLaunchRequest, PlanMintRequest, PlanPublishRequest,
+            PlanRegistrationRequest, PlanSendFromIdentityRequest, PlanSendRequest,
+            PlanSendTokenRequest, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -740,6 +750,10 @@ mod tests {
         check::<OfferTermsRequest>("OfferTermsRequest", &OfferTermsRequest::SHAPE);
         check::<TakeOfferRequest>("TakeOfferRequest", &TakeOfferRequest::SHAPE);
         check::<PlanConvertRequest>("PlanConvertRequest", &PlanConvertRequest::SHAPE);
+        check::<PlanConvertFromIdentityRequest>(
+            "PlanConvertFromIdentityRequest",
+            &PlanConvertFromIdentityRequest::SHAPE,
+        );
         check::<PlanBurnRequest>("PlanBurnRequest", &PlanBurnRequest::SHAPE);
         check::<PlanMintRequest>("PlanMintRequest", &PlanMintRequest::SHAPE);
         check::<PlanRegistrationRequest>(

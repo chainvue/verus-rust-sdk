@@ -218,7 +218,7 @@ pub fn send_from_identity(
 /// key. The node is not trusted to be right here, only to be answering about
 /// the identity that was asked for — the same standing every other check in
 /// [`prepare_send_from_identity`] gives it.
-fn timelock_of(identity: &serde_json::Value) -> Timelock {
+pub(crate) fn timelock_of(identity: &serde_json::Value) -> Timelock {
     let flags = u32::try_from(identity["flags"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
     let unlock_after =
         u32::try_from(identity["timelock"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);

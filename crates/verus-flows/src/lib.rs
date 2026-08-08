@@ -102,8 +102,8 @@ pub mod testing;
 pub use balances::{currency_names, native_currency};
 pub use broadcast::{broadcast, Unsent};
 pub use convert::{
-    burn, convert, estimate, mint, plan_conversion, prepare_burn, prepare_conversion, prepare_mint,
-    ConversionPlan,
+    burn, convert, estimate, mint, plan_conversion, prepare_burn, prepare_conversion,
+    prepare_conversion_from_identity, prepare_mint, ConversionPlan,
 };
 pub use error::FlowError;
 pub use funding::{identity_held, identity_held_tokens, spendable, Funding};

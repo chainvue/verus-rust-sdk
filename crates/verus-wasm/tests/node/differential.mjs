@@ -1342,6 +1342,54 @@ console.log("\nflows, driven with no network");
     // value is the wrong shape", and a caller can act on the difference.
     assert.equal(thrown.name, "UnknownField");
     ok("planSendTokenFromIdentity refuses a field it does not declare");
+
+    // The same supply, converted straight into a basket instead of being moved
+    // out first. That is the whole point of planConvertFromIdentity: seeding a
+    // basket otherwise takes two transactions, and between them the supply sits
+    // at a bare address while the launch window runs down. A basket that
+    // reaches its start block with an empty reserve refunds its entire launch,
+    // and the name cannot be reused.
+    const BASKET = "iRRhsKoiBuMoyANFcQ2NMLJXDgfSHjgffS";
+    const c = new Answers();
+    let converted;
+    for (let i = 0; i < 8; i += 1) {
+      const s = key.planConvertFromIdentity(
+        {
+          identity: "aaa.VRSCTEST@", from: TOKEN, amount: "100000000",
+          kind: "preconvert", into: BASKET, recipient: PAYEE, fee: "20000",
+        },
+        c,
+      );
+      if (s.kind === "ready") { converted = s.value; break; }
+      for (const body of s.ask) c.record(body, identityPost(body));
+    }
+    c.free();
+
+    assert.ok(converted, "the conversion must resolve");
+    assert.equal(typeof converted.hex, "string");
+    assert.ok(converted.hex.length > 0);
+    assert.equal(typeof converted.fee, "string");
+    ok("a token a VerusID holds converts into a basket without leaving the identity");
+
+    // `via` belongs to reserveToReserve alone. Set beside any other kind it is
+    // refused rather than ignored — a caller who set it believed it did
+    // something, and the shared parser is what keeps this identical to
+    // planConvert.
+    const d = new Answers();
+    let viaThrown;
+    try {
+      key.planConvertFromIdentity(
+        {
+          identity: "aaa.VRSCTEST@", from: TOKEN, amount: "1",
+          kind: "preconvert", into: BASKET, via: BASKET, recipient: PAYEE, fee: "20000",
+        },
+        d,
+      );
+    } catch (e) { viaThrown = e; }
+    d.free();
+    assert.ok(viaThrown, "via beside a non-routing kind must be refused");
+    assert.equal(viaThrown.name, "InvalidArgument");
+    ok("planConvertFromIdentity refuses `via` on a kind that does not route");
   }
 
   // -- a token send needs its token outputs named ---------------------------
@@ -2189,7 +2237,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 94;
+const EXPECTED_CHECKS = 96;
 assert.equal(
   checks,
   EXPECTED_CHECKS,
