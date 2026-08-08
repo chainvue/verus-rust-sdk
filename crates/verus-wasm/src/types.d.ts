@@ -649,6 +649,25 @@ export interface PlanSendFromIdentityRequest {
     satoshis: string;
 }
 
+/**
+ * A token payment out of a VerusID's own outputs.
+ *
+ * The missing half of `PlanSendFromIdentityRequest`, which moves native coins
+ * only. A non-mintable token's supply is preallocated to its defining
+ * identity and never touches a key-held address, so this is the only way to
+ * reach it.
+ */
+export interface PlanSendTokenFromIdentityRequest {
+    /** The identity holding the token — a name or an `i…` address. */
+    identity: string;
+    /** The token's currency id, as an `i…` address. */
+    currency: string;
+    /** Where the token is going. */
+    to: string;
+    /** How much, in satoshis, as a decimal string. */
+    amount: string;
+}
+
 /** What to store on a VerusID, and under which key. */
 export interface PlanPublishRequest {
     /**

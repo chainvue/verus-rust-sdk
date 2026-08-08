@@ -61,6 +61,9 @@ extern "C" {
     /// TypeScript `PlanSendFromIdentityRequest`.
     #[wasm_bindgen(typescript_type = "PlanSendFromIdentityRequest")]
     pub type PlanSendFromIdentityRequestValue;
+    /// TypeScript `PlanSendTokenFromIdentityRequest`.
+    #[wasm_bindgen(typescript_type = "PlanSendTokenFromIdentityRequest")]
+    pub type PlanSendTokenFromIdentityRequestValue;
     /// TypeScript `PlanPublishRequest`.
     #[wasm_bindgen(typescript_type = "PlanPublishRequest")]
     pub type PlanPublishRequestValue;

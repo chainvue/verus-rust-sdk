@@ -108,10 +108,10 @@ use crate::types::{
     OfferTermsRequestValue, OfferTermsStepValue, OffersRequestValue, OffersStepValue,
     PendingRequestValue, PlanBurnRequestValue, PlanConvertRequestValue, PlanLaunchRequestValue,
     PlanMintRequestValue, PlanPublishRequestValue, PlanRegistrationRequestValue,
-    PlanSendFromIdentityRequestValue, PlanSendRequestValue, PlanSendTokenRequestValue,
-    RegisteredStepValue, RegistrationStepValue, SpendableRequestValue, SpendableStepValue,
-    TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue, UpdateStepValue,
-    VerifyLoginRequestValue, VerifyLoginStepValue,
+    PlanSendFromIdentityRequestValue, PlanSendRequestValue, PlanSendTokenFromIdentityRequestValue,
+    PlanSendTokenRequestValue, RegisteredStepValue, RegistrationStepValue, SpendableRequestValue,
+    SpendableStepValue, TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue,
+    UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -718,6 +718,32 @@ impl PlanSendFromIdentityRequest {
     /// The keys a `PlanSendFromIdentityRequest` object may carry.
     pub(crate) const SHAPE: Shape = Shape {
         fields: &[("identity", None), ("to", None), ("satoshis", None)],
+    };
+}
+
+/// A token payment out of a VerusID's own outputs.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanSendTokenFromIdentityRequest {
+    /// The identity holding the token — a name or an `i…` address.
+    pub identity: String,
+    /// The token's currency id, as an `i…` address.
+    pub currency: String,
+    /// Where the token is going.
+    pub to: String,
+    /// How much, in satoshis, as a decimal string.
+    pub amount: String,
+}
+
+impl PlanSendTokenFromIdentityRequest {
+    /// The keys a `PlanSendTokenFromIdentityRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("currency", None),
+            ("to", None),
+            ("amount", None),
+        ],
     };
 }
 
@@ -2381,6 +2407,57 @@ impl Key {
                 client,
                 &[self.private()],
                 &identity,
+                &to,
+                amount,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan moving a **token** a VerusID holds, rather than its native coins.
+    ///
+    /// The missing half of [`planSendFromIdentity`](Self::plan_send_from_identity),
+    /// and the only way to reach a non-mintable token's supply. A token's
+    /// supply is the sum of its `preallocations`, and a preallocation names an
+    /// identity — so for `proofprotocol` 1 every unit that will ever exist is
+    /// created into an identity-held output and never passes through a
+    /// key-held address. Without this, that supply cannot be spent at all.
+    ///
+    /// The token inputs are the identity's and carry fulfillments; the miner
+    /// fee comes from this key's own coins, because an identity holding a
+    /// token need not hold native coins as well. Token surplus returns to the
+    /// identity, never to the fee key — money under an identity's authority
+    /// should not migrate to a bare key.
+    ///
+    /// # Errors
+    ///
+    /// Throws if the identity does not exist, is revoked, does not list this
+    /// key as a primary address, needs more signatures than one, or holds none
+    /// of that token.
+    #[wasm_bindgen(js_name = planSendTokenFromIdentity)]
+    pub fn plan_send_token_from_identity(
+        &self,
+        request: PlanSendTokenFromIdentityRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanSendTokenFromIdentityRequest =
+            dto::from_js(request.into(), &PlanSendTokenFromIdentityRequest::SHAPE)?;
+        let amount = dto::sats(&request.amount)?;
+        let currency = dto::currency("currency", &request.currency)?;
+        let (identity, to) = (request.identity, request.to);
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_send_token_from_identity(
+                client,
+                &[self.private()],
+                self.private(),
+                &identity,
+                currency,
                 &to,
                 amount,
             )
