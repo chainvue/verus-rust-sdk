@@ -111,12 +111,33 @@ where
 }
 
 /// As [`drive_it`], against a particular set of replies.
-fn drive_with<T, F>(
-    replies: HashMap<&'static str, String>,
-    mut operation: F,
-) -> (T, Vec<Vec<String>>)
+fn drive_with<T, F>(replies: HashMap<&'static str, String>, operation: F) -> (T, Vec<Vec<String>>)
 where
     F: FnMut(&verus_rpc::RpcClient<verus_rpc::Cassette>) -> Result<T, FlowError>,
+{
+    drive_dispatching(
+        |body| {
+            let method = method_of(body);
+            replies
+                .get(method.as_str())
+                .unwrap_or_else(|| panic!("no fixture for {method}"))
+                .clone()
+        },
+        operation,
+    )
+}
+
+/// As [`drive_with`], but choosing the reply from the **whole body** rather
+/// than from the method name.
+///
+/// Needed as soon as one flow asks the same method about two different
+/// addresses: the client refuses an output belonging to an address it did not
+/// ask about, so a single shared `getaddressutxos` fixture carrying both would
+/// be rejected for each of them.
+fn drive_dispatching<T, F, R>(reply_to: R, mut operation: F) -> (T, Vec<Vec<String>>)
+where
+    F: FnMut(&verus_rpc::RpcClient<verus_rpc::Cassette>) -> Result<T, FlowError>,
+    R: Fn(&str) -> String,
 {
     let mut answers = Answers::new();
     let mut rounds = Vec::new();
@@ -127,12 +148,8 @@ where
             Step::Ask(bodies) => {
                 assert!(!bodies.is_empty(), "a round that asks for nothing loops");
                 for body in &bodies {
-                    let method = method_of(body);
-                    let reply = replies
-                        .get(method.as_str())
-                        .unwrap_or_else(|| panic!("no fixture for {method}"));
                     answers
-                        .record(body.clone(), reply.clone())
+                        .record(body.clone(), reply_to(body))
                         .expect("a fixture fits");
                 }
                 rounds.push(bodies);
@@ -757,5 +774,97 @@ fn a_cached_node_error_is_an_answer_and_the_next_round_proceeds() {
     assert!(
         !asked_again,
         "a cached `-5` is an answer; asking again means it was not treated as one: {step:?}"
+    );
+}
+
+/// Moving a token a VerusID holds reads the identity, then two independent
+/// things: the identity's token outputs and the fee payer's coins.
+///
+/// The second pair is the point. Neither needs the other's answer, so they
+/// belong in one round — and they were in two until this test was written,
+/// because the first was unwrapped with `?` before the second was issued. That
+/// is a whole extra network round trip for a browser and is invisible to every
+/// other test of this flow: the bytes it signs are identical either way.
+#[test]
+fn moving_a_token_from_an_identity_reads_the_two_funding_sources_together() {
+    let key = spender();
+    let fee_from = key.address();
+    let identity = identity_of(&fee_from, Vec::new());
+    let identity_at = identity_address(&identity);
+    let currency = verus_tx::CurrencyId::from_bytes(PARENT);
+
+    // A reserve output the identity holds, carrying the token and no native
+    // value — which is why the fee has to come from the key's own coins, and
+    // therefore why there are two funding reads to batch at all.
+    let token_script = verus_tx::cc::reserve_output_script_to(
+        verus_tx::Destination::Identity(identity_at.hash()),
+        currency,
+        500_000_000,
+    )
+    .expect("a reserve output script");
+
+    let utxo_reply = |address: &str, index: u32, satoshis: u64, script: &str| {
+        format!(
+            r#"{{"result":[{{"address":"{address}","blocktime":1785262420,"height":1166385,"isspendable":1,"outputIndex":{index},"satoshis":{satoshis},"script":"{script}","txid":"5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"}}]}}"#
+        )
+    };
+
+    let identity_utxos = utxo_reply(&identity_at.to_string(), 0, 0, &hex::encode(&token_script));
+    let fee_utxos = utxo_reply(
+        &fee_from.to_string(),
+        1,
+        8_830_000,
+        &format!("76a914{}88ac", hex::encode(fee_from.hash())),
+    );
+    let getidentity = identity_reply(&identity, &verus_tx::Txid::from_internal([0x55; 32]));
+    let identity_text = identity_at.to_string();
+
+    let (_unsent, rounds) = drive_dispatching(
+        |body| match method_of(body).as_str() {
+            "getidentity" => getidentity.clone(),
+            "getblockcount" => r#"{"result":1167555}"#.to_string(),
+            "getaddressmempool" => r#"{"result":[]}"#.to_string(),
+            // The dispatch that `drive_with` cannot do: same method, two
+            // addresses, and each answer must name only the address it was
+            // asked about.
+            "getaddressutxos" if body.contains(&identity_text) => identity_utxos.clone(),
+            "getaddressutxos" => fee_utxos.clone(),
+            other => panic!("no fixture for {other}"),
+        },
+        |client| {
+            verus_flows::prepare_send_token_from_identity(
+                client,
+                &[&key],
+                &key,
+                &identity_text,
+                currency,
+                PAYEE,
+                verus_flows::Amount::from_sat(100_000_000),
+            )
+        },
+    );
+
+    assert_eq!(
+        rounds.len(),
+        2,
+        "the identity must be read before its address is known, and everything \
+         else goes out together: {rounds:#?}"
+    );
+
+    // Both funding reads in the second round, against the two different
+    // addresses. This is the assertion that fails if either `?` moves back.
+    let second: Vec<String> = rounds[1].iter().map(|b| method_of(b)).collect();
+    assert_eq!(
+        second.iter().filter(|m| *m == "getaddressutxos").count(),
+        2,
+        "the identity's tokens and the fee payer's coins are asked for in one \
+         round: {:#?}",
+        rounds[1]
+    );
+    assert!(
+        rounds[1].iter().any(|b| b.contains(&identity_text))
+            && rounds[1].iter().any(|b| b.contains(&fee_from.to_string())),
+        "both addresses are in the same round: {:#?}",
+        rounds[1]
     );
 }

@@ -444,6 +444,37 @@ pub fn build_launch_outputs(
         ));
     }
 
+    // Two NFT rules that consensus does *not* enforce, but that every one of
+    // the fifteen NFTs live on VRSCTEST obeys.
+    //
+    // They sit here rather than in `serialize_definition` because that function
+    // refuses only what a node would refuse, and a definition breaking these
+    // would be mined. What it would not do is work: the reserve names the
+    // currency the one satoshi is denominated in, and a supply figure competing
+    // with the preallocation is the kind of mistake that only shows up once the
+    // currency is on chain and unfixable.
+    //
+    // A caller who has a reason to launch an NFT shaped differently can still
+    // serialize one; they just cannot get there through this builder.
+    if definition.is_nft() {
+        // The reserve follows the system, not the parent — the two differ for
+        // an NFT defined under a sub-identity.
+        if definition.currencies != [definition.system_id] {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "an NFT's reserve currency is its system: `currencies` should be exactly \
+                 [{}], and this one declares {:?}. Build it with `CurrencyDefinition::nft`",
+                definition.system_id, definition.currencies
+            )));
+        }
+        if definition.initial_supply != Amount::ZERO {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "an NFT's supply is its single satoshi, so initial_supply should be zero; \
+                 this one declares {}. Build it with `CurrencyDefinition::nft`",
+                definition.initial_supply
+            )));
+        }
+    }
+
     let system = definition.system_id.to_bytes();
     let currency = context.identity_address;
     let fractional = definition.is_fractional();

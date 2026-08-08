@@ -100,16 +100,6 @@ pub fn plan_conversion(
     let chain_currency = currency_of(&info.chain_id)?;
     let source_id = currency_of(source)?;
     let recipient: Address = recipient.parse()?;
-    // The transfer destination is written as a key hash, unconditionally, by
-    // `build_conversion`. So an `i` address here does not pay that identity —
-    // it pays the **R-form of the same twenty bytes**, which is a name hash
-    // nobody holds a key for, and the value is gone.
-    //
-    // That is a live mistake rather than a theoretical one: funds on Verus
-    // routinely live under identities and `send` accepts an `i` address
-    // happily, so converting into a token and pasting your identity's address
-    // is the natural thing to try. `mint` has refused this since it was
-    // written; conversions did not, and had no reason not to.
     // No kind guard here any more. It existed because the builder flattened
     // every address to a key hash, so an `i` address silently paid the R-form
     // of the same bytes — an address nobody controls. The builder now writes

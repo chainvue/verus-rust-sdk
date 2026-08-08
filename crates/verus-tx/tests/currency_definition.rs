@@ -272,14 +272,17 @@ fn an_nft_under_a_sub_parent_reserves_the_system_not_the_parent() {
         "the system as reserve is the shape every NFT on chain has"
     );
 
-    // Leaving `currencies` on the parent after moving the system is refused,
-    // not silently encoded into a definition consensus would reject.
+    // Leaving `currencies` on the parent after moving the system encodes here
+    // and is caught by the launch builder instead — consensus does not check
+    // it, so this encoder does not either. See
+    // `an_nft_the_chain_would_mine_but_nobody_wants_is_refused_by_the_builder`
+    // in `currency_launch.rs`.
     let mut mismatched = definition.clone();
     mismatched.currencies = vec![sub_parent];
-    let error = currency_definition_script(&mismatched)
-        .expect_err("a reserve that is not the system is refused")
-        .to_string();
-    assert!(error.contains("reserve currency is its system"), "{error}");
+    assert!(
+        currency_definition_script(&mismatched).is_ok(),
+        "an unusual reserve is a policy question, not an encoding one"
+    );
 }
 
 /// The rules consensus enforces on an NFT, each broken on its own.
@@ -328,36 +331,32 @@ fn an_nft_that_cannot_be_valid_is_refused_locally() {
     no_max.max_preconversion.clear();
     refused("no max_preconversion", &no_max, "max_preconversion");
 
+    // Also the pair taken one field from each arrangement: a preallocated
+    // satoshi *and* a preconvertible one is two satoshis of supply, and every
+    // value in it appears in some valid definition. Checking the two fields
+    // independently would let this through.
     let mut nonzero_max = good.clone();
     nonzero_max.max_preconversion = vec![Amount::from_sat(1)];
     refused(
-        "a non-zero max_preconversion",
+        "a non-zero max_preconversion beside a preallocation",
         &nonzero_max,
         "max_preconversion",
     );
 
-    let mut no_reserve = good.clone();
-    no_reserve.currencies.clear();
-    refused("no reserve currency", &no_reserve, "reserve currency");
-
-    // The trap the chain settles: seven of the fifteen NFTs on VRSCTEST sit
-    // under a non-root parent and still hold the system's currency, so
-    // following the parent here is wrong.
-    let mut parent_as_reserve = good.clone();
-    parent_as_reserve.parent = i_address("i77n5FCqSBkXAK3UWHpdrPpdtXRc8sqjoz");
-    parent_as_reserve.currencies = vec![parent_as_reserve.parent];
-    refused(
-        "the parent as reserve, where it is not the system",
-        &parent_as_reserve,
-        "reserve currency is its system",
-    );
-
-    let mut declared_supply = good.clone();
-    declared_supply.initial_supply = Amount::from_sat(100_000_000);
-    refused(
-        "a declared initial supply",
-        &declared_supply,
-        "initial_supply must be zero",
+    // The single satoshi may instead be *preconverted*, and consensus takes
+    // either arrangement — the `isNFTMappedCurrency` block accepts
+    // (preallocation 0, max_preconversion [1]) exactly as it accepts the
+    // constructor's (1, [0]).
+    //
+    // No NFT on VRSCTEST is built this way, which is why it was refused here
+    // until the consensus source was read rather than the chain surveyed.
+    // Refusing it would make this encoder stricter than the chain.
+    let mut preconverted = good.clone();
+    preconverted.preallocations.clear();
+    preconverted.max_preconversion = vec![Amount::from_sat(1)];
+    assert!(
+        currency_definition_script(&preconverted).is_ok(),
+        "a preconverted single satoshi is the other shape consensus accepts"
     );
 }
 

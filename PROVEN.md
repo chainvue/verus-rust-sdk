@@ -283,6 +283,9 @@ acceptance:
   against.
 - **An NFT launch, end to end.** The identity output is byte-verified above,
   but a whole `definecurrency` for an NFT has never been accepted by a node
-  from this SDK. Two other pieces are still missing — the fee is read from the
-  wrong field (#112) and there is no supported way to express the definition
-  (#113) — so the first NFT this builds is the test.
+  from this SDK. The two pieces that used to be missing are in place — the fee
+  is read from `idImportFees` (#117) and `CurrencyDefinition::nft` expresses
+  the definition (#119) — and the shape is checked against all fifteen NFTs
+  live on VRSCTEST. But a definition matching mined ones is not the same as a
+  definition a node accepted from us, so the first NFT this builds is still
+  the test.

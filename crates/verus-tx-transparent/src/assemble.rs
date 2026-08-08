@@ -189,6 +189,30 @@ pub fn assemble(
         // Only the historical paths reach this branch, and their leading
         // inputs are all valueless — the guard at the top enforced it — so
         // the full requirement is raised from P2PKH selection.
+        //
+        // # The fee does not count the leading inputs, and that is proven
+        //
+        // Selection sizes the fee from what it selects, so the leading inputs
+        // are absent from the arithmetic even though they are signed and
+        // broadcast like any other. That reads like an undercount, and it was
+        // reported as one. It is not a mistake to correct: adding them changes
+        // the bytes of **nine daemon-accepted transactions** —
+        // `identity_lifecycle`'s registration, revocation, recovery, multisig
+        // update, content update, and the four referral vectors — every one of
+        // which was mined. Whatever a strict byte-count would say, this is
+        // what the reference implementation does and what the chain took.
+        //
+        // It is not inconsistent with `build_token_send` counting all of its
+        // inputs: there the token UTXOs go through the builder's own selection
+        // loop and so land in `selected`. The distinction is which list an
+        // input arrives in, and both behaviours are pinned by goldens —
+        // `fixtures/transparent/vectors.json`'s token vector expects a fee of
+        // 10200, which is exactly two inputs and three outputs.
+        //
+        // The one case this leaves open: a spend with *many* leading inputs
+        // prices well under its size, and no golden covers that shape. If a
+        // node ever rejects one for a low fee, the fix belongs in the builder
+        // that assembles it, not here — changing this line breaks the nine.
         let selection = select_utxos(
             plan.funding,
             required,

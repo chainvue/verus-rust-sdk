@@ -406,45 +406,38 @@ pub fn serialize_definition(def: &CurrencyDefinition) -> Result<Vec<u8>, TxError
     }
     // An NFT that cannot be valid, refused by name.
     //
-    // Consensus checks this at `pbaas.cpp:4598` and rejects with `-25:
-    // bad-txns-failed-precheck` — which names neither the field nor what it
-    // wanted, because `main.cpp:1513` replaces the specific message built at
-    // each `state.Error` site with one generic string before it reaches the
-    // client. The reason survives only in the node's own debug log.
+    // Consensus checks this in the currency-definition precheck in
+    // `pbaas/pbaas.cpp` (the `isNFTMappedCurrency` block) and rejects with
+    // `-25: bad-txns-failed-precheck` — which names neither the field nor what
+    // it wanted, because `main.cpp` replaces the specific message built at each
+    // `state.Error` site with one generic string before it reaches the client.
+    // The reason survives only in the node's own debug log.
     //
-    // These are fixed rules rather than judgement calls, so refusing here
-    // costs nothing and turns an anonymous rejection into a local error.
-    // `CurrencyDefinition::nft` satisfies all of them.
+    // Only what consensus actually refuses is refused here. The shape every
+    // NFT on chain happens to share is a broader claim than that, and the
+    // launch builder is where it belongs — see `build_launch_outputs`.
+    // `CurrencyDefinition::nft` satisfies both layers.
     if def.is_nft() {
         let preallocated = def.total_preallocation().ok_or(TxError::ValueOverflow)?;
-        if preallocated != Amount::from_sat(1) {
+        let max_preconvert = def.max_preconversion.as_slice();
+        // Consensus accepts **either** arrangement of the single satoshi, and
+        // the two are checked as a pair rather than field by field — each is
+        // only valid alongside its partner.
+        //
+        // `CurrencyDefinition::nft` builds the preallocated one, which is what
+        // all fifteen NFTs live on VRSCTEST use. The preconverted one is
+        // equally legal and refusing it would make this serializer stricter
+        // than the chain, so it passes.
+        let preallocated_form =
+            preallocated == Amount::from_sat(1) && max_preconvert == [Amount::ZERO];
+        let preconverted_form =
+            preallocated == Amount::ZERO && max_preconvert == [Amount::from_sat(1)];
+        if !preallocated_form && !preconverted_form {
             return Err(TxError::InvalidCurrencyDefinition(format!(
-                "an NFT's whole supply is one satoshi, preallocated; this one preallocates \
-                 {preallocated}. Build it with `CurrencyDefinition::nft`"
-            )));
-        }
-        if def.max_preconversion.len() != 1 || def.max_preconversion[0] != Amount::ZERO {
-            return Err(TxError::InvalidCurrencyDefinition(format!(
-                "an NFT needs exactly one max_preconversion entry, zero; this one has {:?}. \
-                 Build it with `CurrencyDefinition::nft`",
-                def.max_preconversion
-            )));
-        }
-        // The reserve follows the system, not the parent — they differ for an
-        // NFT defined under a sub-identity, and every NFT on chain holds the
-        // system's currency.
-        if def.currencies != [def.system_id] {
-            return Err(TxError::InvalidCurrencyDefinition(
-                "an NFT's reserve currency is its system; `currencies` must be exactly \
-                 `[system_id]`. Build it with `CurrencyDefinition::nft`"
-                    .into(),
-            ));
-        }
-        if def.initial_supply != Amount::ZERO {
-            return Err(TxError::InvalidCurrencyDefinition(format!(
-                "an NFT's supply is its one-satoshi preallocation, so initial_supply must be \
-                 zero; this one declares {}",
-                def.initial_supply
+                "an NFT's whole supply is one satoshi, either preallocated (preallocation 1, \
+                 max_preconversion [0]) or preconverted (preallocation 0, max_preconversion \
+                 [1]); this one preallocates {preallocated} with max_preconversion \
+                 {max_preconvert:?}. Build it with `CurrencyDefinition::nft`"
             )));
         }
     }

@@ -545,3 +545,58 @@ fn a_key_that_does_not_control_the_identity_is_refused() {
     .unwrap_err();
     assert!(err.to_string().contains("primary"), "{err}");
 }
+
+/// Two NFT shapes a node would accept and nobody wants, refused here rather
+/// than in the encoder.
+///
+/// Consensus checks a great deal about an NFT — the `isNFTMappedCurrency` block
+/// in `pbaas/pbaas.cpp` pins the single satoshi and the option bits — but it
+/// says nothing about which currency the NFT reserves or what `initialsupply`
+/// claims. Both of these would be mined.
+///
+/// That is exactly why they belong to the builder and not to
+/// `currency_definition_script`: the encoder's job is to refuse what a node
+/// would refuse, and being stricter than the chain there would make a valid
+/// definition unencodable. A caller with a reason to build one of these still
+/// can; they just cannot reach it through this launch path.
+///
+/// The rules come from the fifteen NFTs live on VRSCTEST, all of which reserve
+/// the system's currency and declare no supply.
+#[test]
+fn an_nft_the_chain_would_mine_but_nobody_wants_is_refused_by_the_builder() {
+    let fixture = fixture();
+    let (_, address) = identity(&fixture);
+    let token = token_definition(&fixture);
+    let good = || {
+        let mut definition =
+            CurrencyDefinition::nft(token.parent, &token.name, token.start_block, address);
+        definition.id_registration_fees = token.id_registration_fees;
+        definition.id_import_fees = token.id_import_fees;
+        definition
+    };
+    assert!(
+        build_launch_outputs(&good(), &context(&fixture)).is_ok(),
+        "the constructor's own output must launch"
+    );
+
+    // The reserve follows the system, not the parent. Seven of the fifteen sit
+    // under a non-root parent and still hold the system's currency, so
+    // following the parent is the mistake worth naming.
+    let mut parent_as_reserve = good();
+    parent_as_reserve.currencies = vec![CurrencyId::from_bytes(i_address(
+        "i77n5FCqSBkXAK3UWHpdrPpdtXRc8sqjoz",
+    ))];
+    let error = build_launch_outputs(&parent_as_reserve, &context(&fixture))
+        .expect_err("a reserve that is not the system is refused")
+        .to_string();
+    assert!(error.contains("reserve currency is its system"), "{error}");
+
+    // A supply figure competing with the one-satoshi preallocation. Harmless to
+    // encode, unfixable once the currency is on chain.
+    let mut declared_supply = good();
+    declared_supply.initial_supply = Amount::from_sat(100_000_000);
+    let error = build_launch_outputs(&declared_supply, &context(&fixture))
+        .expect_err("a declared supply is refused")
+        .to_string();
+    assert!(error.contains("initial_supply should be zero"), "{error}");
+}
