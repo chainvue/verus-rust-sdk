@@ -102,8 +102,15 @@ pub struct LaunchContext {
 /// The seven output scripts, in the order they must appear.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchOutputs {
-    /// Outputs 0 through 6.
+    /// Outputs 0 through 6, or 0 through 7 when a contribution is funded.
     pub outputs: Vec<TxOut>,
+    /// Where the reserve deposit sits in [`Self::outputs`].
+    ///
+    /// Five normally, **six** when a contribution output was inserted ahead of
+    /// it. Carried rather than assumed: the deposit's value is what the burn
+    /// arithmetic subtracts from the launch fee, and reading the contribution's
+    /// value there instead would under-burn by the whole registration fee.
+    pub deposit_index: usize,
 }
 
 impl LaunchOutputs {
@@ -111,7 +118,13 @@ impl LaunchOutputs {
     /// the transaction has to fund on top of the miner fee.
     #[must_use]
     pub fn reserve_deposit_value(&self) -> Amount {
-        Amount::from_sat(self.outputs[5].value)
+        Amount::from_sat(self.outputs[self.deposit_index].value)
+    }
+
+    /// The outputs consensus validates — everything but the change slot.
+    #[must_use]
+    pub fn consensus_outputs(&self) -> usize {
+        self.deposit_index + 1
     }
 }
 
@@ -430,19 +443,16 @@ pub fn build_launch_outputs(
     //
     // Seeding a basket is done by preconverting once the definition is on
     // chain, which is a separate transaction and works today.
-    if definition
-        .initial_contributions
-        .iter()
-        .any(|c| *c != Amount::ZERO)
-    {
-        return Err(TxError::InvalidCurrencyDefinition(
-            "this definition declares initial_contributions, and a launch built here has no \
-             output that funds them — the daemon adds one per contributed reserve. Launch \
-             without contributions and seed the reserves by preconverting once the definition \
-             is on chain."
-                .into(),
-        ));
-    }
+    // A contribution is a **preconvert**, bundled into the launch transaction:
+    // the daemon adds one value-bearing reserve-transfer output per contributed
+    // reserve. That is visible in this repository's own captures without asking
+    // a node — `fractional_contrib` is an eight-output transaction paying
+    // `[3.00095018, 100, 1.99904982]`, where every launch without contributions
+    // is seven paying `[100, 5]`.
+    //
+    // Only the shape those captures prove is built. See `contribution_output`
+    // for what is refused and why.
+    let contribution = contribution_output(definition, context)?;
 
     // Two NFT rules that consensus does *not* enforce, but that every one of
     // the fifteen NFTs live on VRSCTEST obeys.
@@ -506,7 +516,7 @@ pub fn build_launch_outputs(
         token_supply,
     )?;
 
-    let outputs = vec![
+    let mut outputs = vec![
         TxOut {
             value: 0,
             script_pubkey: identity_primary_script(
@@ -562,8 +572,20 @@ pub fn build_launch_outputs(
         },
     ];
 
+    // Before the reserve deposit, which is where the daemon puts it: its
+    // eight-output capture reads `[.., 3.00095018, 100, 1.99904982]` against
+    // `[.., 100, 5]` without one.
+    let mut deposit_index = RESERVE_DEPOSIT_INDEX;
+    if let Some(output) = contribution {
+        outputs.insert(RESERVE_DEPOSIT_INDEX, output);
+        deposit_index += 1;
+    }
+
     debug_assert_eq!(EVAL_CURRENCY_DEFINITION, 2, "output 1 is the definition");
-    Ok(LaunchOutputs { outputs })
+    Ok(LaunchOutputs {
+        outputs,
+        deposit_index,
+    })
 }
 
 /// What a launch transaction needs beyond the outputs themselves.
@@ -653,10 +675,15 @@ pub fn build_currency_launch(
         .checked_sub(reserve_deposit)
         .ok_or(TxError::ValueOverflow)?;
 
-    // Outputs 0 through 5. The seventh is the daemon's identity-change output,
-    // and the assembler's native change stands in for it.
+    // Everything consensus validates. The last output is the daemon's
+    // identity-change one, and the assembler's native change stands in for it.
+    //
+    // NOT a fixed six: a funded contribution adds an output ahead of the
+    // reserve deposit, and truncating at six would drop the deposit itself —
+    // a launch missing the fee output consensus requires.
+    let consensus_outputs = built.consensus_outputs();
     let mut outputs = built.outputs;
-    outputs.truncate(6);
+    outputs.truncate(consensus_outputs);
 
     verus_tx_transparent::assemble::assemble(
         funding_key,
@@ -666,8 +693,10 @@ pub fn build_currency_launch(
             funding: params.utxos,
             outputs,
             burn,
-            // Six declared outputs plus a change slot.
-            fee_output_count: 7,
+            // The declared outputs plus a change slot.
+            fee_output_count: u64::try_from(consensus_outputs)
+                .map_err(|_| TxError::ValueOverflow)?
+                + 1,
             change_address: &params.change_address,
             change_script: None,
             value_bearing_leading: false,
@@ -675,4 +704,128 @@ pub fn build_currency_launch(
             fee_per_kb: params.fee_per_kb,
         },
     )
+}
+
+/// Where the reserve deposit sits, and therefore where a contribution output
+/// is inserted — immediately before it.
+const RESERVE_DEPOSIT_INDEX: usize = 5;
+
+/// `CReserveTransfer::SUCCESS_FEE` — the conversion fee, satoshi-scaled
+/// (`reserves.h`). 0.025% of what is converted.
+const SUCCESS_FEE: u64 = 25_000;
+
+/// The reserve-transfer fee a contribution output carries alongside its value.
+///
+/// 0.0002 in the captures, the standard figure for a transfer on the same
+/// system — it rides beside the grossed-up amount rather than being deducted
+/// from it.
+const CONTRIBUTION_TRANSFER_FEE: u64 = 20_000;
+
+/// The value-bearing output that funds `initial_contributions`, if there are
+/// any.
+///
+/// # The amount is grossed up
+///
+/// A contribution is a preconvert, and a preconvert pays the conversion fee out
+/// of what it converts. So to leave the *declared* figure standing in the
+/// reserve, the output has to carry more than the declaration says:
+///
+/// ```text
+/// grossed = c * SATOSHIDEN / (SATOSHIDEN - SUCCESS_FEE)
+///
+/// 300000000 * 1e8 / (1e8 - 25000)  =  300075018     the daemon's exact bytes
+/// 300075018 * 25000 / 1e8          =      75018     the fee it then pays
+/// 300075018 - 75018                =  300000000     the declared 3.0
+/// ```
+///
+/// Integer division throughout, which is what reproduces the capture byte for
+/// byte rather than approximately.
+///
+/// # What this deliberately refuses
+///
+/// Every captured contribution is **3.0 of the chain's own currency into a
+/// single reserve**. That is one shape, and it is the only one with a
+/// byte-exact oracle in this repository. Two others are refused by name rather
+/// than built on a guess:
+///
+/// * a **token** contribution — the value cannot ride on the output itself and
+///   has to arrive as a reserve output funded by token inputs, which is a
+///   different transaction shape entirely and no capture shows it;
+/// * **more than one** contributed reserve — the daemon emits one output each,
+///   and nothing here establishes their order relative to one another.
+///
+/// A currency definition is immutable and an identity defines exactly one
+/// currency ever, so a launch built wrong is unrecoverable. Guessing is worth
+/// less than refusing.
+fn contribution_output(
+    definition: &CurrencyDefinition,
+    context: &LaunchContext,
+) -> Result<Option<TxOut>, TxError> {
+    let contributed: Vec<(usize, Amount)> = definition
+        .initial_contributions
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c != Amount::ZERO)
+        .map(|(i, c)| (i, *c))
+        .collect();
+
+    let (index, amount) = match contributed.as_slice() {
+        [] => return Ok(None),
+        [one] => *one,
+        _ => {
+            return Err(TxError::InvalidCurrencyDefinition(format!(
+                "this definition contributes to {} reserves at once, and no capture shows \
+                 the order the daemon emits their outputs in. Launch contributing to one \
+                 reserve, or seed the rest by preconverting once the definition is on chain.",
+                contributed.len()
+            )))
+        }
+    };
+
+    let reserve = *definition.currencies.get(index).ok_or_else(|| {
+        TxError::InvalidCurrencyDefinition(
+            "initial_contributions names a reserve that `currencies` does not list".into(),
+        )
+    })?;
+    if reserve != definition.system_id {
+        return Err(TxError::InvalidCurrencyDefinition(
+            "only a contribution of the system's own currency is built here: a token \
+             contribution travels in the payload rather than the output's value and needs \
+             token inputs to fund it, a shape no capture in this repository shows. Launch \
+             without it and preconvert the token once the definition is on chain."
+                .into(),
+        ));
+    }
+
+    // Gross the declared amount up over the conversion fee it will pay.
+    // u128 throughout: a contribution near the money supply times 1e8
+    // overflows u64, and a wrapped product here is a launch nobody can fix.
+    let grossed = u128::from(amount.to_sat())
+        .checked_mul(SATOSHIDEN)
+        .ok_or(TxError::ValueOverflow)?
+        / (SATOSHIDEN - u128::from(SUCCESS_FEE));
+    let grossed = u64::try_from(grossed).map_err(|_| TxError::ValueOverflow)?;
+
+    // Built directly rather than through `build_conversion`, for two reasons
+    // the capture settles: a contribution's flag word omits `RT_CONVERT`, and
+    // its destination carries **no auxiliary refund** — the contributor is the
+    // currency's own definer, so there is nobody else to pay back.
+    let currency = CurrencyId::from_bytes(context.identity_address);
+    let transfer = verus_tx_protocol::ReserveTransfer {
+        source: reserve,
+        amount: Amount::from_sat(grossed),
+        kind: verus_tx_protocol::ConversionKind::Contribution {
+            fractional: currency,
+        },
+        fee_currency: reserve,
+        fee: Amount::from_sat(CONTRIBUTION_TRANSFER_FEE),
+        destination: verus_tx_protocol::TransferDestination::plain(Destination::Identity(
+            context.identity_address,
+        )),
+    };
+
+    Ok(Some(TxOut {
+        value: transfer.native_value(reserve)?.to_sat(),
+        script_pubkey: transfer.to_script()?,
+    }))
 }

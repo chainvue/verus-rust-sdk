@@ -113,6 +113,17 @@ pub fn plan_conversion(
         ConversionKind::ReserveToReserve { via, target } => (id_text(*target), Some(id_text(*via))),
         ConversionKind::Mint { currency } => (id_text(*currency), None),
         ConversionKind::Burn => (source.to_string(), None),
+        // A contribution exists only inside a `definecurrency`, emitted by the
+        // launch builder. There is nothing here to plan or price: it is not a
+        // transaction a caller submits.
+        ConversionKind::Contribution { .. } => {
+            return Err(FlowError::NotReady(
+                "a contribution is part of a currency's own definition transaction, not a \
+                 conversion; declare it with `CurrencyDefinition::with_contributions` and \
+                 launch"
+                    .into(),
+            ))
+        }
     };
 
     let estimated_out = if matches!(kind, ConversionKind::Burn) {
@@ -543,10 +554,17 @@ pub fn prepare_conversion_from_identity(
     }
 
     // A mint is authorised by the currency's own identity and a burn destroys
-    // value; neither is reachable by naming a different kind here.
-    if matches!(kind, ConversionKind::Mint { .. } | ConversionKind::Burn) {
+    // value; neither is reachable by naming a different kind here. A
+    // contribution is not a standalone transaction at all — it exists only
+    // inside a `definecurrency`, and its flag word says so.
+    if matches!(
+        kind,
+        ConversionKind::Mint { .. } | ConversionKind::Burn | ConversionKind::Contribution { .. }
+    ) {
         return Err(FlowError::NotReady(
-            "a mint or a burn is not a conversion; use prepare_mint or prepare_burn".into(),
+            "a mint, a burn or a contribution is not a conversion; use prepare_mint, \
+             prepare_burn, or declare the contribution on the definition and launch"
+                .into(),
         ));
     }
     let recipient: Address = recipient.parse()?;

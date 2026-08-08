@@ -647,6 +647,27 @@ pub enum ConversionKind {
     /// The currency must be a token. Burning reduces supply, which moves a
     /// fractional's price — there is no undo, and no output pays anything back.
     Burn,
+    /// A currency's `initial_contributions`, bundled into its own definition
+    /// transaction.
+    ///
+    /// **Not the same as [`ConversionKind::Preconvert`]**, even though both put
+    /// value into a currency before it launches. The daemon flags a
+    /// contribution `RT_VALID | RT_PRECONVERT` and a user's preconvert
+    /// `RT_VALID | RT_CONVERT | RT_PRECONVERT` — 5 against 7 — and carries no
+    /// auxiliary destination here, because a contribution is made by the
+    /// currency's own definer and there is nobody else to refund.
+    ///
+    /// Both readings are byte-locked against captures: the preconvert against a
+    /// `sendcurrency` capture, this against output 5 of `fractional_contrib`.
+    /// They are genuinely different transactions, not one shape written two
+    /// ways.
+    ///
+    /// Emitted by the launch builder rather than by a caller — a contribution
+    /// exists only inside a `definecurrency`.
+    Contribution {
+        /// The launching currency being funded.
+        fractional: CurrencyId,
+    },
 }
 
 impl ConversionKind {
@@ -661,6 +682,9 @@ impl ConversionKind {
                 RT_VALID | RT_CONVERT | RT_RESERVE_TO_RESERVE
             }
             ConversionKind::Burn => RT_VALID | RT_BURN_CHANGE_PRICE | RT_IMPORT_TO_SOURCE,
+            // No RT_CONVERT: see the variant's own doc. This is the daemon's
+            // flag word for a definition-time contribution, not an oversight.
+            ConversionKind::Contribution { .. } => RT_VALID | RT_PRECONVERT,
         }
     }
 
@@ -672,7 +696,8 @@ impl ConversionKind {
     fn destination_currency(&self, source: CurrencyId) -> CurrencyId {
         match self {
             ConversionKind::IntoFractional { fractional }
-            | ConversionKind::Preconvert { fractional } => *fractional,
+            | ConversionKind::Preconvert { fractional }
+            | ConversionKind::Contribution { fractional } => *fractional,
             ConversionKind::IntoReserve { reserve } => *reserve,
             ConversionKind::ReserveToReserve { via, .. } => *via,
             ConversionKind::Mint { currency } => *currency,
