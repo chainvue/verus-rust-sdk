@@ -501,10 +501,27 @@ fn identity_address(identity: &Identity) -> verus_keys::Address {
     )
 }
 
+/// `getcurrency`, for a currency whose `proofprotocol` decides whether it can
+/// be minted at all.
+fn currency_reply(address: &verus_keys::Address, proof_protocol: u32) -> String {
+    serde_json::json!({"result": {
+        "currencyid": address.to_string(),
+        "name": "rustsdk",
+        "fullyqualifiedname": "rustsdk.VRSCTEST@",
+        "parent": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "systemid": "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+        "startblock": 1_166_000,
+        "endblock": 0,
+        "options": 32,
+        "proofprotocol": proof_protocol,
+    }})
+    .to_string()
+}
+
 /// A mint is paid for by the identity it spends from, so the outputs it reads
-/// are the identity's own pay-to-identity ones — and the three reads it needs
-/// (the chain, the identity, the identity's outputs) need nothing from each
-/// other.
+/// are the identity's own pay-to-identity ones — and the four reads it needs
+/// (the chain, the identity, the identity's outputs, the definition) need
+/// nothing from each other.
 ///
 /// Also the only coverage `mint` has anywhere: it was rearranged more than any
 /// other flow in this split and had none.
@@ -519,6 +536,10 @@ fn preparing_a_mint_resolves_in_a_single_round() {
     replies.insert(
         "getidentity",
         identity_reply(&identity, &verus_tx::Txid::from_internal([0x22; 32])),
+    );
+    replies.insert(
+        "getcurrency",
+        currency_reply(&address, verus_tx::CENTRALIZED_PROOF_PROTOCOL),
     );
     replies.insert(
         "getaddressutxos",
@@ -549,10 +570,81 @@ fn preparing_a_mint_resolves_in_a_single_round() {
             "getaddressmempool",
             "getaddressutxos",
             "getblockcount",
+            "getcurrency",
             "getidentity",
             "getinfo"
         ],
-        "all five reads must go out together"
+        "all six reads must go out together"
+    );
+}
+
+/// A currency that is not centralized cannot be minted, and saying so costs
+/// nothing here.
+///
+/// Consensus refuses this too, but only after the fee is spent, and with a
+/// message naming neither the field nor the value. The currency cannot then be
+/// fixed: the definition is immutable and the defining identity has spent its
+/// one-time ability to define a currency, so the name is gone as well.
+#[test]
+fn minting_a_currency_that_is_not_centralized_is_refused_by_name() {
+    let key = spender();
+    let identity = identity_of(&key.address(), Vec::new());
+    let address = identity_address(&identity);
+    let script = verus_tx::identity_payment_script(address.hash()).expect("payment script");
+
+    let mut replies = replies();
+    replies.insert(
+        "getidentity",
+        identity_reply(&identity, &verus_tx::Txid::from_internal([0x22; 32])),
+    );
+    // The only difference from the passing case above.
+    replies.insert("getcurrency", currency_reply(&address, 1));
+    replies.insert(
+        "getaddressutxos",
+        format!(
+            r#"{{"result":[{{"address":"{address}","blocktime":1785262420,"height":1166385,"isspendable":1,"outputIndex":0,"satoshis":500000000,"script":"{}","txid":"5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"}}]}}"#,
+            hex::encode(&script)
+        ),
+    );
+
+    let currency = address.to_string();
+    let operation = |client: &verus_rpc::RpcClient<verus_rpc::Cassette>| {
+        verus_flows::prepare_mint(
+            client,
+            &key,
+            &currency,
+            verus_flows::Amount::from_sat(100_000_000),
+            PAYEE,
+            verus_flows::Amount::from_sat(20_010),
+        )
+    };
+
+    let mut answers = Answers::new();
+    let error = loop {
+        match advance(&mut answers, operation) {
+            Ok(Step::Ready(_)) => panic!("a proofprotocol 1 currency must not mint"),
+            Ok(Step::Ask(bodies)) => {
+                for body in &bodies {
+                    let method = method_of(body);
+                    let reply = replies.get(method.as_str()).expect("a fixture");
+                    answers
+                        .record(body.clone(), reply.clone())
+                        .expect("it fits");
+                }
+            }
+            Err(e) => break e.to_string(),
+        }
+    };
+
+    // The field and the value it found, not just "cannot mint" — the point is
+    // that the caller learns which knob is wrong.
+    assert!(error.contains("proofprotocol 1"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "proofprotocol {}",
+            verus_tx::CENTRALIZED_PROOF_PROTOCOL
+        )),
+        "the refusal must name what would work: {error}"
     );
 }
 

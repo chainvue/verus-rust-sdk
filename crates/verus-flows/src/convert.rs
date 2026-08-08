@@ -332,7 +332,7 @@ pub fn prepare_mint(
     // identity's address. The guard that used to be here existed only because
     // the builder flattened the address kind away.
 
-    // All three reads are issued before any is unwrapped: none needs another's
+    // All four reads are issued before any is unwrapped: none needs another's
     // answer, and a `?` between them would cost a network round trip each
     // against a driver that cannot answer immediately. See [`crate::drive`].
     //
@@ -343,8 +343,30 @@ pub fn prepare_mint(
     let info = reader.chain_info();
     let record = crate::error::look_up_identity(reader, currency);
     let identity_funding = crate::funding::identity_held(reader, currency);
-    let (info, record, identity_funding) = (info?, record?, identity_funding?);
+    let definition = reader.currency_definition(currency);
+    let (info, record, identity_funding, definition) =
+        (info?, record?, identity_funding?, definition?);
     let chain_currency = currency_of(&info.chain_id)?;
+
+    // Only a centralized currency can be minted at all: `proofprotocol` 2 is
+    // what hands issuance to the controlling identity. Anything else has a
+    // supply fixed at definition time, and there is no later way to add to it.
+    //
+    // Refused here because consensus refuses it *after* the fee is spent, with
+    // `-25: bad-txns-failed-precheck` — a message that names neither the field
+    // nor the value it wanted. Worse, a currency in this state cannot be fixed:
+    // the definition is immutable and the defining identity has spent its
+    // one-time ability to define a currency, so the name cannot be reused
+    // either. Naming the field is the whole value of checking it.
+    if definition.proof_protocol != verus_tx::CENTRALIZED_PROOF_PROTOCOL {
+        return Err(FlowError::NotReady(format!(
+            "{currency} has proofprotocol {}, and only a centralized currency \
+             (proofprotocol {}) can be minted — its supply is whatever its definition \
+             preallocated and cannot be added to",
+            definition.proof_protocol,
+            verus_tx::CENTRALIZED_PROOF_PROTOCOL,
+        )));
+    }
 
     // The same prechecks the chain applies, surfaced with names. The
     // controlling identity IS the currency id; `CheckIdentitySpends` will
