@@ -106,12 +106,13 @@ use crate::types::{
     CommitmentStatusStepValue, ContentRequestValue, ContentStepValue, HistoryRequestValue,
     HistoryStepValue, JsText, LaunchStepValue, LoginRequestValue, LoginStepValue,
     OfferTermsRequestValue, OfferTermsStepValue, OffersRequestValue, OffersStepValue,
-    PendingRequestValue, PlanBurnRequestValue, PlanConvertRequestValue, PlanLaunchRequestValue,
-    PlanMintRequestValue, PlanPublishRequestValue, PlanRegistrationRequestValue,
-    PlanSendFromIdentityRequestValue, PlanSendRequestValue, PlanSendTokenFromIdentityRequestValue,
-    PlanSendTokenRequestValue, RegisteredStepValue, RegistrationStepValue, SpendableRequestValue,
-    SpendableStepValue, TakeOfferRequestValue, TakeOfferStepValue, TransactionStepValue,
-    UpdateStepValue, VerifyLoginRequestValue, VerifyLoginStepValue,
+    PendingRequestValue, PlanBurnRequestValue, PlanConvertFromIdentityRequestValue,
+    PlanConvertRequestValue, PlanLaunchRequestValue, PlanMintRequestValue, PlanPublishRequestValue,
+    PlanRegistrationRequestValue, PlanSendFromIdentityRequestValue, PlanSendRequestValue,
+    PlanSendTokenFromIdentityRequestValue, PlanSendTokenRequestValue, RegisteredStepValue,
+    RegistrationStepValue, SpendableRequestValue, SpendableStepValue, TakeOfferRequestValue,
+    TakeOfferStepValue, TransactionStepValue, UpdateStepValue, VerifyLoginRequestValue,
+    VerifyLoginStepValue,
 };
 
 /// What a driven operation knows so far, carried between rounds.
@@ -761,6 +762,53 @@ impl PlanSendTokenFromIdentityRequest {
     };
 }
 
+/// A conversion funded straight out of the VerusID that holds the token.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanConvertFromIdentityRequest {
+    /// The identity holding the token — a name or an `i…` address.
+    pub identity: String,
+    /// The currency being spent, as an `i…` address.
+    ///
+    /// The token the identity holds, **not** the identity itself. For a token
+    /// whose supply was preallocated to its defining identity the two look
+    /// alike in a wallet and are different values here.
+    pub from: String,
+    /// How much of it, in satoshis, as a decimal string.
+    pub amount: String,
+    /// Which kind of conversion. One of `"intoFractional"`, `"intoReserve"`,
+    /// `"reserveToReserve"`, `"preconvert"`.
+    ///
+    /// Minting and burning are not here, for the same reason they are not on
+    /// `planConvert`.
+    pub kind: String,
+    /// The currency being bought — the fractional, the reserve, or the target.
+    pub into: String,
+    /// The fractional to route through. **Only** for `"reserveToReserve"`.
+    #[serde(default)]
+    pub via: Option<String>,
+    /// Where the result should land — an `R…` or `i…` address.
+    pub recipient: String,
+    /// The conversion fee, in satoshis, as a decimal string.
+    pub fee: String,
+}
+
+impl PlanConvertFromIdentityRequest {
+    /// The keys a `PlanConvertFromIdentityRequest` object may carry.
+    pub(crate) const SHAPE: Shape = Shape {
+        fields: &[
+            ("identity", None),
+            ("from", None),
+            ("amount", None),
+            ("kind", None),
+            ("into", None),
+            ("via", None),
+            ("recipient", None),
+            ("fee", None),
+        ],
+    };
+}
+
 /// What to store on a VerusID, and under which key.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -893,17 +941,31 @@ impl PlanConvertRequest {
     /// not: `via` alongside a kind that does not route. Refused by name rather
     /// than ignored, because a caller who set it believed it did something.
     fn conversion_kind(&self) -> WasmResult<verus_tx::convert::ConversionKind> {
-        use verus_tx::convert::ConversionKind;
-        let into = dto::currency("into", &self.into)?;
+        conversion_kind_of(&self.kind, &self.into, &self.via)
+    }
+}
 
-        let routed = matches!(self.kind.as_str(), "reserveToReserve");
-        match (&self.via, routed) {
+/// Resolve a conversion kind from the three flat fields that carry it.
+///
+/// Shared by `planConvert` and `planConvertFromIdentity` so the two cannot
+/// drift on which strings are accepted or which combinations are refused.
+fn conversion_kind_of(
+    kind: &str,
+    into_text: &str,
+    via: &Option<String>,
+) -> WasmResult<verus_tx::convert::ConversionKind> {
+    {
+        use verus_tx::convert::ConversionKind;
+        let into = dto::currency("into", into_text)?;
+
+        let routed = matches!(kind, "reserveToReserve");
+        match (via, routed) {
             (Some(_), false) => {
                 return Err(WasmError::new(
                     "InvalidArgument",
                     format!(
                         "via is only used by a reserveToReserve conversion, and kind is {:?}",
-                        self.kind
+                        kind
                     ),
                 ))
             }
@@ -917,11 +979,11 @@ impl PlanConvertRequest {
             _ => {}
         }
 
-        Ok(match self.kind.as_str() {
+        Ok(match kind {
             "intoFractional" => ConversionKind::IntoFractional { fractional: into },
             "intoReserve" => ConversionKind::IntoReserve { reserve: into },
             "reserveToReserve" => ConversionKind::ReserveToReserve {
-                via: dto::currency("via", self.via.as_deref().unwrap_or_default())?,
+                via: dto::currency("via", via.as_deref().unwrap_or_default())?,
                 target: into,
             },
             "preconvert" => ConversionKind::Preconvert { fractional: into },
@@ -932,7 +994,7 @@ impl PlanConvertRequest {
                         "{:?} is not a conversion; use planMint or planBurn, which exist \
                          separately because a burn cannot be undone and a mint needs an \
                          identity's authority",
-                        self.kind
+                        kind
                     ),
                 ))
             }
@@ -2494,6 +2556,67 @@ impl Key {
                 currency,
                 &to,
                 amount,
+            )
+        })
+        .map_err(WasmError::from)?;
+
+        let step = PlanStep::of(step, |unsent: verus_flows::Unsent<verus_flows::Sent>| {
+            JsPlannedTransaction::from(unsent.outcome)
+        });
+        Ok(crate::to_js(&step)?.unchecked_into())
+    }
+
+    /// Plan a conversion funded straight out of the VerusID holding the token.
+    ///
+    /// The identity supplies the token; this key signs both its fulfillment and
+    /// the plain coins that pay the miner fee. Those coins are required rather
+    /// than optional — a token an identity holds is a reserve output carrying
+    /// **zero satoshis**, so it cannot pay its own way, and an identity holding
+    /// a token need not hold native coins at all.
+    ///
+    /// # Why not send it out and convert it
+    ///
+    /// A token's supply is the sum of its preallocations, and a preallocation
+    /// names an identity — so for `proofprotocol` 1 every unit exists on the
+    /// defining identity and never touches a key-held address. Seeding a basket
+    /// with it otherwise takes two transactions, and between them the supply
+    /// sits at a bare address while the launch window runs down. A basket that
+    /// reaches its start block with an empty reserve refunds its **entire**
+    /// launch, and the name cannot be reused.
+    ///
+    /// # Where the money goes
+    ///
+    /// Token surplus returns to the **identity**; native change to this key's
+    /// own address.
+    ///
+    /// # Errors
+    ///
+    /// Throws if the identity does not exist, is revoked, is timelocked, does
+    /// not list this key as a primary address, needs more than one signature,
+    /// holds none of that token, or if this key has no coins for the fee.
+    #[wasm_bindgen(js_name = planConvertFromIdentity)]
+    pub fn plan_convert_from_identity(
+        &self,
+        request: PlanConvertFromIdentityRequestValue,
+        answers: &mut Answers,
+    ) -> WasmResult<TransactionStepValue> {
+        let request: PlanConvertFromIdentityRequest =
+            dto::from_js(request.into(), &PlanConvertFromIdentityRequest::SHAPE)?;
+        let kind = conversion_kind_of(&request.kind, &request.into, &request.via)?;
+        let amount = dto::sats(&request.amount)?;
+        let fee = checked_fee(&request.fee)?;
+        let (identity, from, recipient) = (request.identity, request.from, request.recipient);
+
+        let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
+            verus_flows::prepare_conversion_from_identity(
+                client,
+                self.private(),
+                &identity,
+                &from,
+                amount,
+                kind,
+                &recipient,
+                fee,
             )
         })
         .map_err(WasmError::from)?;

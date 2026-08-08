@@ -1430,39 +1430,108 @@ pub fn build_conversion_transaction(
         ));
     }
 
+    // Which identity the token inputs belong to, when a conversion is funded
+    // straight out of one. `None` for a mint (whose identity is the currency
+    // id) and for an ordinary key-funded conversion.
+    //
+    // Read off the inputs rather than taken as a parameter: every one of them
+    // already names its destination, they must all name the *same* identity,
+    // and the surplus goes back to exactly that. A separate parameter could
+    // disagree with the inputs, and the disagreement would be a token sent
+    // somewhere nobody asked for.
+    let mut token_source_identity: Option<[u8; 20]> = None;
+
     if !params.identity_funding.is_empty() {
-        let ConversionKind::Mint { currency } = transfer.kind else {
-            // Checked up here with the other input-side refusals — below the
-            // token accounting, its message would be masked by a token-balance
-            // error that is not the caller's real mistake.
-            return Err(TxError::InvalidConversion(
-                "identity funding is only used for a mint".into(),
-            ));
-        };
-        let identity_script =
-            verus_tx_primitives::cc::identity_payment_script(currency.to_bytes())?;
-        for utxo in params.identity_funding {
-            if utxo.script_pubkey != identity_script {
-                return Err(TxError::InvalidConversion(format!(
-                    "identity funding {}:{} does not pay the controlling identity of the \
-                     currency being minted",
-                    utxo.txid.to_display_hex(),
-                    utxo.vout
-                )));
+        if let ConversionKind::Mint { currency } = transfer.kind {
+            let identity_script =
+                verus_tx_primitives::cc::identity_payment_script(currency.to_bytes())?;
+            for utxo in params.identity_funding {
+                if utxo.script_pubkey != identity_script {
+                    return Err(TxError::InvalidConversion(format!(
+                        "identity funding {}:{} does not pay the controlling identity of the \
+                         currency being minted",
+                        utxo.txid.to_display_hex(),
+                        utxo.vout
+                    )));
+                }
+            }
+        } else {
+            // A conversion out of an identity. The identity supplies the
+            // token; the miner fee comes from `utxos`, because an identity
+            // holding a token need not hold native coins as well — and
+            // usually does not.
+            if source_is_native {
+                return Err(TxError::InvalidConversion(
+                    "a native conversion is funded from plain coins; identity_funding \
+                     carries the token a conversion spends"
+                        .into(),
+                ));
+            }
+            if !params.token_funding.is_empty() {
+                // Both lists would be spent, and the accounting below runs
+                // over one of them. Refused rather than half-counted.
+                return Err(TxError::InvalidConversion(
+                    "a conversion funded from an identity puts its token inputs in \
+                     identity_funding; do not also supply token_funding"
+                        .into(),
+                ));
+            }
+            for utxo in params.identity_funding {
+                let crate::decode::OutputKind::ReserveOutput { destination, .. } =
+                    crate::decode::decode_output_script(&utxo.script_pubkey)?
+                else {
+                    return Err(TxError::InvalidConversion(format!(
+                        "identity funding {}:{} is not a reserve output",
+                        utxo.txid.to_display_hex(),
+                        utxo.vout
+                    )));
+                };
+                let Destination::Identity(holder) = destination else {
+                    return Err(TxError::InvalidConversion(format!(
+                        "identity funding {}:{} does not pay an identity",
+                        utxo.txid.to_display_hex(),
+                        utxo.vout
+                    )));
+                };
+                // One transaction, one identity. Two identities would each
+                // need their own `minsigs` met, and the surplus would have no
+                // single place to return to.
+                match token_source_identity {
+                    None => token_source_identity = Some(holder),
+                    Some(first) if first == holder => {}
+                    Some(_) => {
+                        return Err(TxError::InvalidConversion(
+                            "every identity_funding input must belong to the same identity".into(),
+                        ))
+                    }
+                }
             }
         }
     }
 
-    // Token change, when the source is a token.
+    // Token change, when the source is a token. The inputs are the identity's
+    // when the conversion is funded from one, and the caller's otherwise.
+    let token_inputs: &[Utxo] = if token_source_identity.is_some() {
+        params.identity_funding
+    } else {
+        params.token_funding
+    };
     if !source_is_native {
         let mut held: u64 = 0;
-        for utxo in params.token_funding {
+        for utxo in token_inputs {
             match crate::decode::decode_output_script(&utxo.script_pubkey)? {
                 crate::decode::OutputKind::ReserveOutput {
                     tokens,
                     destination,
                 } => {
-                    crate::token::reject_unspendable_reserve(utxo, &destination)?;
+                    // An identity-held reserve output is unspendable by a
+                    // key, which is what this refuses — but when the inputs
+                    // came through `identity_funding` the identity signs them,
+                    // so the whole point is that they are spendable. Checked
+                    // only for the key-funded list.
+                    if token_source_identity.is_none() {
+                        crate::token::reject_unspendable_reserve(utxo, &destination)?;
+                    }
                     // A reserve output can carry several currencies. Only the
                     // one being converted counts towards the amount; the others
                     // still have to come back as change, so a multi-currency
@@ -1492,10 +1561,18 @@ pub fn build_conversion_transaction(
                 missing: needed.saturating_sub(held),
             })?;
         if change > 0 {
+            // Surplus goes back where the token came from. Out of an identity
+            // that means the identity itself — money under an identity's
+            // authority must not quietly migrate to a bare key, which is the
+            // same rule a mint's native surplus follows.
+            let back_to = match token_source_identity {
+                Some(holder) => Destination::Identity(holder),
+                None => Destination::PubKeyHash(params.change_address.hash()),
+            };
             outputs.push(TxOut {
                 value: 0,
-                script_pubkey: verus_tx_primitives::cc::reserve_output_script(
-                    params.change_address.hash(),
+                script_pubkey: verus_tx_primitives::cc::reserve_output_script_to(
+                    back_to,
                     transfer.source,
                     change,
                 )?,
@@ -1521,7 +1598,11 @@ pub fn build_conversion_transaction(
             )?),
         )
     } else {
-        (params.token_funding, None)
+        // A conversion out of an identity signs the identity's reserve outputs
+        // as leading inputs, exactly as `build_identity_token_spend` does.
+        // Native change still goes to the change address: only the *token*
+        // surplus belongs to the identity, and the fee came from plain coins.
+        (token_inputs, None)
     };
     assemble(
         key,
@@ -1534,6 +1615,10 @@ pub fn build_conversion_transaction(
             fee_output_count: output_count,
             change_address: &params.change_address,
             change_script,
+            // A mint spends the identity's pay-to-identity outputs, which do
+            // carry satoshis. Reserve outputs do not — their value is in the
+            // payload — so crediting the fee with them would be crediting it
+            // with money that is not there.
             value_bearing_leading: is_mint,
             expiry: params.expiry,
             fee_per_kb: params.fee_per_kb,
@@ -1753,6 +1838,7 @@ mod mint_destination_tests {
 #[cfg(test)]
 mod mint_funding_tests {
     use super::*;
+    use crate::decode::{decode_output_script, OutputKind};
     use verus_tx_primitives::cc::identity_payment_script;
     use verus_tx_primitives::Txid;
     use verus_wire::TxV4;
@@ -1776,6 +1862,62 @@ mod mint_funding_tests {
             chain(),
             Amount::from_coins_str("500").unwrap(),
             ConversionKind::Mint { currency: token() },
+            key().address(),
+            key().address(),
+            chain(),
+            Amount::from_sat(20_000),
+        )
+        .unwrap()
+    }
+
+    /// The identity that holds the token being converted — deliberately not
+    /// the currency id, so a test cannot pass by confusing the two.
+    fn holder() -> [u8; 20] {
+        [0x33; 20]
+    }
+
+    /// A reserve output paying `holder()`, carrying `amount` of `token()`.
+    ///
+    /// This is what a token an identity holds actually looks like on chain: a
+    /// CryptoCondition reserve output with an Identity destination and **zero
+    /// satoshis**, which is why the miner fee has to come from somewhere else.
+    fn identity_token(amount: u64, vout: u32) -> Utxo {
+        Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout,
+            satoshis: Amount::ZERO,
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script_to(
+                Destination::Identity(holder()),
+                token(),
+                amount,
+            )
+            .unwrap(),
+        }
+    }
+
+    /// Plain coins for the miner fee.
+    fn fee_coins(satoshis: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_display_hex(
+                "7b3f1c087206b359a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003",
+            )
+            .unwrap(),
+            vout: 0,
+            satoshis: Amount::from_sat(satoshis),
+            script_pubkey: key().address().p2pkh_script_pubkey().unwrap(),
+        }
+    }
+
+    fn preconvert_transfer(amount: u64) -> ReserveTransfer {
+        build_conversion(
+            token(),
+            Amount::from_sat(amount),
+            ConversionKind::Preconvert {
+                fractional: CurrencyId::from_bytes([0x44; 20]),
+            },
             key().address(),
             key().address(),
             chain(),
@@ -1866,11 +2008,111 @@ mod mint_funding_tests {
         ));
     }
 
-    /// Identity funding on anything but a mint is refused — no other flow is
-    /// proven to need it, and accepting it silently would spend identity funds
-    /// where plain coins were meant.
+    /// The capability itself: a token an identity holds, preconverted straight
+    /// into a basket, with the miner fee from the caller's own coins.
+    ///
+    /// This is the shape that removes a whole transaction from seeding a
+    /// basket. Without it the supply has to be moved to a key-held address
+    /// first, and between the two transactions it sits at a bare address while
+    /// the launch window runs down.
     #[test]
-    fn identity_funding_on_a_conversion_is_refused() {
+    fn a_token_an_identity_holds_converts_with_the_fee_from_plain_coins() {
+        let transfer = preconvert_transfer(4_00000000);
+        let held = [identity_token(10_00000000, 0)];
+        let coins = [fee_coins(1_00000000)];
+        let params =
+            ConversionParams::new(&transfer, &coins, chain(), key().address(), Expiry::Never)
+                .with_identity_funding(&held);
+
+        let signed = build_conversion_transaction(&key(), &params).expect("it builds");
+        let tx = TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).expect("a transaction");
+
+        // Both sources are spent: the identity's token output and the plain
+        // coins. The fee cannot come from the token — a reserve output carries
+        // zero satoshis.
+        assert_eq!(tx.inputs.len(), 2, "the identity's token and the fee coins");
+
+        // The surplus returns to the IDENTITY, not to the change address.
+        // Money under an identity's authority must not migrate to a bare key.
+        let surplus = tx
+            .outputs
+            .iter()
+            .filter_map(|out| match decode_output_script(&out.script_pubkey) {
+                Ok(OutputKind::ReserveOutput {
+                    tokens,
+                    destination,
+                }) => Some((tokens, destination)),
+                _ => None,
+            })
+            .find(|(tokens, _)| tokens.first().is_some_and(|t| t.1 == 6_00000000))
+            .expect("6 tokens of change");
+        assert_eq!(
+            surplus.1,
+            Destination::Identity(holder()),
+            "token change goes back to the identity that held it"
+        );
+    }
+
+    /// Two identities in one transaction is refused. Each would need its own
+    /// `minsigs` met, and the surplus would have no single place to return to.
+    #[test]
+    fn identity_funding_from_two_different_identities_is_refused() {
+        let transfer = preconvert_transfer(1_00000000);
+        let other = Utxo {
+            txid: Txid::from_display_hex(
+                "59a1097f1162b8dfd7037b5933d7156700bb0fe4230f14f003ba5f1c087206b3",
+            )
+            .unwrap(),
+            vout: 9,
+            satoshis: Amount::ZERO,
+            script_pubkey: verus_tx_primitives::cc::reserve_output_script_to(
+                Destination::Identity([0x77; 20]),
+                token(),
+                5_00000000,
+            )
+            .unwrap(),
+        };
+        let held = [identity_token(10_00000000, 0), other];
+        let coins = [fee_coins(1_00000000)];
+        let params =
+            ConversionParams::new(&transfer, &coins, chain(), key().address(), Expiry::Never)
+                .with_identity_funding(&held);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason))
+                if reason.contains("same identity")
+        ));
+    }
+
+    /// Both funding lists at once is refused rather than half-counted: the
+    /// accounting runs over one of them, so the other would be spent without
+    /// its tokens being credited — and burned.
+    #[test]
+    fn identity_funding_beside_token_funding_is_refused() {
+        let transfer = preconvert_transfer(1_00000000);
+        let held = [identity_token(10_00000000, 0)];
+        let also = [identity_token(3_00000000, 1)];
+        let coins = [fee_coins(1_00000000)];
+        let params =
+            ConversionParams::new(&transfer, &coins, chain(), key().address(), Expiry::Never)
+                .with_identity_funding(&held)
+                .with_token_funding(&also);
+        assert!(matches!(
+            build_conversion_transaction(&key(), &params),
+            Err(TxError::InvalidConversion(reason))
+                if reason.contains("do not also supply token_funding")
+        ));
+    }
+
+    /// A conversion whose source is the chain's own currency is funded from
+    /// plain coins, so identity funding there is a mistake worth naming.
+    ///
+    /// It used to be refused for *every* non-mint kind. Converting a token an
+    /// identity holds is now supported — see the tests below — and this is the
+    /// case that remains wrong: native value under an identity is spent through
+    /// its pay-to-identity outputs, which is a different shape entirely.
+    #[test]
+    fn identity_funding_on_a_native_source_conversion_is_refused() {
         let transfer = build_conversion(
             chain(),
             Amount::from_sat(1_00000000),
@@ -1888,7 +2130,8 @@ mod mint_funding_tests {
             .with_identity_funding(&funding);
         assert!(matches!(
             build_conversion_transaction(&key(), &params),
-            Err(TxError::InvalidConversion(reason)) if reason.contains("only used for a mint")
+            Err(TxError::InvalidConversion(reason))
+                if reason.contains("native conversion is funded from plain coins")
         ));
     }
 

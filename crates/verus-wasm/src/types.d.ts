@@ -682,6 +682,35 @@ export interface PlanSendTokenFromIdentityRequest {
     amount: string;
 }
 
+/** A conversion funded straight out of the VerusID that holds the token. */
+export interface PlanConvertFromIdentityRequest {
+    /** The identity holding the token — a name or an `i…` address. */
+    identity: string;
+    /**
+     * The currency being spent, as an `i…` address.
+     *
+     * The token the identity holds, **not** the identity itself. For a token
+     * whose supply was preallocated to its defining identity the two look alike
+     * in a wallet and are different values here.
+     */
+    from: string;
+    /** How much of it, in satoshis, as a decimal string. */
+    amount: string;
+    /**
+     * One of `"intoFractional"`, `"intoReserve"`, `"reserveToReserve"`,
+     * `"preconvert"`. Minting and burning have their own bindings.
+     */
+    kind: string;
+    /** The currency being bought — the fractional, the reserve, or the target. */
+    into: string;
+    /** The fractional to route through. Only for `"reserveToReserve"`. */
+    via?: string;
+    /** Where the result should land — an `R…` or `i…` address. */
+    recipient: string;
+    /** The conversion fee, in satoshis, as a decimal string. */
+    fee: string;
+}
+
 /** What to store on a VerusID, and under which key. */
 export interface PlanPublishRequest {
     /**

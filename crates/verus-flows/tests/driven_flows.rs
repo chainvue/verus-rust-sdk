@@ -960,3 +960,95 @@ fn moving_a_token_from_an_identity_reads_the_two_funding_sources_together() {
         rounds[1]
     );
 }
+
+/// Converting a token an identity holds reads the identity, then three
+/// independent things — and the fee comes from the caller's own coins because
+/// the token output carries none.
+///
+/// The round count is the point again: the identity has to be read before its
+/// address is known, and everything after that goes out together.
+#[test]
+fn converting_a_token_from_an_identity_batches_its_reads() {
+    let key = spender();
+    let fee_from = key.address();
+    let identity = identity_of(&fee_from, Vec::new());
+    let identity_at = identity_address(&identity);
+    let source = verus_tx::CurrencyId::from_bytes(PARENT);
+
+    let token_script = verus_tx::cc::reserve_output_script_to(
+        verus_tx::Destination::Identity(identity_at.hash()),
+        source,
+        900_000_000,
+    )
+    .expect("a reserve output script");
+
+    let utxo_reply = |address: &str, index: u32, satoshis: u64, script: &str| {
+        format!(
+            r#"{{"result":[{{"address":"{address}","blocktime":1785262420,"height":1166385,"isspendable":1,"outputIndex":{index},"satoshis":{satoshis},"script":"{script}","txid":"5e19de6d3f77b5e1f49ec92db23027d5f026db92004b026465a61bff8ab13d7e"}}]}}"#
+        )
+    };
+    let identity_utxos = utxo_reply(&identity_at.to_string(), 0, 0, &hex::encode(&token_script));
+    let fee_utxos = utxo_reply(
+        &fee_from.to_string(),
+        1,
+        8_830_000,
+        &format!("76a914{}88ac", hex::encode(fee_from.hash())),
+    );
+    let getidentity = identity_reply(&identity, &verus_tx::Txid::from_internal([0x61; 32]));
+    let identity_text = identity_at.to_string();
+    // The token's currency is not the identity holding it. Passing the same
+    // value for both is exactly the confusion this test should not encode.
+    let source_text =
+        verus_keys::Address::new(verus_keys::AddressKind::Identity, PARENT).to_string();
+    let base = replies();
+
+    let (_unsent, rounds) = drive_dispatching(
+        |body| match method_of(body).as_str() {
+            "getidentity" => getidentity.clone(),
+            "getaddressutxos" if body.contains(&identity_text) => identity_utxos.clone(),
+            "getaddressutxos" => fee_utxos.clone(),
+            other => base
+                .get(other)
+                .unwrap_or_else(|| panic!("no fixture for {other}"))
+                .clone(),
+        },
+        |client| {
+            verus_flows::prepare_conversion_from_identity(
+                client,
+                &key,
+                &identity_text,
+                &source_text,
+                verus_flows::Amount::from_sat(400_000_000),
+                verus_tx::ConversionKind::Preconvert {
+                    fractional: verus_tx::CurrencyId::from_bytes([0x44; 20]),
+                },
+                PAYEE,
+                verus_flows::Amount::from_sat(20_000),
+            )
+        },
+    );
+
+    // Two rounds, and the second one is a real dependency rather than a
+    // misplaced `?`: `identity` may be a `name@`, so the address to ask about
+    // for the token outputs is the one `getidentity` reports. Reading them in
+    // the first round would only work for an `i` address — which is how this
+    // was written until a `name@` from the node tests proved otherwise.
+    assert_eq!(
+        rounds.len(),
+        2,
+        "the identity resolves first, then its token outputs: {rounds:#?}"
+    );
+
+    // The fee payer's coins do NOT wait for the identity — they go out in the
+    // first round alongside it.
+    assert!(
+        rounds[0].iter().any(|b| b.contains(&fee_from.to_string())),
+        "the fee payer's coins are read without waiting: {:#?}",
+        rounds[0]
+    );
+    assert!(
+        rounds[1].iter().any(|b| b.contains(&identity_text)),
+        "the identity's own outputs come second: {:#?}",
+        rounds[1]
+    );
+}
