@@ -240,6 +240,41 @@ fn reads_an_identity_and_the_output_holding_it() {
     assert_eq!(record.identity["minimumsignatures"], 1);
 }
 
+/// A reply with no `identityaddress` — or one that is not a string — is
+/// refused rather than read as an identity whose address is empty. An empty
+/// string would parse as a real answer to anything that string-compares this
+/// field instead of decoding it, turning a malformed reply into a silent
+/// non-match instead of the error it should be.
+#[test]
+fn an_identity_with_no_identityaddress_is_refused() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    for broken in [
+        // Missing entirely.
+        r#"{"version":1}"#,
+        // Present but not a string.
+        r#"{"identityaddress":42,"version":1}"#,
+    ] {
+        let body = format!(
+            r#"{{"result":{{"fullyqualifiedname":"x.VRSC@","status":"active",
+            "txid":"00000000000000000000000000000000000000000000000000000000000000ab",
+            "vout":0,"blockheight":1,
+            "identity":{broken}}}}}"#
+        );
+        match RpcClient::new(Body(Box::leak(body.into_boxed_str()))).identity("x") {
+            Err(RpcError::Unexpected(message)) => {
+                assert!(message.contains("identityaddress"), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+}
+
 /// `-5` on `getidentity` means "no such identity", which is a *fact about the
 /// chain*, not a failure. `confirmations` relies on the same code meaning "never
 /// seen it", so the mapping has to be exact.

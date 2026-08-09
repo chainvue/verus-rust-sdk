@@ -1176,11 +1176,17 @@ pub(crate) struct RawIdentity {
 
 impl RawIdentity {
     pub(crate) fn into_typed(self) -> Result<IdentityRecord, RpcError> {
+        // `unwrap_or_default` here would turn "the daemon didn't say" into an
+        // empty string that reads exactly like a real identity address to
+        // anything that string-compares it rather than parsing it — see the
+        // `contentmap` reasoning in `identity_content` for the general shape
+        // of the mistake. An honest daemon always sends this field, so its
+        // absence is the reply itself being wrong, not a value to paper over.
         let identity_address = self
             .identity
             .get("identityaddress")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
+            .ok_or_else(|| RpcError::Unexpected("identity has no identityaddress".to_string()))?
             .to_string();
         Ok(IdentityRecord {
             fully_qualified_name: self.fullyqualifiedname,
