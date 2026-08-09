@@ -69,9 +69,16 @@ pub fn private_key_from_seed_phrase(phrase: &str) -> Result<PrivateKey, KeyError
     bytes[31] &= 127;
     bytes[31] |= 64;
 
-    // The clamp guarantees a usable scalar: clearing the top three bits of the
-    // most significant byte puts it below 2^253 (and so below the curve order),
-    // while setting bit 6 of the last byte keeps it non-zero.
+    // The clamp guarantees a usable scalar, deterministically: capping the top
+    // byte at 0xF8 (`&= 248`) keeps every clamped buffer below the curve order
+    // n (whose top byte is 0xFF), and flooring the low byte at 0x40 (`|= 64`)
+    // keeps it non-zero. The result always lands in [0x40, 0xF8FF..FF7F] — a
+    // bound that holds for every input, not just almost all of them. That
+    // bound is real but incidental and far weaker than "below 2^253"; it is
+    // not why the clamp is applied here (see the module docs above for that).
+    // Because the range is guaranteed on this path, the `InvalidPrivateKey`
+    // rejection in `PrivateKey::from_bytes` below is unreachable — unlike a
+    // uniform random 32-byte draw, where it guards a real ~2^-127 case.
     PrivateKey::from_bytes(&bytes, true)
 }
 
