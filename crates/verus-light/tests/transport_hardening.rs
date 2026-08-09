@@ -60,23 +60,54 @@ fn ipv6_loopback_is_accepted_and_non_loopback_is_still_refused() {
 ///
 /// Every url below names `[::1]` first but is really addressed elsewhere: an
 /// explicit `@evil.example`, a port folded in before the `@`, a suffix glued
-/// straight onto the bracket that is not a port at all, or a bracket that
-/// never closes. All six must be refused.
+/// straight onto the bracket that is not a port at all, a bracket that never
+/// closes, or (the tab) a byte a url parser strips before ever comparing
+/// anything — accepted today for the same reason as the others, but not
+/// obviously so from the rest of this list; a future reader should not have
+/// to rediscover that a parser normalizes it away.
+///
+/// Collected into one assertion rather than short-circuiting on the first
+/// failure, so a regression that only reopens one of these forms still shows
+/// up as a failure here instead of hiding behind whichever case sorts first.
 #[test]
 fn a_bracket_that_reads_as_loopback_does_not_override_what_follows_it() {
-    for url in [
+    let still_accepted: Vec<&str> = [
         "http://[::1]@evil.example/",
         "http://[::1]:9067@evil.example/",
         "http://[::1]x@evil.example",
         "http://[::1].evil.example",
         "http://[::1]evil.example",
         "http://[::1",
-    ] {
-        assert!(
-            GrpcWebTransport::new(url).is_err(),
-            "{url} should have been refused"
-        );
-    }
+        "http://[::1]\t@evil.example",
+    ]
+    .into_iter()
+    .filter(|url| GrpcWebTransport::new(*url).is_ok())
+    .collect();
+    assert!(
+        still_accepted.is_empty(),
+        "should all have been refused, but accepted: {still_accepted:?}"
+    );
+}
+
+/// The refusal above must not itself leak what it refused: pre-fix, a url
+/// with userinfo was already rejected for an unrelated reason (the whole
+/// pre-`@` token never matched `localhost`), and that rejection's message
+/// held only the *user*, never the password — `rest.split([...]).next()`
+/// stops at the first `:` or `/`. Reintroducing the userinfo error must not
+/// regress that: a constructor error is exactly what lands in a terminal or
+/// a log.
+#[test]
+fn the_userinfo_refusal_does_not_print_the_password() {
+    // `GrpcWebTransport` has no `Debug` impl, which `expect_err` requires on
+    // the `Ok` side — map it away first.
+    let err = GrpcWebTransport::new("http://rpcuser:s3cr3t-password@127.0.0.1:9067/")
+        .map(|_| ())
+        .expect_err("userinfo must be refused");
+    let message = err.to_string();
+    assert!(
+        !message.contains("s3cr3t-password"),
+        "the password leaked into the error message: {message}"
+    );
 }
 
 /// The bare `ureq::AgentBuilder` this crate used to build followed up to five

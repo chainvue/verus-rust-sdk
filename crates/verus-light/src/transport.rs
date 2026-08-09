@@ -140,11 +140,31 @@ mod blocking {
             // crate has no use for userinfo in an endpoint (unlike
             // `verus-rpc`, which carries node credentials), so refuse it
             // outright rather than parse around it.
-            if authority.contains('@') {
+            //
+            // The refusal must not itself leak whatever was in there: unlike
+            // `verus-rpc`'s `Credentials`, nothing here is going to zeroize
+            // or redact this string on the way to a `Debug` impl or a log
+            // line, so the message reports only what follows the last `@`
+            // — never the authority as a whole, which is where a password
+            // would be sitting.
+            if let Some((_, host_part)) = authority.rsplit_once('@') {
                 return Err(LightError::Refused(format!(
-                    "refusing plaintext http:// to {authority}: userinfo is not supported here"
+                    "refusing plaintext http:// to {host_part}: this endpoint takes no \
+                     user:password@ — remove it, this transport never sends credentials"
                 )));
             }
+            // Whatever trails a host must be nothing, or a `:` followed only
+            // by digits — anything else past this point is refused outright
+            // rather than trusted to fail later in ureq's own url parsing.
+            // Shared by both branches below so "safe" is a property of the
+            // parse here, not a hope pinned on whatever a different parser
+            // downstream happens to reject.
+            let port_is_numeric = |after: &str| {
+                after.is_empty()
+                    || (after.starts_with(':')
+                        && after.len() > 1
+                        && after[1..].bytes().all(|b| b.is_ascii_digit()))
+            };
             // An IPv6 literal such as "[::1]:9067" contains colons inside
             // the brackets; splitting on ':' the way the plain-host branch
             // below does stops at the first one *inside* the address ("[")
@@ -159,17 +179,16 @@ mod blocking {
                         "refusing plaintext http:// to [{after_bracket}: unterminated IPv6 literal"
                     )));
                 };
-                let port_is_numeric = after.is_empty()
-                    || (after.starts_with(':') && after[1..].bytes().all(|b| b.is_ascii_digit()));
-                if host == "::1" && port_is_numeric {
+                if host == "::1" && port_is_numeric(after) {
                     return Ok(());
                 }
                 return Err(LightError::Refused(format!(
                     "refusing plaintext http:// to [{host}]: use https://, or tunnel to loopback"
                 )));
             }
-            let host = authority.split(':').next().unwrap_or("");
-            if host == "localhost" || host == "127.0.0.1" {
+            let colon = authority.find(':').unwrap_or(authority.len());
+            let (host, after) = authority.split_at(colon);
+            if (host == "localhost" || host == "127.0.0.1") && port_is_numeric(after) {
                 return Ok(());
             }
             Err(LightError::Refused(format!(
