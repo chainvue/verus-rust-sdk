@@ -868,11 +868,14 @@ console.log("\nmemory hygiene");
   // and for every fragment of it starting at each of several offsets, in
   // case a freed chunk's leading bytes get overwritten by allocator
   // metadata before this scan runs — still found nothing, in every variant
-  // tried. Whatever reclaims that chunk here does so reliably before the
-  // scan, same as the WIF case above. The needle stays a fragment (skipping
-  // the marker's first 16 characters) rather than the whole string on the
-  // chance that matters on a build where the smoke-check property doesn't
-  // hold; it made no measured difference on this one.
+  // tried. This marker's short length is likely why: it lands in a small
+  // dlmalloc bin that allocations inside `private_key_from_seed_phrase`
+  // reliably reuse before the scan runs, and a markedly longer marker is
+  // reported to land somewhere that doesn't get reused — untried here. The
+  // needle stays a fragment (skipping the marker's first 16 characters)
+  // rather than the whole string on the chance that matters on a build
+  // where the smoke-check property doesn't hold; it made no measured
+  // difference on this one.
   const phraseMarker = marker("seed-phrase");
   const phraseNeedle = Buffer.from(phraseMarker.slice(16), "utf8");
   const phraseKey = Key.fromSeedPhrase(phraseMarker);
@@ -884,16 +887,14 @@ console.log("\nmemory hygiene");
   );
   ok("an imported seed phrase does not linger in memory after fromSeedPhrase returns");
 
-  // `fromEntropy` is deliberately still not asserted on here. A report said
-  // `fromEntropy` immediately followed by `free()` — no `to_wif` call
-  // anywhere in the run — is clean on this exact commit; reproducing that
-  // scenario independently, twice, on a clean checkout of the same commit,
-  // found a byte-for-byte copy of the entropy in linear memory afterward
-  // both times. That is a direct conflict on a security-relevant claim, not
-  // a rounding error, and it has not been reconciled — see the PR
-  // discussion. Committing an assertion either way here would be asserting
-  // something not actually settled; `private_key_from_entropy`'s doc comment
-  // has the same caveat.
+  // `fromEntropy` is deliberately not asserted on here — not because it is
+  // clean, but because a check written the way the others above are (the
+  // caller's own byte order, whole value) would report success while the
+  // scalar sits in memory anyway, reversed: `k256` stores it as
+  // little-endian `crypto_bigint` limbs, and a canonical-order search misses
+  // that entirely. A green check that over-promises is worse than no check;
+  // see `private_key_from_entropy`'s doc comment for the actual measurement,
+  // in the order that finds it.
 
   // The regression this section exists to catch: `passphrase` is folded into
   // the PBKDF2 salt exactly like `phrase` is, and must be wiped the same way

@@ -159,25 +159,31 @@ impl Key {
 /// function's) leave a moment where the entropy exists outside `Zeroizing`'s
 /// reach.
 ///
-/// What this cannot reach, by construction: [`Key::to_wif`] → `to_wif` →
-/// `PrivateKey::to_bytes` (`verus-keys/src/key.rs`) calls
-/// `SigningKey::to_bytes()`, which is `secret_scalar.to_repr()` — a plain
-/// `FieldBytes` that nothing zeroizes — before `verus-keys` copies it into
-/// its own `Zeroizing<[u8; 32]>`. That source copy outlives the call, and it
-/// is a fact about `to_wif`, readable from `k256`/`ecdsa`'s own source rather
-/// than only measured.
+/// What this fix removes, precisely, and no more than that: on `main`, the
+/// `<[u8; 32]>::try_from` stack temporary sat in the caller's own
+/// (big-endian/canonical) byte order and was measured there — one copy,
+/// gone here, wrapping the buffer in `Zeroizing` from the start rather than
+/// after the fact.
 ///
-/// Whether construction itself — `PrivateKey::from_bytes` below, and
-/// `k256::SigningKey::from_slice` underneath it — is clean is, as of this
-/// writing, **not settled**: a byte-for-byte reproduction of the caller's
-/// entropy has been observed in linear memory after `fromEntropy` followed
-/// immediately by `free()`, with no `to_wif` call anywhere in the run, on a
-/// clean checkout of this exact commit. That conflicts with an earlier report
-/// that the same scenario was clean, and the discrepancy has not yet been
-/// reconciled — see the PR discussion rather than trusting either claim on
-/// its own. Either way, it is pre-existing behaviour inside
-/// `verus-keys`/`k256`, not something this function's own fix touches, and
-/// out of scope for this change.
+/// What it cannot reach: `k256` stores the scalar as little-endian
+/// `crypto_bigint::U256` limbs on wasm32, and `k256::SigningKey`
+/// construction leaves it there. A canonical-order search — the caller's own
+/// entropy, byte for byte — finds nothing after `fromEntropy` + `free()`, on
+/// `main` or here; a search in limb-reversed order finds seven separate
+/// copies, on `main` and here alike, measured on reproducibly hashed builds.
+/// **Search byte order matters and is easy to get backwards** — the
+/// canonical-order search reports success even though the scalar is present,
+/// reversed, a few bytes away. Common to every path that builds a
+/// `PrivateKey`, not something this function's own fix touches or could
+/// touch; worth its own issue against `verus-keys`.
+///
+/// [`Key::to_wif`] adds one more, in canonical order this time and separate
+/// from the seven above: `to_wif` → `PrivateKey::to_bytes`
+/// (`verus-keys/src/key.rs`) calls `SigningKey::to_bytes()`, which is
+/// `secret_scalar.to_repr()` — a plain `FieldBytes` that nothing zeroizes —
+/// before `verus-keys` copies it into its own `Zeroizing<[u8; 32]>`. That
+/// source copy outlives the call. Reading the key back out through
+/// `address()`, `publicKey()`, or `scriptPubKey()` instead leaves none.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
     if entropy.len() != 32 {
         return Err(WasmError::new(
