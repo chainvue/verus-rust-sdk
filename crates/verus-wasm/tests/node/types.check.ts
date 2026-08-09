@@ -49,6 +49,7 @@ import {
   type PlanSendRequest,
   type PlanSendTokenRequest,
   type PlanSendFromIdentityRequest,
+  type PlanSendTokenFromIdentityRequest,
   type PlanPublishRequest,
   type TransactionStep,
   type UpdateStep,
@@ -392,6 +393,14 @@ const idPlan: PlanSendFromIdentityRequest = {
 };
 const idStep: TransactionStep = key.planSendFromIdentity(idPlan, answers);
 
+const tokenIdPlan: PlanSendTokenFromIdentityRequest = {
+  identity: "holder@",
+  currency: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  to: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+  amount: "1",
+};
+const tokenIdStep: TransactionStep = key.planSendTokenFromIdentity(tokenIdPlan, answers);
+
 const publishPlan: PlanPublishRequest = {
   identity: "app@", key: "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv", values: ["6d696e65"],
 };
@@ -568,5 +577,5 @@ void [launched, burned, numericWeight, oddKind, stringStart, setPrices, handSet,
 void [pending, restored, blob, peeked, badState, status, registered, paid, numericPin];
 void [converted, burnAsKind, mintAsKind, typoKind, numericFloor];
 void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];
-void [tokenStep, idStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
+void [tokenStep, idStep, tokenIdStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

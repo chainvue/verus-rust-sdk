@@ -302,8 +302,8 @@ mod tests {
             JsPlannedUpdate, JsPreallocation, JsTaken, LoginRequest, OfferTermsRequest,
             OffersRequest, PlanBurnRequest, PlanConvertFromIdentityRequest, PlanConvertRequest,
             PlanLaunchRequest, PlanMintRequest, PlanPublishRequest, PlanRegistrationRequest,
-            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenRequest, PlanStep,
-            SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            PlanSendFromIdentityRequest, PlanSendRequest, PlanSendTokenFromIdentityRequest,
+            PlanSendTokenRequest, PlanStep, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest, VerifyResult};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -359,6 +359,10 @@ mod tests {
         assert_declared(
             "PlanSendFromIdentityRequest",
             &PlanSendFromIdentityRequest::default(),
+        );
+        assert_declared(
+            "PlanSendTokenFromIdentityRequest",
+            &PlanSendTokenFromIdentityRequest::default(),
         );
         assert_declared("PlanPublishRequest", &PlanPublishRequest::default());
         assert_declared("PlannedTransaction", &JsPlannedTransaction::default());
@@ -690,7 +694,8 @@ mod tests {
             OfferTermsRequest, OffersRequest, PlanBurnRequest, PlanConvertFromIdentityRequest,
             PlanConvertRequest, PlanLaunchRequest, PlanMintRequest, PlanPublishRequest,
             PlanRegistrationRequest, PlanSendFromIdentityRequest, PlanSendRequest,
-            PlanSendTokenRequest, SpendableRequest, TakeOfferRequest, VerifyLoginRequest,
+            PlanSendTokenFromIdentityRequest, PlanSendTokenRequest, SpendableRequest,
+            TakeOfferRequest, VerifyLoginRequest,
         };
         use crate::login::{SignRequest, VerifyRequest};
         use crate::send::{JsTokenRecipient, SendRequest, TokenSendRequest};
@@ -744,6 +749,10 @@ mod tests {
         check::<PlanSendFromIdentityRequest>(
             "PlanSendFromIdentityRequest",
             &PlanSendFromIdentityRequest::SHAPE,
+        );
+        check::<PlanSendTokenFromIdentityRequest>(
+            "PlanSendTokenFromIdentityRequest",
+            &PlanSendTokenFromIdentityRequest::SHAPE,
         );
         check::<PlanPublishRequest>("PlanPublishRequest", &PlanPublishRequest::SHAPE);
         check::<OffersRequest>("OffersRequest", &OffersRequest::SHAPE);
