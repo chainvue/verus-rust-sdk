@@ -223,18 +223,54 @@ fn check_scheme(url: &str) -> Result<(), RpcError> {
 /// Takes the part of the url *after* the scheme, so a caller who wants a
 /// bracketed IPv6 literal can be checked without also re-deciding what counts
 /// as a scheme.
+///
+/// Self-sufficient by design (#161): `check_scheme` above always calls this
+/// after [`split_userinfo`] has already stripped any `user:pass@`, but this
+/// function must not *rely* on that ordering to be safe. `verus-light`
+/// learned that the hard way in #156 — its copy of this same check, at a
+/// callsite with no preceding strip, was unconstrained past the closing `]`
+/// and accepted `[::1].evil.example` as loopback. Bounds the authority and
+/// requires a numeric port the same way `GrpcWebTransport::check_scheme`
+/// does, but does not add that function's blanket refusal of `@`: this crate
+/// legitimately carries userinfo (see [`Credentials`]), and the same
+/// exact-match/digit grammar that excludes a smuggled bracket suffix below
+/// also excludes a smuggled `@host` — neither branch can match once a stray
+/// `@` is part of the text it has to match exactly — so no separate case is
+/// needed for it.
 #[cfg(feature = "http")]
 fn is_loopback(rest: &str) -> bool {
-    if let Some(after_bracket) = rest.strip_prefix('[') {
-        // An IPv6 literal such as "[::1]:27486/…": splitting on `:` the way
+    // Bound the authority the way a URL parser would: up to the first '/',
+    // '?' or '#'. Everything below compares against this, not against
+    // `rest`, so a path segment can never be mistaken for part of the host.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+
+    // Whatever trails a host must be nothing, or ':' followed only by ASCII
+    // digits. Checking only that the tail *starts with* one of `:/?#` is not
+    // enough on its own — "[::1]:9067@evil.example" still starts with ':' —
+    // the digit requirement is what actually excludes the `@` and the host
+    // that follows it.
+    let port_is_numeric = |after: &str| {
+        after.is_empty()
+            || (after.starts_with(':')
+                && after.len() > 1
+                && after[1..].bytes().all(|b| b.is_ascii_digit()))
+    };
+
+    if let Some(after_bracket) = authority.strip_prefix('[') {
+        // An IPv6 literal such as "[::1]:27486": splitting on `:` the way
         // the plain-host branch below does would stop at the first colon
-        // *inside* the address and never match anything, refusing
-        // `http://[::1]:8080` even though it is loopback. The host ends at
-        // the matching `]`, not at a colon.
-        return after_bracket.split(']').next() == Some("::1");
+        // *inside* the address and never match anything. The host ends at
+        // the matching `]`, not at a colon — and an unterminated bracket
+        // group is refused outright rather than treated as a partial match.
+        let Some((host, after)) = after_bracket.split_once(']') else {
+            return false;
+        };
+        return host == "::1" && port_is_numeric(after);
     }
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
+    let colon = authority.find(':').unwrap_or(authority.len());
+    let (host, after) = authority.split_at(colon);
+    (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") && port_is_numeric(after)
 }
 
 /// Split `user:password@` off a URL's authority.
@@ -418,6 +454,38 @@ mod tests {
         assert!(is_loopback("[::1]:27486/"));
         assert!(is_loopback("[::1]"));
         assert!(!is_loopback("[::2]:27486/"));
+    }
+
+    /// `is_loopback`'s own contract (#161), pinned independently of
+    /// `check_scheme`/`split_userinfo` call ordering: a copy of this
+    /// function with no preceding userinfo strip is exactly how
+    /// `verus-light` broke in #156.
+    #[test]
+    fn is_loopback_holds_without_a_preceding_userinfo_strip() {
+        // Bracketed loopback, with and without a port: unambiguously local.
+        assert!(is_loopback("[::1]"));
+        assert!(is_loopback("[::1]:9067"));
+
+        // A closing `]` constrains what follows it: neither a dotted nor a
+        // bare suffix may smuggle a different host past the bracket match.
+        assert!(!is_loopback("[::1].evil.example"));
+        assert!(!is_loopback("[::1]evil.example"));
+
+        // Checking only that the tail *starts with* one of `:/?#` is not
+        // enough — this still starts with ':'. Only requiring ASCII digits
+        // after it excludes the `@` and everything past it.
+        assert!(!is_loopback("[::1]:9067@evil.example"));
+
+        // An unterminated bracket group is refused outright rather than
+        // treated as a partial match.
+        assert!(!is_loopback("[::1"));
+
+        // A different literal address is not loopback merely for being
+        // bracketed.
+        assert!(!is_loopback("[::2]"));
+
+        // Empty brackets name no address at all.
+        assert!(!is_loopback("[]"));
     }
 
     #[test]
