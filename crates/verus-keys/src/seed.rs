@@ -69,9 +69,14 @@ pub fn private_key_from_seed_phrase(phrase: &str) -> Result<PrivateKey, KeyError
     bytes[31] &= 127;
     bytes[31] |= 64;
 
-    // The clamp guarantees a usable scalar: clearing the top three bits of the
-    // most significant byte puts it below 2^253 (and so below the curve order),
-    // while setting bit 6 of the last byte keeps it non-zero.
+    // This is the "iguana" clamp lifted verbatim from the JS wallets, kept
+    // bit-for-bit for cross-wallet compatibility. It is not a range clamp on
+    // this buffer: the buffer is big-endian, so `bytes[0]` is the *most*
+    // significant byte and `&= 248` clears its low three bits, leaving the
+    // magnitude essentially untouched — it does not bound the scalar below
+    // the secp256k1 curve order. `bytes[31] |= 64` does guarantee the value
+    // is non-zero. An out-of-range scalar (probability around 2^-127) is
+    // rejected by `PrivateKey::from_bytes` below rather than silently wrapped.
     PrivateKey::from_bytes(&bytes, true)
 }
 
