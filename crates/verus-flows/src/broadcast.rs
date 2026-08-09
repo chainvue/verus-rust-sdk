@@ -17,7 +17,7 @@
 //! carrying the txid and the signed bytes. Resolving it takes one read:
 //!
 //! ```no_run
-//! # use verus_flows::FlowError;
+//! # use verus_flows::{broadcast, FlowError};
 //! # use verus_rpc::{ChainReader, Broadcaster};
 //! # fn example(reader: &impl ChainReader, broadcaster: &impl Broadcaster, e: FlowError)
 //! #     -> Result<(), Box<dyn std::error::Error>> {
@@ -25,16 +25,36 @@
 //!     match reader.confirmations(&txid)? {
 //!         // The node has it. Nothing to do.
 //!         Some(_) => {}
-//!         // It never arrived. Sending the same bytes again is safe.
-//!         None => { broadcaster.send_raw_transaction(&hex)?; }
+//!         // It never arrived. Sending the same bytes again is safe — through
+//!         // `broadcast`, not the raw trait method, so a `-27` on this second
+//!         // attempt (mined between the check and the resend) is still
+//!         // reported as success rather than as a fresh rejection.
+//!         None => { broadcast(broadcaster, &hex, &txid)?; }
 //!     }
 //! }
 //! # Ok(()) }
 //! ```
 //!
-//! A rejection is different and is *not* ambiguous: the node understood the
-//! transaction and refused it. That comes back as the daemon's own error, and
-//! resending unchanged will fail identically.
+//! A rejection is different and is *not* ambiguous, for most codes: the node
+//! understood the transaction and refused it. That comes back as the
+//! daemon's own error, and resending unchanged will fail identically.
+//!
+//! Two node codes get special handling instead of that general rule, because
+//! neither one is actually a refusal:
+//!
+//! * `-27` (`RPC_VERIFY_ALREADY_IN_CHAIN`) means the node has this exact
+//!   transaction already mined. Reporting it as a rejection would be true in
+//!   the narrowest sense — resending indeed will not help — but for the
+//!   wrong reason, and a caller told "rejected, do not resend" reasonably
+//!   concludes it needs to build and pay for a *different* transaction. That
+//!   is a second commitment fee burned, or a double payment. So this case is
+//!   reported as success, the same as the already-in-mempool case the daemon
+//!   itself answers that way for.
+//! * `-25` (`RPC_VERIFY_ERROR`) is a generic verify failure that does not say
+//!   *why*, unlike `-26`. It can mean a genuinely invalid transaction, but it
+//!   is not reliably that — so, like a transport failure, it is reported as
+//!   [`FlowError::BroadcastUncertain`] rather than treated as a known
+//!   outcome.
 
 use verus_rpc::{Broadcaster, RpcError};
 
@@ -121,6 +141,25 @@ pub fn broadcast(
             }
             Ok(txid)
         }
+        // `-27`: the node already has these exact bytes mined. Not a
+        // refusal — the transaction succeeded, just earlier than this call.
+        // `local_txid` is the id the node would report for a fresh accept of
+        // the same hex, so this is the same success a caller gets for any
+        // other broadcast rather than a distinct outcome it would have to
+        // learn to handle. The mismatch check the `Ok` arm does above does
+        // not apply here: a `-27` error carries no txid of its own to compare
+        // against, only the daemon's message.
+        Err(RpcError::Node { code: -27, .. }) => Ok(local_txid.to_string()),
+        // `-25` is a generic verify failure that, unlike `-26`, does not say
+        // the transaction was refused — only that something about it did not
+        // check out. That is not enough to call it a known outcome, so it is
+        // treated the same as a transport failure: hand back what a resend
+        // needs and let the caller check before concluding anything.
+        Err(error @ RpcError::Node { code: -25, .. }) => Err(FlowError::BroadcastUncertain {
+            txid: local_txid.to_string(),
+            hex: hex.to_string(),
+            reason: error.to_string(),
+        }),
         // The node answered. It understood the transaction and said no, so the
         // outcome is known and resending unchanged will not help.
         Err(error @ RpcError::Node { .. }) => Err(FlowError::Rpc(error)),
@@ -188,6 +227,36 @@ mod tests {
         match broadcast(&node, "00ff", TXID) {
             Err(FlowError::Rpc(RpcError::Node { code, .. })) => assert_eq!(code, -26),
             other => panic!("expected a node error, got {other:?}"),
+        }
+    }
+
+    /// `-27` is the node saying it already has this exact transaction mined.
+    /// That is success, not a rejection — a caller told "rejected" here would
+    /// rebuild and pay again for something already on chain.
+    #[test]
+    fn already_in_chain_is_reported_as_success() {
+        let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::Node {
+            code: -27,
+            message: "transaction already in block chain".into(),
+        });
+        assert_eq!(broadcast(&node, "00ff", TXID).unwrap(), TXID);
+    }
+
+    /// `-25` does not say the transaction was refused, only that something
+    /// about it did not check out — unlike `-26`, it is not a known outcome.
+    #[test]
+    fn a_generic_verify_error_is_uncertain_not_a_rejection() {
+        let node = ScriptedReader::new(1_000).failing_broadcast(RpcError::Node {
+            code: -25,
+            message: "TX rejected".into(),
+        });
+        match broadcast(&node, "00ff", TXID) {
+            Err(FlowError::BroadcastUncertain { txid, hex, reason }) => {
+                assert_eq!(txid, TXID);
+                assert_eq!(hex, "00ff");
+                assert!(reason.contains("TX rejected"));
+            }
+            other => panic!("expected BroadcastUncertain, got {other:?}"),
         }
     }
 
