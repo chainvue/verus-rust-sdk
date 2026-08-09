@@ -7,7 +7,9 @@
 //! a field number that is wrong in both directions.
 
 use crate::error::LightError;
-use crate::proto::{put_bytes_field, put_varint_field, Reader, WIRE_BYTES, WIRE_VARINT};
+use crate::proto::{
+    put_bytes_field, put_message_field, put_varint_field, Reader, WIRE_BYTES, WIRE_VARINT,
+};
 
 /// Length of the compact note ciphertext lightwalletd serves: the first 52
 /// bytes of an output's `encCiphertext`, which is all that trial decryption
@@ -503,8 +505,12 @@ impl ServerInfo {
 /// Encode a `BlockRange` from two heights.
 pub(crate) fn encode_block_range(start: u64, end: u64) -> Vec<u8> {
     let mut out = Vec::new();
-    put_bytes_field(&mut out, 1, &BlockId::encode_height(start));
-    put_bytes_field(&mut out, 2, &BlockId::encode_height(end));
+    // `start` and `end` are message-typed (`BlockID`), not `bytes` scalars —
+    // proto3 tracks presence for them, so both must be emitted even when the
+    // submessage they hold serializes to zero bytes (a height-0 `BlockID`).
+    // See `put_message_field`'s doc comment.
+    put_message_field(&mut out, 1, &BlockId::encode_height(start));
+    put_message_field(&mut out, 2, &BlockId::encode_height(end));
     out
 }
 
@@ -513,4 +519,35 @@ pub(crate) fn encode_tx_filter(hash: &[u8; 32]) -> Vec<u8> {
     let mut out = Vec::new();
     put_bytes_field(&mut out, 3, hash);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BlockRange.start`/`end` are message-typed (`BlockID`), not `bytes`
+    /// scalars. `block_range(0, 10)` asks for a `Start` whose `BlockID`
+    /// serializes to zero bytes — `BlockId::encode_height(0)` elides the
+    /// height field the way a `proto3` scalar correctly does — and the
+    /// encoder must still emit `Start`'s tag with `len=0` rather than drop
+    /// the field entirely, or lightwalletd sees only `End` and rejects the
+    /// request as missing a start height.
+    #[test]
+    fn block_range_from_height_zero_encodes_both_bounds() {
+        let encoded = encode_block_range(0, 10);
+
+        let mut reader = Reader::new(&encoded);
+        let mut fields = Vec::new();
+        while !reader.is_empty() {
+            let (field, wire) = reader.tag().unwrap();
+            reader.skip(wire).unwrap();
+            fields.push(field);
+        }
+
+        assert_eq!(
+            fields,
+            vec![1, 2],
+            "BlockRange must carry both Start (height 0) and End, in that order"
+        );
+    }
 }
