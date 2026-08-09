@@ -157,10 +157,22 @@ pub enum Step<T> {
 /// afterwards. That is deliberate rather than wasteful: every round sees the
 /// same tip, the same UTXO set and the same identity, so a plan cannot be built
 /// half from one view of the chain and half from another.
+///
+/// **Reuse is refused, not merely discouraged.** Once [`advance`] returns
+/// [`Step::Ready`], this handle is spent: a second operation driven against it
+/// would plan against the first operation's frozen tip and UTXO set, however
+/// long ago that was — quietly, because a cached answer is indistinguishable
+/// from a fresh one. The concrete cost is a payment built from coins a
+/// still-unconfirmed transaction already spends. [`advance`] returns
+/// [`FlowError::NotReady`] instead of obliging.
 #[derive(Debug, Default)]
 pub struct Answers {
     cassette: Cassette,
     rounds: usize,
+    /// Set once an operation driven with this handle reaches
+    /// [`Step::Ready`]. From then on [`advance`] refuses rather than
+    /// replanning against the view left behind.
+    finished: bool,
 }
 
 impl Answers {
@@ -219,6 +231,11 @@ impl Answers {
 ///
 /// # Errors
 ///
+/// [`FlowError::NotReady`] if this `Answers` already carried an earlier
+/// operation to [`Step::Ready`]. See the type's docs for why reuse is refused
+/// rather than merely discouraged — start the next operation from
+/// [`Answers::new`].
+///
 /// [`FlowError::Stalled`] if the operation is still asking after
 /// [`MAX_ROUNDS`], or if it stopped for want of an answer without recording
 /// what it wanted. Both mean it is not converging; neither is a slow network.
@@ -226,6 +243,17 @@ pub fn advance<T, F>(answers: &mut Answers, operation: F) -> Result<Step<T>, Flo
 where
     F: FnOnce(&RpcClient<Cassette>) -> Result<T, FlowError>,
 {
+    // Checked before the round cap: a finished handle is refused regardless of
+    // how many rounds it has left, and the message should say why rather than
+    // report a coincidental cap.
+    if answers.finished {
+        return Err(FlowError::NotReady(
+            "this Answers already finished one operation; start the next one from \
+             Answers::new — reusing it would plan against the first operation's frozen tip \
+             and UTXO set"
+                .into(),
+        ));
+    }
     if answers.rounds >= MAX_ROUNDS {
         return Err(FlowError::Stalled(format!(
             "still asking for more after {MAX_ROUNDS} rounds"
@@ -264,6 +292,13 @@ where
             return Err(other);
         }
     };
+
+    // Marked here rather than only where the caller stops driving: the field
+    // has to be true the instant `Ready` exists, or a second call slipped in
+    // before the caller notices would still see a live handle.
+    if matches!(step, Step::Ready(_)) {
+        answers.finished = true;
+    }
 
     answers.cassette = cassette;
     Ok(step)
@@ -351,5 +386,47 @@ mod tests {
             Ok(verus_rpc::ChainReader::block_count(client)?)
         });
         assert!(matches!(past_the_cap, Err(FlowError::Stalled(_))));
+    }
+
+    /// The defect this module exists to close: a finished handle must not be
+    /// handed to a second operation.
+    ///
+    /// Without this, a second operation's first round asks exactly the
+    /// questions the first operation already answered — the tip and the UTXO
+    /// set are keyed only by address, not by which payment they fund — so it
+    /// would resolve straight to `Ready` against a view that may be hours
+    /// old, no differently answered than a fresh one.
+    #[test]
+    fn a_second_operation_on_a_finished_handle_is_refused() {
+        let mut answers = Answers::new();
+
+        let step = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("a miss is not a failure");
+        let bodies = match step {
+            Step::Ask(bodies) => bodies,
+            Step::Ready(value) => panic!("nothing was known, yet it answered {value}"),
+        };
+        answers
+            .record(bodies[0].clone(), r#"{"result":1171000}"#)
+            .expect("a small reply");
+
+        let first = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("the answer is known now");
+        assert_eq!(first, Step::Ready(1_171_000));
+
+        // A second, distinct operation against the same handle — the shape a
+        // caller reusing `Answers` across two payments would hit. It must be
+        // refused rather than resolved against the first operation's cache.
+        let second: Result<Step<u32>, FlowError> = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)? + 1)
+        });
+        assert!(
+            matches!(second, Err(FlowError::NotReady(_))),
+            "a finished handle must refuse a second operation: {second:?}"
+        );
     }
 }
