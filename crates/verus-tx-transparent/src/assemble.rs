@@ -155,7 +155,7 @@ pub fn assemble(
             plan.fee_output_count,
             plan.fee_per_kb,
             true,
-        );
+        )?;
         check_fee_ceiling(fee)?;
         if excess < fee {
             return Err(TxError::InsufficientFunds {
@@ -180,7 +180,7 @@ pub fn assemble(
             plan.fee_output_count,
             plan.fee_per_kb,
             true,
-        );
+        )?;
         return Err(TxError::InsufficientFunds {
             required: required.checked_add(fee).ok_or(TxError::ValueOverflow)?,
             available: leading_total,

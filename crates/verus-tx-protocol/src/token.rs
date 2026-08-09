@@ -357,7 +357,7 @@ pub fn build_token_send(
         declared_outputs + 1 + balances.change().len() as u64,
         params.fee_per_kb,
         true,
-    );
+    )?;
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
@@ -379,7 +379,7 @@ pub fn build_token_send(
             declared_outputs + 1 + balances.change().len() as u64,
             params.fee_per_kb,
             true,
-        );
+        )?;
     }
 
     let total_native_in: u64 = selected.iter().map(|d| d.utxo.satoshis.to_sat()).sum();
