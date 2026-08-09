@@ -69,14 +69,16 @@ pub fn private_key_from_seed_phrase(phrase: &str) -> Result<PrivateKey, KeyError
     bytes[31] &= 127;
     bytes[31] |= 64;
 
-    // This is the "iguana" clamp lifted verbatim from the JS wallets, kept
-    // bit-for-bit for cross-wallet compatibility. It is not a range clamp on
-    // this buffer: the buffer is big-endian, so `bytes[0]` is the *most*
-    // significant byte and `&= 248` clears its low three bits, leaving the
-    // magnitude essentially untouched — it does not bound the scalar below
-    // the secp256k1 curve order. `bytes[31] |= 64` does guarantee the value
-    // is non-zero. An out-of-range scalar (probability around 2^-127) is
-    // rejected by `PrivateKey::from_bytes` below rather than silently wrapped.
+    // The clamp guarantees a usable scalar, deterministically: capping the top
+    // byte at 0xF8 (`&= 248`) keeps every clamped buffer below the curve order
+    // n (whose top byte is 0xFF), and flooring the low byte at 0x40 (`|= 64`)
+    // keeps it non-zero. The result always lands in [0x40, 0xF8FF..FF7F] — a
+    // bound that holds for every input, not just almost all of them. That
+    // bound is real but incidental and far weaker than "below 2^253"; it is
+    // not why the clamp is applied here (see the module docs above for that).
+    // Because the range is guaranteed on this path, the `InvalidPrivateKey`
+    // rejection in `PrivateKey::from_bytes` below is unreachable — unlike a
+    // uniform random 32-byte draw, where it guards a real ~2^-127 case.
     PrivateKey::from_bytes(&bytes, true)
 }
 
