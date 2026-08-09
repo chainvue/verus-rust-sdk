@@ -271,11 +271,17 @@ fn authority(record: &verus_rpc::IdentityRecord) -> Result<(Vec<Address>, u32), 
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Required, not defaulted. An honest daemon always reports this, so
+    // `unwrap_or(1)` could only turn a missing, non-numeric or out-of-range
+    // value into a convincing single-signature threshold — silently
+    // downgrading an m-of-n identity to 1-of-n for the one caller who is not
+    // rechecked on-chain afterwards. `send.rs` and `convert.rs` can afford the
+    // default because consensus re-checks the threshold when the transaction
+    // lands; nothing re-checks a login.
     let minimum = record.identity["minimumsignatures"]
         .as_u64()
         .and_then(|n| u32::try_from(n).ok())
-        // Absent means one, which is what a single-signature identity reports.
-        .unwrap_or(1);
+        .ok_or_else(|| FlowError::NotReady("identity has no usable minimumsignatures".into()))?;
 
     if addresses.is_empty() {
         return Err(FlowError::NotReady(
@@ -577,6 +583,34 @@ mod tests {
             &LoginPolicy::default()
         )
         .is_err());
+    }
+
+    /// A reply with `primaryaddresses` intact but `minimumsignatures`
+    /// omitted must not default to 1 — that would downgrade an m-of-n
+    /// identity to 1-of-n for whoever holds a single key. `record()` always
+    /// sets the field, so this builds the identity JSON by hand to model a
+    /// truncated, proxied or malicious reply.
+    #[test]
+    fn a_missing_minimumsignatures_is_refused_not_defaulted() {
+        let address = key().address().to_string();
+        let mut without_minimum = record(&[&address], 1, false);
+        without_minimum.identity = serde_json::json!({
+            "identityaddress": "iPYbC4ExJ7dRBZnpxq2LGXGgkWDQNQR48g",
+            "primaryaddresses": [address],
+        });
+        let node = chain(1_000, without_minimum);
+        let signature = sign_login(&node, &key(), "alice@", &request()).unwrap();
+
+        match verify_login(
+            &node,
+            "alice@",
+            &signature,
+            &request(),
+            &LoginPolicy::default(),
+        ) {
+            Err(FlowError::NotReady(message)) => assert!(message.contains("minimumsignatures")),
+            other => panic!("expected a missing-threshold refusal, got {other:?}"),
+        }
     }
 
     /// A 2-of-2 identity is not satisfied by one of its holders.
