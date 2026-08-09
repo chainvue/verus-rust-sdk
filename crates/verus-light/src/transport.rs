@@ -134,9 +134,19 @@ mod blocking {
                 // not: with no `://` anywhere (`user:pass@host`, no scheme
                 // at all) that yields the *entire* string unchanged, so the
                 // separator's presence is checked explicitly instead.
+                //
+                // Nor is "whatever precedes the first `://`" necessarily a
+                // scheme: `user:SECRET@https://node.example` — the mangled
+                // form of `https://user:SECRET@node.example` — puts a
+                // password before the `://` too, so a bare prefix still
+                // leaks it. A real scheme can never itself contain `:`, `@`
+                // or `/`; `" http"`, `"\thttp"`, `"HTTPS"` and `"http "`
+                // don't, so the check costs nothing on the cases this is
+                // meant to diagnose while refusing to print anything on the
+                // ones it isn't.
                 let scheme = match base.find("://") {
-                    Some(end) => &base[..end],
-                    None => "",
+                    Some(end) if !base[..end].contains([':', '@', '/']) => &base[..end],
+                    _ => "",
                 };
                 return Err(LightError::Refused(format!(
                     "endpoint must start with http:// or https://, got scheme {scheme:?}"

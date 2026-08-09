@@ -140,6 +140,12 @@ fn the_unrecognised_scheme_refusal_does_not_print_the_password() {
         " http://user:s3cr3t-password@localhost/",
         "ftp://user:s3cr3t-password@host/",
         "user:s3cr3t-password@localhost",
+        // The mangled form of `https://user:pass@host` — credentials typed
+        // *before* the scheme instead of after it. Whatever precedes the
+        // first `://` here is not a scheme at all, so taking it verbatim
+        // would leak the password the same way the bare `user:pass@host`
+        // case above does.
+        "user:s3cr3t-password@https://node.example",
     ];
     for case in cases {
         let err = GrpcWebTransport::new(case)
