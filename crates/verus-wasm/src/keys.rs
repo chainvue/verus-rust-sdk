@@ -50,7 +50,7 @@ impl Key {
     #[wasm_bindgen(js_name = fromWif)]
     pub fn from_wif(wif: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: PrivateKey::from_wif(&dto::text("wif", wif.as_ref())?)
+            inner: PrivateKey::from_wif(&dto::secret_text("wif", wif.as_ref())?)
                 .map_err(WasmError::from)?,
         })
     }
@@ -80,8 +80,11 @@ impl Key {
     #[wasm_bindgen(js_name = fromSeedPhrase)]
     pub fn from_seed_phrase(phrase: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: verus_keys::private_key_from_seed_phrase(&dto::text("phrase", phrase.as_ref())?)
-                .map_err(WasmError::from)?,
+            inner: verus_keys::private_key_from_seed_phrase(&dto::secret_text(
+                "phrase",
+                phrase.as_ref(),
+            )?)
+            .map_err(WasmError::from)?,
         })
     }
 
@@ -141,9 +144,14 @@ impl Key {
 
 /// Validate entropy and turn it into a key.
 ///
-/// Separate from the binding so it is testable on the host.
+/// Separate from the binding so it is testable on the host. The 32-byte copy
+/// this makes of the caller's entropy is wrapped in `Zeroizing`, for the same
+/// reason `to_wif` wipes its own intermediate: a plain array left on the
+/// stack is not cleared when the function returns, and wasm's allocator does
+/// not zero freed memory either, so an unwiped copy would otherwise outlive
+/// the call.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
-    let bytes = <[u8; 32]>::try_from(entropy).map_err(|_| {
+    let bytes = zeroize::Zeroizing::new(<[u8; 32]>::try_from(entropy).map_err(|_| {
         WasmError::new(
             "InvalidEntropy",
             format!(
@@ -151,7 +159,7 @@ pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey>
                 entropy.len()
             ),
         )
-    })?;
+    })?);
     PrivateKey::from_bytes(&bytes, true).map_err(WasmError::from)
 }
 

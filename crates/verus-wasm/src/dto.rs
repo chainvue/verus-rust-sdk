@@ -273,6 +273,21 @@ pub fn text(field: &str, value: &JsValue) -> WasmResult<String> {
     })
 }
 
+/// Read a `string` argument that is key material — a WIF or a recovery
+/// phrase — rather than the ordinary [`String`] `text` returns.
+///
+/// An ordinary `String`, dropped, is freed without being zeroed — wasm's
+/// allocator does not zero freed memory — so a secret read this way would sit
+/// in the module's linear memory for the lifetime of the page, the same
+/// hazard [`crate::keys::Key::to_wif`] documents and fixes on the export
+/// path. Wrapping it in [`zeroize::Zeroizing`] wipes it when the caller is
+/// done with it instead. This only reaches the Rust-side copy: the
+/// JavaScript string the caller passed in is the JS engine's own, and
+/// nothing on this side can touch or wipe it.
+pub fn secret_text(field: &str, value: &JsValue) -> WasmResult<zeroize::Zeroizing<String>> {
+    text(field, value).map(zeroize::Zeroizing::new)
+}
+
 /// Read an optional `string` argument: absent, `null` or `undefined` give
 /// `None`, and anything that is not a string is refused.
 pub fn optional_text(field: &str, value: &JsValue) -> WasmResult<Option<String>> {
@@ -555,6 +570,21 @@ mod tests {
     fn satoshis_are_decimal_strings() {
         assert_eq!(sats("100000000").unwrap(), Amount::from_sat(100_000_000));
         assert_eq!(sats("0").unwrap(), Amount::ZERO);
+    }
+
+    /// `secret_text` reads the same values `text` does — the wipe is a
+    /// difference in the *type*, not the behaviour, so there is nothing to
+    /// exercise at runtime beyond what `text`'s own callers already cover
+    /// (and `JsValue` cannot be constructed under `cargo test`'s host target
+    /// in the first place — see the note on `Key`'s test module, which hits
+    /// the same wall). Coercing the function item to this exact `fn` type is
+    /// the assertion: it fails to *compile*, not just to pass, if the return
+    /// type is ever widened back to a plain `String` — which is exactly the
+    /// regression that would silently drop the wipe on the WIF and
+    /// seed-phrase import paths again.
+    #[test]
+    fn secret_text_is_typed_to_return_a_zeroizing_string() {
+        let _: fn(&str, &JsValue) -> WasmResult<zeroize::Zeroizing<String>> = secret_text;
     }
 
     /// The whole point of the string-typed money fields: the ways JavaScript

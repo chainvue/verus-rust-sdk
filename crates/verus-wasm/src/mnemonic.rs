@@ -124,14 +124,26 @@ pub fn validate_mnemonic(phrase: JsText) -> Result<MnemonicCheckValue, WasmError
 /// Whitespace does not affect the result — the words are rehashed joined by
 /// single spaces. BIP-39 runs PBKDF2 over the phrase as *text*, so a pasted
 /// newline would otherwise derive a different, empty wallet.
+///
+/// The seed is copied straight from the `Zeroizing<[u8; 64]>` PBKDF2 fills
+/// into the `Uint8Array` handed back to JavaScript, the same way `toWif`
+/// builds its return value directly from a zeroizing buffer. `.to_vec()`
+/// would have taken the same bytes through a plain, unwiped `Vec<u8>` first —
+/// and that copy is exactly the one wasm-bindgen's glue frees, without
+/// zeroing it, once the `Uint8Array` on the JS side has its own copy. Going
+/// through `js_sys::Uint8Array` instead skips that intermediate; the seed
+/// itself is dropped, and wiped, at the end of this function. What this does
+/// not reach is the `Uint8Array` JavaScript now holds — that copy is the
+/// caller's, same as the WIF `toWif` returns.
 #[wasm_bindgen(js_name = mnemonicToSeed)]
 pub fn mnemonic_to_seed(
     phrase: JsText,
     passphrase: crate::types::JsOptionalText,
-) -> Result<Vec<u8>, WasmError> {
-    let phrase = dto::text("phrase", phrase.as_ref())?;
+) -> Result<js_sys::Uint8Array, WasmError> {
+    let phrase = dto::secret_text("phrase", phrase.as_ref())?;
     let passphrase = dto::optional_text("passphrase", &passphrase)?.unwrap_or_default();
-    Ok(verus_keys::mnemonic_to_seed(&phrase, &passphrase)?.to_vec())
+    let seed = verus_keys::mnemonic_to_seed(&phrase, &passphrase)?;
+    Ok(js_sys::Uint8Array::from(seed.as_slice()))
 }
 
 #[cfg(test)]
@@ -140,6 +152,21 @@ mod tests {
 
     const VALID: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    /// `mnemonic_to_seed` takes `JsText`, which cannot be constructed on the
+    /// host — the round trip itself is asserted in
+    /// `tests/node/differential.mjs`, the same as `Key::to_wif`. What can be
+    /// checked here, and is worth checking, is the signature: coercing the
+    /// function item to this exact `fn` type fails to compile if the return
+    /// type ever regresses from `Uint8Array` back to `Vec<u8>` — which is
+    /// what `.to_vec()` used to produce, by way of an unwiped intermediate
+    /// copy. The wipe is enforced by the type, so this is where the type is
+    /// pinned down.
+    #[test]
+    fn mnemonic_to_seed_is_typed_to_return_a_uint8array() {
+        let _: fn(JsText, crate::types::JsOptionalText) -> Result<js_sys::Uint8Array, WasmError> =
+            mnemonic_to_seed;
+    }
 
     #[test]
     fn a_real_mnemonic_carries_no_reason() {
