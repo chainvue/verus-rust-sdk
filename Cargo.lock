@@ -2451,6 +2451,7 @@ dependencies = [
  "verus-tx",
  "verus-wire",
  "wasm-bindgen",
+ "zeroize",
 ]
 
 [[package]]

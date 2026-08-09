@@ -50,7 +50,7 @@ impl Key {
     #[wasm_bindgen(js_name = fromWif)]
     pub fn from_wif(wif: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: PrivateKey::from_wif(&dto::text("wif", wif.as_ref())?)
+            inner: PrivateKey::from_wif(&dto::secret_text("wif", wif.as_ref())?)
                 .map_err(WasmError::from)?,
         })
     }
@@ -80,8 +80,11 @@ impl Key {
     #[wasm_bindgen(js_name = fromSeedPhrase)]
     pub fn from_seed_phrase(phrase: JsText) -> Result<Key, WasmError> {
         Ok(Key {
-            inner: verus_keys::private_key_from_seed_phrase(&dto::text("phrase", phrase.as_ref())?)
-                .map_err(WasmError::from)?,
+            inner: verus_keys::private_key_from_seed_phrase(&dto::secret_text(
+                "phrase",
+                phrase.as_ref(),
+            )?)
+            .map_err(WasmError::from)?,
         })
     }
 
@@ -141,17 +144,58 @@ impl Key {
 
 /// Validate entropy and turn it into a key.
 ///
-/// Separate from the binding so it is testable on the host.
+/// Separate from the binding so it is testable on the host. The 32-byte copy
+/// this makes of the caller's entropy is wrapped in `Zeroizing`, for the same
+/// reason `to_wif` wipes its own intermediate: a plain array left on the
+/// stack is not cleared when the function returns, and wasm's allocator does
+/// not zero freed memory either, so an unwiped copy would otherwise outlive
+/// the call.
+///
+/// The buffer is allocated pre-zeroed *inside* `Zeroizing` and filled by
+/// `copy_from_slice`, the same order `verus_keys::mnemonic_to_seed` fills its
+/// own `Zeroizing<[u8; 64]>` — rather than building a plain `[u8; 32]` via
+/// `try_from` and wrapping it afterwards, which would (release builds
+/// observed to elide it, but that is the optimizer's call to make, not this
+/// function's) leave a moment where the entropy exists outside `Zeroizing`'s
+/// reach.
+///
+/// What this fix removes, precisely, and no more than that: on `main`, the
+/// `<[u8; 32]>::try_from` stack temporary sat in the caller's own
+/// (big-endian/canonical) byte order and was measured there — one copy,
+/// gone here, wrapping the buffer in `Zeroizing` from the start rather than
+/// after the fact.
+///
+/// What it cannot reach: `k256` stores the scalar as little-endian
+/// `crypto_bigint::U256` limbs on wasm32, and `k256::SigningKey`
+/// construction leaves it there. A canonical-order search — the caller's own
+/// entropy, byte for byte — finds nothing after `fromEntropy` + `free()`, on
+/// `main` or here; a search in limb-reversed order finds seven separate
+/// copies, on `main` and here alike, measured on reproducibly hashed builds.
+/// **Search byte order matters and is easy to get backwards** — the
+/// canonical-order search reports success even though the scalar is present,
+/// reversed, a few bytes away. Common to every path that builds a
+/// `PrivateKey`, not something this function's own fix touches or could
+/// touch; worth its own issue against `verus-keys`.
+///
+/// [`Key::to_wif`] adds one more, in canonical order this time and separate
+/// from the seven above: `to_wif` → `PrivateKey::to_bytes`
+/// (`verus-keys/src/key.rs`) calls `SigningKey::to_bytes()`, which is
+/// `secret_scalar.to_repr()` — a plain `FieldBytes` that nothing zeroizes —
+/// before `verus-keys` copies it into its own `Zeroizing<[u8; 32]>`. That
+/// source copy outlives the call. Reading the key back out through
+/// `address()`, `publicKey()`, or `scriptPubKey()` instead leaves none.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
-    let bytes = <[u8; 32]>::try_from(entropy).map_err(|_| {
-        WasmError::new(
+    if entropy.len() != 32 {
+        return Err(WasmError::new(
             "InvalidEntropy",
             format!(
                 "a private key needs exactly 32 bytes of entropy, got {}",
                 entropy.len()
             ),
-        )
-    })?;
+        ));
+    }
+    let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+    bytes.copy_from_slice(entropy);
     PrivateKey::from_bytes(&bytes, true).map_err(WasmError::from)
 }
 

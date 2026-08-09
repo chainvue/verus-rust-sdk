@@ -17,11 +17,49 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
+
+// The official BIP-39 test vector's phrase — used everywhere a real,
+// checksum-valid mnemonic is needed rather than the free text
+// `fromSeedPhrase` also accepts.
+const PHRASE =
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = process.argv[2] ?? resolve(here, "../../pkg");
-const wasm = await import(resolve(pkg, "verus_wasm.js"));
+
+// The compiled module's own `WebAssembly.Memory` — captured for the "memory
+// hygiene" section below, which scans it directly rather than trusting a
+// returned value. The `nodejs`-target glue instantiates the module itself,
+// keeps the instance in a module-private binding, and never exports
+// `memory`, so the only way to reach the exact buffer real calls run on is
+// to be watching when the glue calls `new WebAssembly.Instance(...)`. This
+// wraps the constructor for the one instantiation that happens when the
+// pkg is imported below, then restores it — nothing else in this process
+// instantiates a wasm module, so there is nothing else to intercept.
+let wasmMemory;
+let instantiations = 0;
+const RealInstance = WebAssembly.Instance;
+WebAssembly.Instance = function (module, imports) {
+  const instance = new RealInstance(module, imports);
+  instantiations += 1;
+  wasmMemory = instance.exports.memory;
+  return instance;
+};
+WebAssembly.Instance.prototype = RealInstance.prototype;
+let wasm;
+try {
+  wasm = await import(resolve(pkg, "verus_wasm.js"));
+} finally {
+  WebAssembly.Instance = RealInstance;
+}
+assert.ok(wasmMemory instanceof WebAssembly.Memory, "captured the module's own memory");
+// A second, uncaptured instantiation would make every scan below silently
+// check the wrong memory instead of failing loudly, so it is worth its own
+// assertion rather than trusting `wasmMemory` being set at all.
+assert.equal(instantiations, 1, "expected exactly one wasm instantiation to intercept");
+
 const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
         planContentHistory, planOffers, planOfferTerms, planCommitmentStatus, parseCoins, formatCoins, satsPerCoin, decodeOutput,
         tokenBalances, verifyMessage, signatureBlockHeight, vdxfKey,
@@ -704,9 +742,6 @@ console.log("\nkey handling");
 
 console.log("\nrecovery phrases");
 {
-  const PHRASE =
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
   const good = validateMnemonic(PHRASE);
   assert.equal(good.valid, true);
   assert.equal(good.words, 12);
@@ -751,6 +786,130 @@ console.log("\nrecovery phrases");
   // Deriving from words that do not check out is refused rather than done.
   assert.throws(() => mnemonicToSeed(PHRASE.replace("about", "abandon"), null), /checksum/i);
   ok("a seed is not derived from a phrase that fails its checksum");
+}
+
+// ---------------------------------------------------------------------------
+// Memory hygiene: a secret read in does not linger once it has been used.
+//
+// `dto::secret_text` and `dto::optional_secret_text` promise this at the type
+// level — a `Zeroizing<String>` wipes on drop. What that promise does not
+// cover is whether a given call site actually routes its argument through
+// one of them rather than through the plain `text`/`optional_text` readers;
+// swapping one back would still compile. This scans the module's own linear
+// memory, on the real compiled artifact, for exactly that.
+//
+// Not every check below can actually fail, and that was checked by reverting
+// each fix in turn and rerunning, not assumed. The WIF and seed-phrase checks
+// pass either way in this build: the allocator reliably reclaims those
+// particular freed chunks — with `secret_text` or without it — before the
+// scan runs, at every fragment offset tried, not only a whole-string search.
+// They stay, marked as smoke checks rather than gates, because they still
+// exercise the real call path end to end. The passphrase check is the one
+// doing the regression-catching this section exists for: reverting its fix
+// alone reliably reproduces the marker.
+// ---------------------------------------------------------------------------
+
+/** Whether `needle` occurs anywhere in `haystack`, as a contiguous byte run. */
+function containsBytes(haystack, needle) {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  outer: for (let i = 0; i <= haystack.length - needle.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A value distinctive enough that finding it in memory means it came from
+ * the call under test, not from coincidence or from an unrelated fixture
+ * elsewhere in this file. Random per call, so a leftover from an earlier
+ * check in this same run cannot be mistaken for a fresh one.
+ */
+function marker(label) {
+  return `zeroize-marker-${label}-${randomBytes(12).toString("hex")}`;
+}
+
+/** Freshly re-read: `WebAssembly.Memory` can grow, which replaces the
+ * underlying `ArrayBuffer` — a `Buffer` view taken before a grow would read
+ * a detached, zero-length buffer instead of the live one. */
+const memorySnapshot = () => Buffer.from(wasmMemory.buffer);
+
+console.log("\nmemory hygiene");
+{
+  // `fromWif` reads the WIF through `secret_text`. The real vector, not a
+  // synthetic marker: it is exactly the string a wallet would import, and a
+  // 51-character base58 string is already far too specific to appear by
+  // coincidence.
+  //
+  // This is a smoke check, not a regression gate: with `secret_text` reverted
+  // back to `text`, this still passes — confirmed by reverting it and
+  // rerunning, not assumed — because `from_wif`'s own base58-decode
+  // allocations reliably reclaim the freed chunk before this scan runs.
+  // Left in because it still exercises the real call path end to end.
+  const wif = vectors.vectors[0].wif;
+  const wifNeedle = Buffer.from(wif, "utf8");
+  const wifKey = Key.fromWif(wif);
+  wifKey.free();
+  assert.equal(
+    containsBytes(memorySnapshot(), wifNeedle),
+    false,
+    "the imported WIF must not survive the call that read it",
+  );
+  ok("an imported WIF does not linger in memory after fromWif returns");
+
+  // `fromSeedPhrase` accepts free text, so a random marker works here as the
+  // "phrase" itself — nothing else in the module has any reason to produce
+  // these bytes.
+  //
+  // Also a smoke check, not a regression gate, in this build: reverting
+  // `secret_text` back to `text` and rerunning — both for the whole marker
+  // and for every fragment of it starting at each of several offsets, in
+  // case a freed chunk's leading bytes get overwritten by allocator
+  // metadata before this scan runs — still found nothing, in every variant
+  // tried. This marker's short length is likely why: it lands in a small
+  // dlmalloc bin that allocations inside `private_key_from_seed_phrase`
+  // reliably reuse before the scan runs, and a markedly longer marker is
+  // reported to land somewhere that doesn't get reused — untried here. The
+  // needle stays a fragment (skipping the marker's first 16 characters)
+  // rather than the whole string on the chance that matters on a build
+  // where the smoke-check property doesn't hold; it made no measured
+  // difference on this one.
+  const phraseMarker = marker("seed-phrase");
+  const phraseNeedle = Buffer.from(phraseMarker.slice(16), "utf8");
+  const phraseKey = Key.fromSeedPhrase(phraseMarker);
+  phraseKey.free();
+  assert.equal(
+    containsBytes(memorySnapshot(), phraseNeedle),
+    false,
+    "an imported seed phrase must not survive the call that read it",
+  );
+  ok("an imported seed phrase does not linger in memory after fromSeedPhrase returns");
+
+  // `fromEntropy` is deliberately not asserted on here — not because it is
+  // clean, but because a check written the way the others above are (the
+  // caller's own byte order, whole value) would report success while the
+  // scalar sits in memory anyway, reversed: `k256` stores it as
+  // little-endian `crypto_bigint` limbs, and a canonical-order search misses
+  // that entirely. A green check that over-promises is worse than no check;
+  // see `private_key_from_entropy`'s doc comment for the actual measurement,
+  // in the order that finds it.
+
+  // The regression this section exists to catch: `passphrase` is folded into
+  // the PBKDF2 salt exactly like `phrase` is, and must be wiped the same way
+  // — not merely happen to be overwritten by an unrelated allocation shortly
+  // after, which is what `.to_vec()` used to arrange for the *seed* by
+  // accident and never arranged for the passphrase at all.
+  const passphraseMarker = marker("passphrase");
+  const passphraseNeedle = Buffer.from(passphraseMarker, "utf8");
+  mnemonicToSeed(PHRASE, passphraseMarker);
+  assert.equal(
+    containsBytes(memorySnapshot(), passphraseNeedle),
+    false,
+    "the passphrase does not survive the call it derives a salt from",
+  );
+  ok("a mnemonicToSeed passphrase does not linger in memory after the call returns");
 }
 
 // ---------------------------------------------------------------------------
@@ -2241,7 +2400,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 96;
+const EXPECTED_CHECKS = 99;
 assert.equal(
   checks,
   EXPECTED_CHECKS,

@@ -113,7 +113,10 @@ pub fn validate_mnemonic(phrase: JsText) -> Result<MnemonicCheckValue, WasmError
 /// `passphrase` is BIP-39's optional 25th word. **Verus wallets do not use
 /// one — pass `""` or `null`.** It is not defaulted away because a wrong
 /// answer here is undetectable: the seed is valid either way, and the wallet
-/// is simply empty.
+/// is simply empty. It is read the same way `phrase` is, and for the same
+/// reason: it is folded into the PBKDF2 salt, so it is key material exactly
+/// as much as the phrase is, and treating it as anything less would leave
+/// this function's own two secret arguments handled inconsistently.
 ///
 /// Throws if the phrase is not a valid mnemonic, rather than deriving a seed
 /// from words that do not check out.
@@ -124,14 +127,34 @@ pub fn validate_mnemonic(phrase: JsText) -> Result<MnemonicCheckValue, WasmError
 /// Whitespace does not affect the result — the words are rehashed joined by
 /// single spaces. BIP-39 runs PBKDF2 over the phrase as *text*, so a pasted
 /// newline would otherwise derive a different, empty wallet.
+///
+/// The seed is copied straight from the `Zeroizing<[u8; 64]>` PBKDF2 fills
+/// into the `Uint8Array` handed back to JavaScript, the same way `toWif`
+/// builds its return value directly from a zeroizing buffer. `.to_vec()`
+/// would have taken the same bytes through a plain, unwiped `Vec<u8>` first —
+/// and that copy is exactly the one wasm-bindgen's glue frees, without
+/// zeroing it, once the `Uint8Array` on the JS side has its own copy. Going
+/// through `js_sys::Uint8Array` instead skips that intermediate; the seed
+/// itself is dropped, and wiped, at the end of this function. What this does
+/// not reach is the `Uint8Array` JavaScript now holds — that copy is the
+/// caller's, same as the WIF `toWif` returns.
+///
+/// This wipes `phrase` and `passphrase` themselves, and the salt
+/// `verus_keys::mnemonic_to_seed` derives from them. It does **not** reach
+/// every copy PBKDF2 makes while it runs: `pbkdf2_hmac` builds its own
+/// internal HMAC key block from the phrase, which RustCrypto does not
+/// zeroize, and that block outlives this call. Pre-existing on `main`, not
+/// introduced here, and out of reach from this crate — noted rather than
+/// implied away.
 #[wasm_bindgen(js_name = mnemonicToSeed)]
 pub fn mnemonic_to_seed(
     phrase: JsText,
     passphrase: crate::types::JsOptionalText,
-) -> Result<Vec<u8>, WasmError> {
-    let phrase = dto::text("phrase", phrase.as_ref())?;
-    let passphrase = dto::optional_text("passphrase", &passphrase)?.unwrap_or_default();
-    Ok(verus_keys::mnemonic_to_seed(&phrase, &passphrase)?.to_vec())
+) -> Result<js_sys::Uint8Array, WasmError> {
+    let phrase = dto::secret_text("phrase", phrase.as_ref())?;
+    let passphrase = dto::optional_secret_text("passphrase", &passphrase)?.unwrap_or_default();
+    let seed = verus_keys::mnemonic_to_seed(&phrase, &passphrase)?;
+    Ok(js_sys::Uint8Array::from(seed.as_slice()))
 }
 
 #[cfg(test)]
@@ -140,6 +163,29 @@ mod tests {
 
     const VALID: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    /// `mnemonic_to_seed` takes `JsText`, which cannot be constructed on the
+    /// host — the round trip itself is asserted in
+    /// `tests/node/differential.mjs`, the same as `Key::to_wif`. What can be
+    /// checked here, and is worth checking, is the signature: coercing the
+    /// function item to this exact `fn` type fails to compile if the return
+    /// type ever regresses from `Uint8Array` back to `Vec<u8>` — which is
+    /// what `.to_vec()` used to produce, by way of an unwiped intermediate
+    /// copy.
+    ///
+    /// This is narrower than it may sound: it pins the *return type*, not
+    /// that the body still routes `phrase` and `passphrase` through
+    /// `dto::secret_text` / `dto::optional_secret_text` rather than `text` /
+    /// `optional_text` — swapping either back would still compile. The
+    /// memory-scan check in `tests/node/differential.mjs`
+    /// (`the passphrase does not survive the call it derives a salt from`)
+    /// is what actually exercises that the passphrase gets wiped, on a real
+    /// compiled module.
+    #[test]
+    fn mnemonic_to_seed_is_typed_to_return_a_uint8array() {
+        let _: fn(JsText, crate::types::JsOptionalText) -> Result<js_sys::Uint8Array, WasmError> =
+            mnemonic_to_seed;
+    }
 
     #[test]
     fn a_real_mnemonic_carries_no_reason() {

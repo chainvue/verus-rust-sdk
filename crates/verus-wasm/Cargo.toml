@@ -35,6 +35,12 @@ crate-type = ["cdylib", "rlib"]
 hex = { workspace = true }
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
+# Already load-bearing two layers down, in `verus-keys` — the WIF and seed
+# handling this crate wraps depend on it there. Adding it here is not a new
+# entry in the dependency tree, only a direct one: `dto::secret_text` and the
+# entropy/seed copies in `keys.rs` and `mnemonic.rs` need `Zeroizing` in this
+# crate's own code, not just in the crate underneath it.
+zeroize = { workspace = true }
 # A daemon that recognises a VDXF key returns the value already decoded, as
 # JSON. Passing that through to the page needs a `Value`; re-encoding it here
 # would mean implementing the VDXF type system. Already in the tree via
