@@ -2420,6 +2420,33 @@ console.log("\nflows, driven with no network");
     ok("a reply over the real ceiling is refused with its true byte count");
   }
 
+  // -- the wasm ceiling is exactly 8,388,608 bytes, matching native
+  // `drive.rs`'s `reply.len() > MAX_REPLY_BYTES` at the same boundary -------
+  //
+  // The whole argument for measuring exactly rests on this parity, so it is
+  // pinned directly rather than only checked by inspection. The accepted
+  // byte lands in the ambiguous band (`units * 3` exceeds the ceiling,
+  // `units` alone does not), so accepting it is the one place the
+  // differential suite exercises the `TextEncoder`-measured path rather than
+  // either fast bound; the refused byte is one more unit, still refused by
+  // the cheap lower bound alone.
+  {
+    const atTheCeiling = "a".repeat(8_388_608);
+    const c = new Answers();
+    c.record("body", atTheCeiling);
+    c.free();
+    ok("a reply of exactly 8,388,608 bytes is accepted");
+
+    const oneOverTheCeiling = "a".repeat(8_388_609);
+    const d = new Answers();
+    assert.throws(
+      () => d.record("body", oneOverTheCeiling),
+      (e) => e.name === "ReplyTooLarge",
+    );
+    d.free();
+    ok("a reply of 8,388,609 bytes — one over — is refused");
+  }
+
   // -- the request sanitizer applies here too ------------------------------
   {
     const spare = new Answers();
@@ -2441,7 +2468,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 101;
+const EXPECTED_CHECKS = 103;
 assert.equal(
   checks,
   EXPECTED_CHECKS,
