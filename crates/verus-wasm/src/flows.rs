@@ -176,9 +176,9 @@ impl Answers {
         // against — and linear memory never shrinks, so every refused reply
         // left the module permanently larger.
         //
-        // A JavaScript string is UTF-16, and UTF-8 is at most three bytes per
-        // unit, so `length * 3` bounds the allocation from above without
-        // touching the string.
+        // See `reject_oversized_reply` for how the size is measured without
+        // touching linear memory, and without the three-times-too-generous
+        // bound an earlier version used.
         reject_oversized_reply(reply.as_ref())?;
         let body = dto::text("body", body.as_ref())?;
         let reply = dto::text("reply", reply.as_ref())?;
@@ -200,27 +200,72 @@ impl Answers {
     }
 }
 
+// Bound directly rather than through `web-sys`, whose generated `encode()`
+// takes a Rust `&str` — which would force the very conversion this exists to
+// avoid making before the size is known to be safe. Taking the `JsString` we
+// already hold instead means the reply is never touched on the Rust side
+// until it is known to fit.
+#[wasm_bindgen]
+extern "C" {
+    type TextEncoder;
+
+    #[wasm_bindgen(constructor)]
+    fn new() -> TextEncoder;
+
+    #[wasm_bindgen(method)]
+    fn encode(this: &TextEncoder, input: &js_sys::JsString) -> js_sys::Uint8Array;
+}
+
 /// Refuse a reply too large to copy, without copying it.
 ///
 /// Returns `Ok` for anything that is not a string: `dto::text` reports that
 /// better, and this is only about size.
+///
+/// # Why this measures exactly, not `units * 3`
+///
+/// An earlier version bounded the reply by its UTF-16 length times three —
+/// the worst-case UTF-8 expansion. JSON-RPC replies are overwhelmingly ASCII,
+/// where the true ratio is one, so that bound made the effective wasm ceiling
+/// roughly a third of the native one, and told a caller whose reply was
+/// refused a byte count up to 3x too high (verus-rust-sdk#146).
+///
+/// `TextEncoder::encode` gives the exact count instead, and does so without
+/// giving up the property the worst-case bound existed to protect: the
+/// `Uint8Array` it returns is a handle onto a buffer the JS engine keeps on
+/// its own heap, so reading its `.length()` costs one property read, and no
+/// byte of the reply crosses into this module's linear memory before the
+/// size is known to be safe. Copying into linear memory is still exactly
+/// what `dto::text` does afterwards, for a reply this function has already
+/// let through.
 fn reject_oversized_reply(reply: &JsValue) -> WasmResult<()> {
-    let Some(units) = reply
-        .dyn_ref::<js_sys::JsString>()
-        .map(js_sys::JsString::length)
-    else {
+    let Some(string) = reply.dyn_ref::<js_sys::JsString>() else {
         return Ok(());
     };
-    // Three UTF-8 bytes per UTF-16 unit is the worst case, and `u64` cannot
-    // overflow from a `u32` times three.
-    let upper_bound = u64::from(units) * 3;
-    if upper_bound > verus_flows::drive::MAX_REPLY_BYTES as u64 {
+    let ceiling = verus_flows::drive::MAX_REPLY_BYTES as u64;
+
+    // Every UTF-16 code unit is at least one UTF-8 byte, so the unit count
+    // alone is a true lower bound on the encoded size. When that already
+    // clears the ceiling, the reply is provably oversized without spending
+    // an encode — load-bearing for a hostile multi-hundred-megabyte reply,
+    // which this rejects without the JS engine ever encoding it.
+    let units = u64::from(js_sys::JsString::length(string));
+    if units > ceiling {
         return Err(WasmError::new(
             "ReplyTooLarge",
             format!(
-                "a reply of up to {upper_bound} bytes exceeds the {}-byte ceiling; it is \
-                 refused before being copied into the module",
-                verus_flows::drive::MAX_REPLY_BYTES
+                "a reply of at least {units} bytes exceeds the {ceiling}-byte ceiling; it is \
+                 refused before being copied into the module"
+            ),
+        ));
+    }
+
+    let exact = u64::from(TextEncoder::new().encode(string).length());
+    if exact > ceiling {
+        return Err(WasmError::new(
+            "ReplyTooLarge",
+            format!(
+                "a reply of {exact} bytes exceeds the {ceiling}-byte ceiling; it is refused \
+                 before being copied into the module"
             ),
         ));
     }

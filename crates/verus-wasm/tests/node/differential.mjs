@@ -2379,6 +2379,47 @@ console.log("\nflows, driven with no network");
     ok("an oversized reply is refused by name, and the module survives it");
   }
 
+  // -- the wasm reply ceiling matches the native one for ASCII, and the
+  // refusal states the real size (verus-rust-sdk#146) -----------------------
+  //
+  // An earlier version bounded the reply by UTF-16 length * 3 — the
+  // worst-case UTF-8 expansion — so an all-ASCII reply of a bit over 2.66 MB
+  // was refused even though it copies to well under the real 8 MB ceiling
+  // (`verus_flows::drive::MAX_REPLY_BYTES`, not exported to the binding),
+  // and the message it gave named a byte count up to 3x too high.
+  {
+    // 3,000,000 ASCII bytes: the old `units * 3` bound (9,000,000) would have
+    // refused this, but the true UTF-8 size is under the real ceiling.
+    const underTheRealCeiling = "a".repeat(3_000_000);
+    const a = new Answers();
+    a.record("body", underTheRealCeiling);
+    a.free();
+    ok("an ASCII reply the old worst-case bound would have refused is accepted");
+
+    // 9,000,000 ASCII bytes: over the real ceiling, so still refused — and
+    // the message must give the true count, not an inflated one.
+    const overTheRealCeiling = "a".repeat(9_000_000);
+    const b = new Answers();
+    let message = "";
+    assert.throws(
+      () => b.record("body", overTheRealCeiling),
+      (e) => {
+        message = e.message;
+        return e.name === "ReplyTooLarge";
+      },
+    );
+    b.free();
+    assert.ok(
+      message.includes(`${9_000_000}`),
+      `expected the exact byte count in the message, got: ${message}`,
+    );
+    assert.ok(
+      !message.includes("up to"),
+      `the message must state the real size, not an upper bound: ${message}`,
+    );
+    ok("a reply over the real ceiling is refused with its true byte count");
+  }
+
   // -- the request sanitizer applies here too ------------------------------
   {
     const spare = new Answers();
@@ -2400,7 +2441,7 @@ console.log("\nflows, driven with no network");
 // Asserted, not just printed. A block that stopped running would otherwise
 // only lower a number nobody reads — which is exactly how a silently skipped
 // test survived in this file before.
-const EXPECTED_CHECKS = 99;
+const EXPECTED_CHECKS = 101;
 assert.equal(
   checks,
   EXPECTED_CHECKS,
