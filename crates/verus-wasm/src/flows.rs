@@ -166,6 +166,10 @@ impl Answers {
     /// node's response text, verbatim — including an error envelope, which is a
     /// real answer to some questions: a flow asking whether a name is taken
     /// needs the daemon's `-5` in order to conclude that it is not.
+    ///
+    /// `reply` is refused with a `ReplyTooLarge` error, before any of it is
+    /// copied into this module, once its exact UTF-8 size passes 8 MiB — the
+    /// same ceiling a native caller's `HttpTransport` applies.
     pub fn record(&mut self, body: JsText, reply: JsText) -> WasmResult<()> {
         // **Measured before it is copied.** `dto::text` allocates the whole
         // string into linear memory, and the ceiling exists precisely because
@@ -176,9 +180,9 @@ impl Answers {
         // against — and linear memory never shrinks, so every refused reply
         // left the module permanently larger.
         //
-        // A JavaScript string is UTF-16, and UTF-8 is at most three bytes per
-        // unit, so `length * 3` bounds the allocation from above without
-        // touching the string.
+        // See `reject_oversized_reply` for how the size is measured without
+        // touching linear memory, and without the three-times-too-generous
+        // bound an earlier version used.
         reject_oversized_reply(reply.as_ref())?;
         let body = dto::text("body", body.as_ref())?;
         let reply = dto::text("reply", reply.as_ref())?;
@@ -200,27 +204,120 @@ impl Answers {
     }
 }
 
-/// Refuse a reply too large to copy, without copying it.
+// Bound directly rather than through `web-sys`: its generated bindings are
+// `encode(this) -> Vec<u8>` and `encode_with_input(this, &str) -> Vec<u8>`.
+// Either would force converting `reply` to an owned Rust `&str` first *and*
+// copy the whole encoding into this module's linear memory to produce that
+// `Vec` — strictly worse than the `units * 3` bound this replaces, not
+// merely equivalent to it. Binding `encode()` by hand, taking the
+// `JsString` already held and returning `js_sys::Uint8Array`, keeps the
+// encoded bytes on the JS side as a handle: see `reject_oversized_reply` for
+// exactly what that handle does and does not cost.
+//
+// Not `#[wasm_bindgen(catch)]`: `new TextEncoder()` cannot fail, and
+// wasm-bindgen's own glue already constructs one unconditionally at module
+// load (`const cachedTextEncoder = new TextEncoder();`, used to decode
+// strings coming out of linear memory), so a module that has finished
+// instantiating already has one — this binding cannot be the first thing to
+// discover the API is missing. Worth spelling out rather than leaving to be
+// derived: if `encode()` could throw, the exception would unwind through
+// `Answers::record` while its `WasmRefCell` borrow was still held, and every
+// later call on that same `Answers` would panic with "recursive use of an
+// object detected" instead of returning a catchable `ReplyTooLarge`.
+#[wasm_bindgen]
+extern "C" {
+    type TextEncoder;
+
+    #[wasm_bindgen(constructor)]
+    fn new() -> TextEncoder;
+
+    #[wasm_bindgen(method)]
+    fn encode(this: &TextEncoder, input: &js_sys::JsString) -> js_sys::Uint8Array;
+}
+
+std::thread_local! {
+    // One encoder for the module's lifetime rather than one per call:
+    // `TextEncoder` holds no state beyond "always UTF-8", so a fresh
+    // instance buys nothing a shared one doesn't.
+    static TEXT_ENCODER: TextEncoder = TextEncoder::new();
+}
+
+/// Refuse a reply too large to copy, without copying it into *this module's*
+/// linear memory.
 ///
 /// Returns `Ok` for anything that is not a string: `dto::text` reports that
 /// better, and this is only about size.
+///
+/// # Why this measures exactly, not just `units * 3`
+///
+/// An earlier version bounded the reply by its UTF-16 length times three —
+/// the worst-case UTF-8 expansion — and refused on that alone. JSON-RPC
+/// replies are overwhelmingly ASCII, where the true ratio is one, so that
+/// bound made the effective wasm ceiling roughly a third of the native one,
+/// and told a caller whose reply was refused a byte count up to 3x too high
+/// (verus-rust-sdk#146).
+///
+/// # What `TextEncoder::encode` actually costs
+///
+/// It gives the exact count, but asking is not free: `encode()` allocates a
+/// **fresh, full copy of the entire encoding** on the JS engine's own
+/// heap — there is no partial or lazy form. For a reply right at the unit
+/// ceiling that is `8_388_608 * 3 = 25_165_824` bytes (24 MiB) of throwaway
+/// `Uint8Array`, on top of the ~16 MiB UTF-16 string already held, per call —
+/// and [`Answers::record`] is documented to be called from
+/// `Promise.all(step.ask.map(...))`, i.e. potentially several of these at
+/// once. That allocation is transient and collectable, which is what keeps
+/// it a different problem from the one `record`'s own comment names: a
+/// linear-memory copy that never shrinks and can abort the instance
+/// outright. A JS-heap allocation that becomes garbage the moment this
+/// function returns cannot do that — but it is a real allocation, not a
+/// free read, so the `units * 3 <= ceiling` fast accept below exists
+/// specifically to keep it off the overwhelming majority of replies, which
+/// fit comfortably inside even the worst-case bound.
+///
+/// Only a reply whose UTF-16 length lands in the band the old bound got
+/// wrong — over the real ceiling under the worst case, not provably over it
+/// either — reaches `TextEncoder` at all. For the 8 MiB ceiling that band is
+/// roughly 2.66 MB to 8 MiB of UTF-16 length, not every reply.
 fn reject_oversized_reply(reply: &JsValue) -> WasmResult<()> {
-    let Some(units) = reply
-        .dyn_ref::<js_sys::JsString>()
-        .map(js_sys::JsString::length)
-    else {
+    let Some(string) = reply.dyn_ref::<js_sys::JsString>() else {
         return Ok(());
     };
-    // Three UTF-8 bytes per UTF-16 unit is the worst case, and `u64` cannot
-    // overflow from a `u32` times three.
-    let upper_bound = u64::from(units) * 3;
-    if upper_bound > verus_flows::drive::MAX_REPLY_BYTES as u64 {
+    let ceiling = verus_flows::drive::MAX_REPLY_BYTES as u64;
+    let units = u64::from(js_sys::JsString::length(string));
+
+    // Three UTF-8 bytes per UTF-16 unit is the worst case, so this alone
+    // proves the reply fits — the bound this function replaces, kept as a
+    // fast accept so a routine reply is never handed to `TextEncoder`.
+    if units * 3 <= ceiling {
+        return Ok(());
+    }
+
+    // Every UTF-16 code unit is at least one UTF-8 byte, so the unit count
+    // is also a true lower bound on the encoded size. When that already
+    // clears the ceiling, the reply is provably oversized without spending
+    // an encode — load-bearing for a hostile multi-hundred-megabyte reply,
+    // which this rejects without the JS engine ever encoding it.
+    if units > ceiling {
         return Err(WasmError::new(
             "ReplyTooLarge",
             format!(
-                "a reply of up to {upper_bound} bytes exceeds the {}-byte ceiling; it is \
-                 refused before being copied into the module",
-                verus_flows::drive::MAX_REPLY_BYTES
+                "a reply of at least {units} bytes exceeds the {ceiling}-byte ceiling; it is \
+                 refused before being copied into the module"
+            ),
+        ));
+    }
+
+    // Only the ambiguous band reaches here: worst case over the ceiling,
+    // best case under it. See "What `TextEncoder::encode` actually costs"
+    // above for what this allocates.
+    let exact = TEXT_ENCODER.with(|encoder| u64::from(encoder.encode(string).length()));
+    if exact > ceiling {
+        return Err(WasmError::new(
+            "ReplyTooLarge",
+            format!(
+                "a reply of {exact} bytes exceeds the {ceiling}-byte ceiling; it is refused \
+                 before being copied into the module"
             ),
         ));
     }
