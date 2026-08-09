@@ -288,6 +288,23 @@ pub fn secret_text(field: &str, value: &JsValue) -> WasmResult<zeroize::Zeroizin
     text(field, value).map(zeroize::Zeroizing::new)
 }
 
+/// The same, for an optional secret — [`mnemonic_to_seed`](crate::mnemonic::mnemonic_to_seed)'s
+/// `passphrase`, BIP-39's optional 25th word.
+///
+/// A wrong argument here is easy to miss precisely because it is quiet — the
+/// seed is valid either way, and the wallet is simply empty — which is exactly
+/// why the passphrase itself must not be treated as less sensitive than the
+/// phrase it is combined with. `verus_keys::mnemonic_to_seed` already wraps
+/// the salt it derives from this value in `Zeroizing`; leaving the raw
+/// argument as a plain `String` on this side of that call would be the same
+/// asymmetry [`secret_text`] exists to close, one layer up.
+pub fn optional_secret_text(
+    field: &str,
+    value: &JsValue,
+) -> WasmResult<Option<zeroize::Zeroizing<String>>> {
+    optional_text(field, value).map(|text| text.map(zeroize::Zeroizing::new))
+}
+
 /// Read an optional `string` argument: absent, `null` or `undefined` give
 /// `None`, and anything that is not a string is refused.
 pub fn optional_text(field: &str, value: &JsValue) -> WasmResult<Option<String>> {
@@ -582,9 +599,24 @@ mod tests {
     /// type is ever widened back to a plain `String` — which is exactly the
     /// regression that would silently drop the wipe on the WIF and
     /// seed-phrase import paths again.
+    ///
+    /// This pins `secret_text`'s own signature, not that `from_wif` or
+    /// `from_seed_phrase` still call it rather than `text` — a call-site
+    /// swap back would still compile. `tests/node/differential.mjs` scans
+    /// real linear memory after those calls, which is where that part is
+    /// actually checked.
     #[test]
     fn secret_text_is_typed_to_return_a_zeroizing_string() {
         let _: fn(&str, &JsValue) -> WasmResult<zeroize::Zeroizing<String>> = secret_text;
+    }
+
+    /// Same reasoning as `secret_text_is_typed_to_return_a_zeroizing_string`,
+    /// for the passphrase reader: it must return `Option<Zeroizing<String>>`,
+    /// not `Option<String>`.
+    #[test]
+    fn optional_secret_text_is_typed_to_return_a_zeroizing_string() {
+        let _: fn(&str, &JsValue) -> WasmResult<Option<zeroize::Zeroizing<String>>> =
+            optional_secret_text;
     }
 
     /// The whole point of the string-typed money fields: the ways JavaScript

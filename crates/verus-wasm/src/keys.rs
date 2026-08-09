@@ -150,16 +150,35 @@ impl Key {
 /// stack is not cleared when the function returns, and wasm's allocator does
 /// not zero freed memory either, so an unwiped copy would otherwise outlive
 /// the call.
+///
+/// The buffer is allocated pre-zeroed *inside* `Zeroizing` and filled by
+/// `copy_from_slice`, the same order `verus_keys::mnemonic_to_seed` fills its
+/// own `Zeroizing<[u8; 64]>` — rather than building a plain `[u8; 32]` via
+/// `try_from` and wrapping it afterwards, which would (release builds
+/// observed to elide it, but that is the optimizer's call to make, not this
+/// function's) leave a moment where the entropy exists outside `Zeroizing`'s
+/// reach.
+///
+/// What this does **not** reach: `PrivateKey::from_bytes` below hands the
+/// scalar to `k256::SigningKey::from_slice`, and a raw copy of it has been
+/// observed to remain readable in linear memory afterward regardless — the
+/// same is true importing the identical scalar through [`Key::from_wif`], so
+/// this is a construction-time cost inside `verus-keys`/`k256`, common to
+/// every path that builds a `PrivateKey`, not something particular to this
+/// function or introduced by it. Pre-existing on `main`, out of scope here,
+/// and worth its own issue against `verus-keys`.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
-    let bytes = zeroize::Zeroizing::new(<[u8; 32]>::try_from(entropy).map_err(|_| {
-        WasmError::new(
+    if entropy.len() != 32 {
+        return Err(WasmError::new(
             "InvalidEntropy",
             format!(
                 "a private key needs exactly 32 bytes of entropy, got {}",
                 entropy.len()
             ),
-        )
-    })?);
+        ));
+    }
+    let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+    bytes.copy_from_slice(entropy);
     PrivateKey::from_bytes(&bytes, true).map_err(WasmError::from)
 }
 
