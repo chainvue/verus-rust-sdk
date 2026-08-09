@@ -17,7 +17,7 @@
 //! carrying the txid and the signed bytes. Resolving it takes one read:
 //!
 //! ```no_run
-//! # use verus_flows::FlowError;
+//! # use verus_flows::{broadcast, FlowError};
 //! # use verus_rpc::{ChainReader, Broadcaster};
 //! # fn example(reader: &impl ChainReader, broadcaster: &impl Broadcaster, e: FlowError)
 //! #     -> Result<(), Box<dyn std::error::Error>> {
@@ -25,8 +25,11 @@
 //!     match reader.confirmations(&txid)? {
 //!         // The node has it. Nothing to do.
 //!         Some(_) => {}
-//!         // It never arrived. Sending the same bytes again is safe.
-//!         None => { broadcaster.send_raw_transaction(&hex)?; }
+//!         // It never arrived. Sending the same bytes again is safe — through
+//!         // `broadcast`, not the raw trait method, so a `-27` on this second
+//!         // attempt (mined between the check and the resend) is still
+//!         // reported as success rather than as a fresh rejection.
+//!         None => { broadcast(broadcaster, &hex, &txid)?; }
 //!     }
 //! }
 //! # Ok(()) }
@@ -143,7 +146,9 @@ pub fn broadcast(
         // `local_txid` is the id the node would report for a fresh accept of
         // the same hex, so this is the same success a caller gets for any
         // other broadcast rather than a distinct outcome it would have to
-        // learn to handle.
+        // learn to handle. The mismatch check the `Ok` arm does above does
+        // not apply here: a `-27` error carries no txid of its own to compare
+        // against, only the daemon's message.
         Err(RpcError::Node { code: -27, .. }) => Ok(local_txid.to_string()),
         // `-25` is a generic verify failure that, unlike `-26`, does not say
         // the transaction was refused — only that something about it did not

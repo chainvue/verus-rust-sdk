@@ -9,7 +9,7 @@
 //! `BroadcastUncertain` arm below does.
 
 use verus_sdk::money::Amount;
-use verus_sdk::network::{send, Broadcaster, ChainReader, FlowError, HttpTransport, RpcClient};
+use verus_sdk::network::{broadcast, send, ChainReader, FlowError, HttpTransport, RpcClient};
 use verus_sdk::verus_keys::PrivateKey;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,8 +35,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(Some(_)) => println!("it arrived after all: {txid}"),
                 Ok(None) => {
                     // Known absent: rebroadcasting the SAME bytes is safe.
+                    // Through `broadcast`, not the raw trait method, so a
+                    // `-27` here (mined between the check and this call) is
+                    // still reported as success rather than a rejection.
                     println!("not found; rebroadcasting the same bytes");
-                    let txid = node.send_raw_transaction(&hex)?;
+                    let txid = broadcast(&node, &hex, &txid)?;
                     println!("sent: {txid}");
                 }
                 Err(e) => {

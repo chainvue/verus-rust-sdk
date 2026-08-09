@@ -85,8 +85,11 @@ pub enum FlowError {
     ///
     /// A transport failure on `sendrawtransaction` is **ambiguous**: the node
     /// may have accepted and relayed the transaction before the connection
-    /// broke. Resending blindly risks a second broadcast of something already
-    /// propagating, so this hands back everything needed to find out and decide.
+    /// broke. The node *answering* with `-25` (a generic verify failure that,
+    /// unlike `-26`, does not say the transaction was refused) is treated the
+    /// same way. Resending blindly risks a second broadcast of something
+    /// already propagating, so this hands back everything needed to find out
+    /// and decide.
     ///
     /// Re-read with [`verus_rpc::ChainReader::confirmations`]. If the node has
     /// never seen it, broadcasting `hex` again is safe.
