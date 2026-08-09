@@ -119,24 +119,42 @@ pub fn check_burn_ceiling(burn: u64) -> Result<(), TxError> {
 /// input and cannot overflow on the way, and the differential vectors would
 /// catch it if that were ever untrue. The floor is applied with a **strict** `>`
 /// exactly as the TypeScript does, so the two cannot drift.
+///
+/// Every internal caller passes [`DEFAULT_FEE_PER_KB`], and the wasm boundary
+/// caps `fee_per_kb` before it ever reaches here — but this is a public
+/// function, and a direct Rust caller can hand it anything, including a value
+/// chosen to make `size * fee_per_kb` wrap a `u64`. A wrap in release mode
+/// would not panic; it would silently produce whatever the truncated bits
+/// happen to be, which can land below [`MIN_FEE`] and turn an absurd request
+/// into the *minimum* fee. So the size sum and the size/rate product are both
+/// checked, and an overflow is reported as [`TxError::ValueOverflow`] instead
+/// of being allowed to wrap.
 pub fn estimate_fee(
     num_inputs: u64,
     num_outputs: u64,
     fee_per_kb: u64,
     has_smart_outputs: bool,
-) -> u64 {
+) -> Result<u64, TxError> {
     let output_size = if has_smart_outputs {
         SMART_OUTPUT_SIZE
     } else {
         P2PKH_OUTPUT_SIZE
     };
-    let tx_size = TX_OVERHEAD + num_inputs * INPUT_SIZE + num_outputs * output_size;
-    let fee = (tx_size * fee_per_kb).div_ceil(1000);
-    if fee > MIN_FEE {
-        fee
-    } else {
-        MIN_FEE
-    }
+    let inputs_size = num_inputs
+        .checked_mul(INPUT_SIZE)
+        .ok_or(TxError::ValueOverflow)?;
+    let outputs_size = num_outputs
+        .checked_mul(output_size)
+        .ok_or(TxError::ValueOverflow)?;
+    let tx_size = TX_OVERHEAD
+        .checked_add(inputs_size)
+        .and_then(|size| size.checked_add(outputs_size))
+        .ok_or(TxError::ValueOverflow)?;
+    let fee = tx_size
+        .checked_mul(fee_per_kb)
+        .ok_or(TxError::ValueOverflow)?
+        .div_ceil(1000);
+    Ok(if fee > MIN_FEE { fee } else { MIN_FEE })
 }
 
 /// The outcome of coin selection.
@@ -192,7 +210,7 @@ pub fn select_utxos(
     // Signed: the remainder goes negative once enough value is selected, and the
     // loop condition depends on that.
     let mut remaining_native = i128::from(required_native);
-    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, has_smart_outputs);
+    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, has_smart_outputs)?;
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
@@ -209,7 +227,7 @@ pub fn select_utxos(
             num_outputs + 1,
             fee_per_kb,
             has_smart_outputs,
-        );
+        )?;
     }
 
     let total_in: u64 = selected.iter().map(|u| u.satoshis.to_sat()).sum();
@@ -258,7 +276,10 @@ mod tests {
         // 1 input, 1 declared output (+1 for change) = 308 bytes → 3_080 sats,
         // which is below the floor, so the fee is MIN_FEE. This is the value in
         // the TypeScript SDK's golden snapshot.
-        assert_eq!(estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false), 10_000);
+        assert_eq!(
+            estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false).unwrap(),
+            10_000
+        );
     }
 
     #[test]
@@ -266,16 +287,34 @@ mod tests {
         // The token differential vector: 2 inputs, 1 declared output + native
         // change + token change = 3, all sized as smart outputs.
         // 60 + 2*180 + 3*200 = 1020 bytes -> 10_200 satoshis.
-        assert_eq!(estimate_fee(2, 3, DEFAULT_FEE_PER_KB, true), 10_200);
+        assert_eq!(
+            estimate_fee(2, 3, DEFAULT_FEE_PER_KB, true).unwrap(),
+            10_200
+        );
     }
 
     #[test]
     fn the_fee_floor_is_a_floor_not_a_default() {
         // A transaction large enough to exceed the floor must pay by size.
-        let fee = estimate_fee(20, 20, DEFAULT_FEE_PER_KB, false);
+        let fee = estimate_fee(20, 20, DEFAULT_FEE_PER_KB, false).unwrap();
         let size = TX_OVERHEAD + 20 * INPUT_SIZE + 20 * P2PKH_OUTPUT_SIZE;
         assert_eq!(fee, (size * DEFAULT_FEE_PER_KB).div_ceil(1000));
         assert!(fee > MIN_FEE);
+    }
+
+    #[test]
+    fn absurd_fee_per_kb_is_refused_rather_than_wrapped() {
+        // Chosen so that the old unchecked `tx_size * fee_per_kb` (tx_size is
+        // 308 for this shape) wraps a u64 down to 292 — which, after
+        // `div_ceil(1000)`, is 1: far below MIN_FEE. The old code took the
+        // `if fee > MIN_FEE` branch's `else` and quietly returned MIN_FEE for
+        // a rate that should have produced an astronomical fee. The checked
+        // arithmetic must refuse this instead of computing a wrong answer.
+        let wrapping_fee_per_kb = 59_892_026_213_342_701;
+        assert!(matches!(
+            estimate_fee(1, 2, wrapping_fee_per_kb, false),
+            Err(TxError::ValueOverflow)
+        ));
     }
 
     #[test]
@@ -310,7 +349,7 @@ mod tests {
     fn dust_change_becomes_fee_rather_than_an_output() {
         // Leave exactly DUST_THRESHOLD over: strictly-greater means it folds.
         let required = 1_000_000;
-        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
+        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false).unwrap();
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD)];
         let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.change, 0);
@@ -320,7 +359,7 @@ mod tests {
     #[test]
     fn one_satoshi_above_dust_is_kept_as_change() {
         let required = 1_000_000;
-        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false);
+        let fee = estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false).unwrap();
         let utxos = [utxo(1, required + fee + DUST_THRESHOLD + 1)];
         let selection = select_utxos(&utxos, required, 1, DEFAULT_FEE_PER_KB, false).unwrap();
         assert_eq!(selection.change, DUST_THRESHOLD + 1);
@@ -343,7 +382,8 @@ mod tests {
                 if let Ok(selection) = selection {
                     assert!(
                         selection.fee
-                            <= estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false) + DUST_THRESHOLD,
+                            <= estimate_fee(1, 2, DEFAULT_FEE_PER_KB, false).unwrap()
+                                + DUST_THRESHOLD,
                         "fee {} exceeded size estimate plus dust for a {utxo_value} input",
                         selection.fee
                     );
