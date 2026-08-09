@@ -39,9 +39,11 @@ const pkg = process.argv[2] ?? resolve(here, "../../pkg");
 // pkg is imported below, then restores it — nothing else in this process
 // instantiates a wasm module, so there is nothing else to intercept.
 let wasmMemory;
+let instantiations = 0;
 const RealInstance = WebAssembly.Instance;
 WebAssembly.Instance = function (module, imports) {
   const instance = new RealInstance(module, imports);
+  instantiations += 1;
   wasmMemory = instance.exports.memory;
   return instance;
 };
@@ -53,6 +55,10 @@ try {
   WebAssembly.Instance = RealInstance;
 }
 assert.ok(wasmMemory instanceof WebAssembly.Memory, "captured the module's own memory");
+// A second, uncaptured instantiation would make every scan below silently
+// check the wrong memory instead of failing loudly, so it is worth its own
+// assertion rather than trusting `wasmMemory` being set at all.
+assert.equal(instantiations, 1, "expected exactly one wasm instantiation to intercept");
 
 const { Key, Answers, planHistory, planVerifyLogin, planSpendable, planContent,
         planContentHistory, planOffers, planOfferTerms, planCommitmentStatus, parseCoins, formatCoins, satsPerCoin, decodeOutput,
@@ -791,6 +797,16 @@ console.log("\nrecovery phrases");
 // one of them rather than through the plain `text`/`optional_text` readers;
 // swapping one back would still compile. This scans the module's own linear
 // memory, on the real compiled artifact, for exactly that.
+//
+// Not every check below can actually fail, and that was checked by reverting
+// each fix in turn and rerunning, not assumed. The WIF and seed-phrase checks
+// pass either way in this build: the allocator reliably reclaims those
+// particular freed chunks — with `secret_text` or without it — before the
+// scan runs, at every fragment offset tried, not only a whole-string search.
+// They stay, marked as smoke checks rather than gates, because they still
+// exercise the real call path end to end. The passphrase check is the one
+// doing the regression-catching this section exists for: reverting its fix
+// alone reliably reproduces the marker.
 // ---------------------------------------------------------------------------
 
 /** Whether `needle` occurs anywhere in `haystack`, as a contiguous byte run. */
@@ -826,6 +842,12 @@ console.log("\nmemory hygiene");
   // synthetic marker: it is exactly the string a wallet would import, and a
   // 51-character base58 string is already far too specific to appear by
   // coincidence.
+  //
+  // This is a smoke check, not a regression gate: with `secret_text` reverted
+  // back to `text`, this still passes — confirmed by reverting it and
+  // rerunning, not assumed — because `from_wif`'s own base58-decode
+  // allocations reliably reclaim the freed chunk before this scan runs.
+  // Left in because it still exercises the real call path end to end.
   const wif = vectors.vectors[0].wif;
   const wifNeedle = Buffer.from(wif, "utf8");
   const wifKey = Key.fromWif(wif);
@@ -840,8 +862,19 @@ console.log("\nmemory hygiene");
   // `fromSeedPhrase` accepts free text, so a random marker works here as the
   // "phrase" itself — nothing else in the module has any reason to produce
   // these bytes.
+  //
+  // Also a smoke check, not a regression gate, in this build: reverting
+  // `secret_text` back to `text` and rerunning — both for the whole marker
+  // and for every fragment of it starting at each of several offsets, in
+  // case a freed chunk's leading bytes get overwritten by allocator
+  // metadata before this scan runs — still found nothing, in every variant
+  // tried. Whatever reclaims that chunk here does so reliably before the
+  // scan, same as the WIF case above. The needle stays a fragment (skipping
+  // the marker's first 16 characters) rather than the whole string on the
+  // chance that matters on a build where the smoke-check property doesn't
+  // hold; it made no measured difference on this one.
   const phraseMarker = marker("seed-phrase");
-  const phraseNeedle = Buffer.from(phraseMarker, "utf8");
+  const phraseNeedle = Buffer.from(phraseMarker.slice(16), "utf8");
   const phraseKey = Key.fromSeedPhrase(phraseMarker);
   phraseKey.free();
   assert.equal(
@@ -851,16 +884,16 @@ console.log("\nmemory hygiene");
   );
   ok("an imported seed phrase does not linger in memory after fromSeedPhrase returns");
 
-  // `fromEntropy` is deliberately not checked here. While building this
-  // section, a raw copy of the scalar was found to remain in memory after
-  // *both* `fromEntropy` and `fromWif` — reproduced for `fromWif` in a fresh
-  // process fed a WIF for a scalar it had never touched before, to rule out
-  // contamination from an earlier check. That makes it a construction-time
-  // cost inside `verus_keys::PrivateKey::from_bytes` / `k256::SigningKey`,
-  // common to every path that builds a key, not something this section's
-  // fixes touch or could have caused. An assertion here would fail for a
-  // reason unrelated to what this PR changes; recorded instead as a
-  // follow-up worth its own issue against `verus-keys`.
+  // `fromEntropy` is deliberately still not asserted on here. A report said
+  // `fromEntropy` immediately followed by `free()` — no `to_wif` call
+  // anywhere in the run — is clean on this exact commit; reproducing that
+  // scenario independently, twice, on a clean checkout of the same commit,
+  // found a byte-for-byte copy of the entropy in linear memory afterward
+  // both times. That is a direct conflict on a security-relevant claim, not
+  // a rounding error, and it has not been reconciled — see the PR
+  // discussion. Committing an assertion either way here would be asserting
+  // something not actually settled; `private_key_from_entropy`'s doc comment
+  // has the same caveat.
 
   // The regression this section exists to catch: `passphrase` is folded into
   // the PBKDF2 salt exactly like `phrase` is, and must be wiped the same way

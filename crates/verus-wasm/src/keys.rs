@@ -159,14 +159,25 @@ impl Key {
 /// function's) leave a moment where the entropy exists outside `Zeroizing`'s
 /// reach.
 ///
-/// What this does **not** reach: `PrivateKey::from_bytes` below hands the
-/// scalar to `k256::SigningKey::from_slice`, and a raw copy of it has been
-/// observed to remain readable in linear memory afterward regardless — the
-/// same is true importing the identical scalar through [`Key::from_wif`], so
-/// this is a construction-time cost inside `verus-keys`/`k256`, common to
-/// every path that builds a `PrivateKey`, not something particular to this
-/// function or introduced by it. Pre-existing on `main`, out of scope here,
-/// and worth its own issue against `verus-keys`.
+/// What this cannot reach, by construction: [`Key::to_wif`] → `to_wif` →
+/// `PrivateKey::to_bytes` (`verus-keys/src/key.rs`) calls
+/// `SigningKey::to_bytes()`, which is `secret_scalar.to_repr()` — a plain
+/// `FieldBytes` that nothing zeroizes — before `verus-keys` copies it into
+/// its own `Zeroizing<[u8; 32]>`. That source copy outlives the call, and it
+/// is a fact about `to_wif`, readable from `k256`/`ecdsa`'s own source rather
+/// than only measured.
+///
+/// Whether construction itself — `PrivateKey::from_bytes` below, and
+/// `k256::SigningKey::from_slice` underneath it — is clean is, as of this
+/// writing, **not settled**: a byte-for-byte reproduction of the caller's
+/// entropy has been observed in linear memory after `fromEntropy` followed
+/// immediately by `free()`, with no `to_wif` call anywhere in the run, on a
+/// clean checkout of this exact commit. That conflicts with an earlier report
+/// that the same scenario was clean, and the discrepancy has not yet been
+/// reconciled — see the PR discussion rather than trusting either claim on
+/// its own. Either way, it is pre-existing behaviour inside
+/// `verus-keys`/`k256`, not something this function's own fix touches, and
+/// out of scope for this change.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
     if entropy.len() != 32 {
         return Err(WasmError::new(
