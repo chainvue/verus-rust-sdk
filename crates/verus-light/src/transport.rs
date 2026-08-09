@@ -86,6 +86,23 @@ mod blocking {
             let agent = ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(10))
                 .timeout(Duration::from_mins(2))
+                // `.redirects(0)`: the bare default follows up to five
+                // redirects, including an https-to-http downgrade and a
+                // redirect to a different host entirely — so a proxy
+                // answering a call with a 307 could hand this request to
+                // somewhere the caller never asked to send it, leaking which
+                // method is being called and to whom. Refusing to follow any
+                // redirect closes both at once: `ureq::AgentBuilder` also has
+                // an `https_only` option, but that would additionally reject
+                // the plaintext loopback connections this transport
+                // deliberately allows (`check_scheme` above), so it is not
+                // used here — the same call `verus-rpc`'s transport makes,
+                // for the same reason. Because ureq only turns a >=400
+                // response into an `Err`, a refused redirect still arrives
+                // here as an ordinary `Ok` response; `call` below checks for
+                // one explicitly rather than letting it be misread as a
+                // malformed grpc-web reply.
+                .redirects(0)
                 .build();
             Ok(Self {
                 agent,
@@ -110,8 +127,23 @@ mod blocking {
                     "endpoint must start with http:// or https://, got {base}"
                 )));
             };
+            // An IPv6 literal such as "[::1]:9067/…" contains colons inside
+            // the brackets; splitting on ':' the way the plain-host branch
+            // below does stops at the first one *inside* the address ("[")
+            // and never matches, so `http://[::1]:9067` was always refused
+            // even though it is loopback. The host ends at the matching `]`,
+            // not at a colon.
+            if let Some(after_bracket) = rest.strip_prefix('[') {
+                let host = after_bracket.split(']').next().unwrap_or("");
+                if host == "::1" {
+                    return Ok(());
+                }
+                return Err(LightError::Refused(format!(
+                    "refusing plaintext http:// to [{host}]: use https://, or tunnel to loopback"
+                )));
+            }
             let host = rest.split(['/', ':']).next().unwrap_or("");
-            if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+            if host == "localhost" || host == "127.0.0.1" {
                 return Ok(());
             }
             Err(LightError::Refused(format!(
@@ -130,6 +162,18 @@ mod blocking {
                 .set("X-Grpc-Web", "1")
                 .send_bytes(request)
                 .map_err(|e| LightError::Transport(e.to_string()))?;
+
+            // With `redirects(0)` set above, ureq neither follows a 3xx nor
+            // treats it as an `Err` — it only does that for >=400 — so a
+            // refused redirect reaches this point looking like any other
+            // response. Name it explicitly rather than let it fall through
+            // to a generic "no grpc-status" framing error further down.
+            if (300..400).contains(&response.status()) {
+                return Err(LightError::Transport(format!(
+                    "server returned a redirect ({}); redirects are refused, call the endpoint directly",
+                    response.status()
+                )));
+            }
 
             // ureq matches header names case-insensitively, which matters: this
             // proxy capitalises them in headers and not in trailers.
