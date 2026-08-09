@@ -108,6 +108,49 @@ fn the_userinfo_refusal_does_not_print_the_password() {
         !message.contains("s3cr3t-password"),
         "the password leaked into the error message: {message}"
     );
+
+    // A password that itself contains `@` is what actually distinguishes
+    // `rsplit_once('@')` from `split_once('@')`: with a single `@` in the
+    // whole authority, either one finds the same split, so a mutation from
+    // `rsplit` to `split` would pass the case above undetected. Here the
+    // password's own `@` gives `split_once` a *different*, earlier split
+    // than `rsplit_once` — `split_once` would take `pa` as the redacted
+    // "user" part and let `ss-w0rd@127.0.0.1:9067` — the rest of the
+    // password plus the host — through into the message.
+    let err = GrpcWebTransport::new("http://rpcuser:pa@ss-w0rd@127.0.0.1:9067/")
+        .map(|_| ())
+        .expect_err("userinfo must be refused");
+    let message = err.to_string();
+    assert!(
+        !message.contains("ss-w0rd"),
+        "the password leaked into the error message: {message}"
+    );
+}
+
+/// The *other* arm of `check_scheme` — an endpoint that never even matches
+/// `http://` or `https://` — used to echo the whole endpoint verbatim into
+/// its refusal. The inputs that land here are mundane, not adversarial: an
+/// uppercase `HTTPS://` typo, or a leading space pasted in from a YAML value
+/// or an environment variable, and both are places a real password plausibly
+/// sits. This must never print the password, only the scheme.
+#[test]
+fn the_unrecognised_scheme_refusal_does_not_print_the_password() {
+    let cases = [
+        "HTTPS://user:s3cr3t-password@host/",
+        " http://user:s3cr3t-password@localhost/",
+        "ftp://user:s3cr3t-password@host/",
+        "user:s3cr3t-password@localhost",
+    ];
+    for case in cases {
+        let err = GrpcWebTransport::new(case)
+            .map(|_| ())
+            .expect_err("an unrecognised scheme must be refused");
+        let message = err.to_string();
+        assert!(
+            !message.contains("s3cr3t-password"),
+            "the password leaked into the error message for {case:?}: {message}"
+        );
+    }
 }
 
 /// The bare `ureq::AgentBuilder` this crate used to build followed up to five
