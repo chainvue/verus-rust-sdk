@@ -11,7 +11,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use verus_light::{GrpcWebTransport, LightError, LightTransport};
 
@@ -51,6 +50,33 @@ fn ipv6_loopback_is_accepted_and_non_loopback_is_still_refused() {
     assert!(GrpcWebTransport::new("http://[::1]/").is_ok());
     assert!(GrpcWebTransport::new("http://[::2]:9067").is_err());
     assert!(GrpcWebTransport::new("http://[::2]").is_err());
+}
+
+/// `user:pass@host` puts the real host *after* the `@`, so a check that only
+/// reads a leading bracket group and stops would see `[::1]`, call it
+/// loopback, and let the request go to whatever follows — an early version
+/// of the IPv6 fix above did exactly that, accepting `http://[::1]@evil.example/`
+/// and sending the request to `evil.example` in cleartext.
+///
+/// Every url below names `[::1]` first but is really addressed elsewhere: an
+/// explicit `@evil.example`, a port folded in before the `@`, a suffix glued
+/// straight onto the bracket that is not a port at all, or a bracket that
+/// never closes. All six must be refused.
+#[test]
+fn a_bracket_that_reads_as_loopback_does_not_override_what_follows_it() {
+    for url in [
+        "http://[::1]@evil.example/",
+        "http://[::1]:9067@evil.example/",
+        "http://[::1]x@evil.example",
+        "http://[::1].evil.example",
+        "http://[::1]evil.example",
+        "http://[::1",
+    ] {
+        assert!(
+            GrpcWebTransport::new(url).is_err(),
+            "{url} should have been refused"
+        );
+    }
 }
 
 /// The bare `ureq::AgentBuilder` this crate used to build followed up to five
@@ -94,13 +120,20 @@ fn a_redirect_to_another_host_is_never_followed() {
             &[],
         )
         .unwrap_err();
+
+    // Check the channel first: `call` has already returned by this point, and
+    // a followed redirect would have opened its connection to the attacker
+    // over loopback microseconds earlier — a blocking wait buys nothing a
+    // non-blocking check doesn't already have, and checking the error message
+    // first (as an earlier version of this test did) let every mutation slip
+    // past this assertion undetected, since the message assertion below
+    // always fired first.
+    assert!(
+        rx.try_recv().is_err(),
+        "the redirect to the second host was followed"
+    );
     assert!(
         matches!(err, LightError::Transport(ref message) if message.contains("redirect")),
         "expected a redirect-specific transport error, got {err:?}"
-    );
-
-    assert!(
-        rx.recv_timeout(Duration::from_secs(1)).is_err(),
-        "the redirect to the second host was followed"
     );
 }

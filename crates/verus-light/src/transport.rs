@@ -127,22 +127,48 @@ mod blocking {
                     "endpoint must start with http:// or https://, got {base}"
                 )));
             };
-            // An IPv6 literal such as "[::1]:9067/…" contains colons inside
+            // Bound the authority the way a URL parser would: up to the
+            // first '/', '?' or '#'. Everything below compares against this,
+            // not against `rest`, so a path segment can never be mistaken
+            // for part of the host.
+            let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            let authority = &rest[..authority_end];
+            // `user:pass@host` puts the host *after* the `@`, so a check
+            // that only looks at a leading `[::1]` and ignores the rest
+            // would accept `http://[::1]@evil.example/` — the bracket reads
+            // as loopback, but the request goes to `evil.example`. This
+            // crate has no use for userinfo in an endpoint (unlike
+            // `verus-rpc`, which carries node credentials), so refuse it
+            // outright rather than parse around it.
+            if authority.contains('@') {
+                return Err(LightError::Refused(format!(
+                    "refusing plaintext http:// to {authority}: userinfo is not supported here"
+                )));
+            }
+            // An IPv6 literal such as "[::1]:9067" contains colons inside
             // the brackets; splitting on ':' the way the plain-host branch
             // below does stops at the first one *inside* the address ("[")
             // and never matches, so `http://[::1]:9067` was always refused
             // even though it is loopback. The host ends at the matching `]`,
-            // not at a colon.
-            if let Some(after_bracket) = rest.strip_prefix('[') {
-                let host = after_bracket.split(']').next().unwrap_or("");
-                if host == "::1" {
+            // not at a colon — and only a numeric port may follow it; any
+            // other trailer (a missing `]`, or text glued on after it) is
+            // refused rather than guessed at.
+            if let Some(after_bracket) = authority.strip_prefix('[') {
+                let Some((host, after)) = after_bracket.split_once(']') else {
+                    return Err(LightError::Refused(format!(
+                        "refusing plaintext http:// to [{after_bracket}: unterminated IPv6 literal"
+                    )));
+                };
+                let port_is_numeric = after.is_empty()
+                    || (after.starts_with(':') && after[1..].bytes().all(|b| b.is_ascii_digit()));
+                if host == "::1" && port_is_numeric {
                     return Ok(());
                 }
                 return Err(LightError::Refused(format!(
                     "refusing plaintext http:// to [{host}]: use https://, or tunnel to loopback"
                 )));
             }
-            let host = rest.split(['/', ':']).next().unwrap_or("");
+            let host = authority.split(':').next().unwrap_or("");
             if host == "localhost" || host == "127.0.0.1" {
                 return Ok(());
             }
