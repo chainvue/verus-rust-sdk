@@ -86,6 +86,23 @@ mod blocking {
             let agent = ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(10))
                 .timeout(Duration::from_mins(2))
+                // `.redirects(0)`: the bare default follows up to five
+                // redirects, including an https-to-http downgrade and a
+                // redirect to a different host entirely — so a proxy
+                // answering a call with a 307 could hand this request to
+                // somewhere the caller never asked to send it, leaking which
+                // method is being called and to whom. Refusing to follow any
+                // redirect closes both at once: `ureq::AgentBuilder` also has
+                // an `https_only` option, but that would additionally reject
+                // the plaintext loopback connections this transport
+                // deliberately allows (`check_scheme` above), so it is not
+                // used here — the same call `verus-rpc`'s transport makes,
+                // for the same reason. Because ureq only turns a >=400
+                // response into an `Err`, a refused redirect still arrives
+                // here as an ordinary `Ok` response; `call` below checks for
+                // one explicitly rather than letting it be misread as a
+                // malformed grpc-web reply.
+                .redirects(0)
                 .build();
             Ok(Self {
                 agent,
@@ -110,8 +127,68 @@ mod blocking {
                     "endpoint must start with http:// or https://, got {base}"
                 )));
             };
-            let host = rest.split(['/', ':']).next().unwrap_or("");
-            if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+            // Bound the authority the way a URL parser would: up to the
+            // first '/', '?' or '#'. Everything below compares against this,
+            // not against `rest`, so a path segment can never be mistaken
+            // for part of the host.
+            let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            let authority = &rest[..authority_end];
+            // `user:pass@host` puts the host *after* the `@`, so a check
+            // that only looks at a leading `[::1]` and ignores the rest
+            // would accept `http://[::1]@evil.example/` — the bracket reads
+            // as loopback, but the request goes to `evil.example`. This
+            // crate has no use for userinfo in an endpoint (unlike
+            // `verus-rpc`, which carries node credentials), so refuse it
+            // outright rather than parse around it.
+            //
+            // The refusal must not itself leak whatever was in there: unlike
+            // `verus-rpc`'s `Credentials`, nothing here is going to zeroize
+            // or redact this string on the way to a `Debug` impl or a log
+            // line, so the message reports only what follows the last `@`
+            // — never the authority as a whole, which is where a password
+            // would be sitting.
+            if let Some((_, host_part)) = authority.rsplit_once('@') {
+                return Err(LightError::Refused(format!(
+                    "refusing plaintext http:// to {host_part}: this endpoint takes no \
+                     user:password@ — remove it, this transport never sends credentials"
+                )));
+            }
+            // Whatever trails a host must be nothing, or a `:` followed only
+            // by digits — anything else past this point is refused outright
+            // rather than trusted to fail later in ureq's own url parsing.
+            // Shared by both branches below so "safe" is a property of the
+            // parse here, not a hope pinned on whatever a different parser
+            // downstream happens to reject.
+            let port_is_numeric = |after: &str| {
+                after.is_empty()
+                    || (after.starts_with(':')
+                        && after.len() > 1
+                        && after[1..].bytes().all(|b| b.is_ascii_digit()))
+            };
+            // An IPv6 literal such as "[::1]:9067" contains colons inside
+            // the brackets; splitting on ':' the way the plain-host branch
+            // below does stops at the first one *inside* the address ("[")
+            // and never matches, so `http://[::1]:9067` was always refused
+            // even though it is loopback. The host ends at the matching `]`,
+            // not at a colon — and only a numeric port may follow it; any
+            // other trailer (a missing `]`, or text glued on after it) is
+            // refused rather than guessed at.
+            if let Some(after_bracket) = authority.strip_prefix('[') {
+                let Some((host, after)) = after_bracket.split_once(']') else {
+                    return Err(LightError::Refused(format!(
+                        "refusing plaintext http:// to [{after_bracket}: unterminated IPv6 literal"
+                    )));
+                };
+                if host == "::1" && port_is_numeric(after) {
+                    return Ok(());
+                }
+                return Err(LightError::Refused(format!(
+                    "refusing plaintext http:// to [{host}]: use https://, or tunnel to loopback"
+                )));
+            }
+            let colon = authority.find(':').unwrap_or(authority.len());
+            let (host, after) = authority.split_at(colon);
+            if (host == "localhost" || host == "127.0.0.1") && port_is_numeric(after) {
                 return Ok(());
             }
             Err(LightError::Refused(format!(
@@ -130,6 +207,18 @@ mod blocking {
                 .set("X-Grpc-Web", "1")
                 .send_bytes(request)
                 .map_err(|e| LightError::Transport(e.to_string()))?;
+
+            // With `redirects(0)` set above, ureq neither follows a 3xx nor
+            // treats it as an `Err` — it only does that for >=400 — so a
+            // refused redirect reaches this point looking like any other
+            // response. Name it explicitly rather than let it fall through
+            // to a generic "no grpc-status" framing error further down.
+            if (300..400).contains(&response.status()) {
+                return Err(LightError::Transport(format!(
+                    "server returned a redirect ({}); redirects are refused, call the endpoint directly",
+                    response.status()
+                )));
+            }
 
             // ureq matches header names case-insensitively, which matters: this
             // proxy capitalises them in headers and not in trailers.

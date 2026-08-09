@@ -38,3 +38,8 @@ verus-wire = { path = "../verus-wire" }
 [[test]]
 name = "live_light"
 required-features = ["grpc-web"]
+
+# Uses `GrpcWebTransport`, which lives behind the default `grpc-web` feature.
+[[test]]
+name = "transport_hardening"
+required-features = ["grpc-web"]
