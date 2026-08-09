@@ -22,6 +22,13 @@ const OFFLINE_FEATURES: &[&str] = &["transparent", "shielded", "prover", "multic
 const NETWORK_FEATURES: &[&str] = &["network", "light"];
 
 /// Anything that can open a socket.
+///
+/// `socket2` and `mio` are the ones that matter most here: nearly every Rust
+/// network stack (Tokio's reactor included) bottoms out in one or both, so an
+/// HTTP client arriving under a name not otherwise on this list would still
+/// be caught through them. `polling`, `minreq` and `smol` are smaller
+/// runtimes/clients that reach the network the same way `async-std` and
+/// `tokio` do, and belong on the list for the same reason those do.
 const NETWORK_CRATES: &[&str] = &[
     "ureq",
     "reqwest",
@@ -36,6 +43,11 @@ const NETWORK_CRATES: &[&str] = &[
     "rustls",
     "native-tls",
     "openssl",
+    "socket2",
+    "mio",
+    "polling",
+    "minreq",
+    "smol",
 ];
 
 fn dependency_tree_with(package: &str, feature_args: &[&str]) -> String {
@@ -193,6 +205,47 @@ fn the_check_can_actually_detect_an_http_stack() {
             tree.lines()
                 .any(|line| line.split_whitespace().next() == Some("ureq")),
             "{package} should carry ureq under --all-features; the check found nothing:\n{tree}"
+        );
+    }
+}
+
+/// `socket2`, `mio`, `polling`, `minreq` and `smol` were added to
+/// `NETWORK_CRATES` by this change, and none of them is a real dependency —
+/// direct or transitive — of anything in this workspace today: `ureq` 2.x
+/// talks to `std::net` directly and pulls in neither `mio` nor `socket2`.
+/// (`mio` and `socket2` do show up in `cargo tree`'s default output, but only
+/// under `verus-sdk`'s `drive_async` example, as dev-dependencies of `tokio`
+/// and `reqwest` — outside the `-e normal` edges this screen walks, and not
+/// something that ships.)
+///
+/// That means the tests above exercise the five new names against a tree
+/// that can never contain them, which proves nothing about whether the
+/// matcher would actually catch one. This test exercises the same
+/// line-matching rule the real checks use — "a crate name at the start of a
+/// `cargo tree --prefix none` line" — directly against synthetic tree text,
+/// so the new entries are shown to fire, and to fire on the right thing
+/// rather than on a similarly named neighbor.
+#[test]
+fn the_check_can_detect_the_newly_added_transport_crates() {
+    for network in ["socket2", "mio", "polling", "minreq", "smol"] {
+        let tree = format!("{network} v1.0.0\n");
+        let found = tree
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(network));
+        assert!(found, "the matcher failed to catch {network} in:\n{tree}");
+    }
+
+    // And it must not fire on a mere prefix match — the same guard the
+    // `tokio` / `tokio-util` comment above describes, checked here for the
+    // names this change adds.
+    let decoy_tree = "mio-extras v2.0.0\nsocket2-util v0.1.0\n";
+    for network in ["mio", "socket2"] {
+        let found = decoy_tree
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(network));
+        assert!(
+            !found,
+            "the matcher false-positived on a `{network}`-prefixed neighbor:\n{decoy_tree}"
         );
     }
 }
