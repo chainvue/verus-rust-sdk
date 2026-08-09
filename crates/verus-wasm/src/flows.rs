@@ -120,16 +120,19 @@ use crate::types::{
 /// # Make a new one for every operation
 ///
 /// **An `Answers` is a frozen view of the chain, not a connection.** Nothing in
-/// it expires. A second operation planned against one that has already finished
-/// is planned against the *first* operation's tip and the first operation's
-/// UTXO set, however long ago that was — quietly, and with no error, because a
-/// cached answer is indistinguishable from a fresh one. A wallet that keeps one
-/// around and reuses it will eventually build a payment from coins it has
-/// already spent.
+/// it expires, and it is spent the moment a `plan…` call returns `"ready"`.
+/// Passing it to another `plan…` call after that throws rather than planning
+/// against the *first* operation's tip and the first operation's UTXO set —
+/// which is what would happen otherwise, however long ago that was, because a
+/// cached answer is indistinguishable from a fresh one. A wallet that kept one
+/// around and reused it would eventually build a payment from coins it had
+/// already spent, with nothing on this side to notice.
 ///
-/// Within one operation that same property is exactly what is wanted: every
+/// Within one operation that same frozen view is exactly what is wanted: every
 /// round sees the same chain, so a plan cannot be built half from one view and
-/// half from another.
+/// half from another. Driving the *same* operation again after a round's fetch
+/// failed is unaffected — the handle is only spent once it reaches `"ready"`,
+/// and a transient network failure happens before that.
 ///
 /// So: `new Answers()`, drive one operation to `"ready"`, `free()`.
 ///
@@ -137,9 +140,9 @@ use crate::types::{
 ///
 /// It counts rounds and gives up after sixteen. An operation that asks for
 /// something new every round is a bug, and without the cap it presents as a tab
-/// that fetches forever. The count is per `Answers`, which is a second reason
-/// not to share one: a reused handle carries its predecessor's rounds and hits
-/// the cap early.
+/// that fetches forever. The count is per `Answers`, so it only ever reflects
+/// one operation's own rounds — reuse across operations is refused outright,
+/// before a shared count could ever be the thing that caught it.
 ///
 /// Call `free()` when the operation is done, as with [`Key`].
 #[wasm_bindgen]

@@ -82,6 +82,23 @@
 //! answers for **one** operation's planning, which is a feature: every round
 //! sees the same tip, the same UTXO set and the same identity, so a plan cannot
 //! be built half from one view of the chain and half from another.
+//!
+//! # What binds a reply to its request, and what does not
+//!
+//! [`Cassette::answer`] keys a reply by the request **body**, byte for byte —
+//! nothing checks that the reply's own content answers that body. A driver
+//! that swapped the replies to two outstanding requests would go undetected
+//! here whenever their shapes happen to coincide: the JSON-RPC id in every
+//! envelope is a constant, not a nonce, so it cannot catch the swap either.
+//!
+//! Some readers check anyway — [`crate::ChainReader::address_utxos`],
+//! [`crate::ChainReader::address_deltas`] and
+//! [`crate::ChainReader::address_mempool`] all refuse a row for an address
+//! that was not asked about. [`crate::ChainReader::identity`] does not: it
+//! trusts that a reply naming some identity is the one that was asked for.
+//! This is consistent with the trust model rather than an oversight — the
+//! driver is the caller's own code, feeding back what it itself fetched — but
+//! it is worth stating rather than leaving to be discovered.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

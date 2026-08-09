@@ -1008,9 +1008,10 @@ console.log("\nflows, driven with no network");
   // -- one Answers, one operation ------------------------------------------
   //
   // A cached answer is indistinguishable from a fresh one, so a reused handle
-  // plans against a tip that may be hours old. Nothing can detect that from
-  // inside; what CAN be shown is that reuse is real caching rather than a
-  // coincidence — a second operation on the same handle asks for nothing.
+  // would plan against a tip that may be hours old — a payment built from
+  // coins a still-unconfirmed transaction already spends. That handle is
+  // spent the moment it reaches "ready": a second, different operation driven
+  // against it must be refused rather than quietly resolved from the cache.
   {
     const shared = new Answers();
     for (;;) {
@@ -1018,13 +1019,16 @@ console.log("\nflows, driven with no network");
       if (s.kind === "ready") break;
       for (const body of s.ask) shared.record(body, post(body));
     }
-    const before = shared.rounds;
-    const again = key.planSend({ to: PAYEE, satoshis: "250000000" }, shared);
-    assert.equal(again.kind, "ready");
-    assert.ok(shared.rounds > before, "rounds accumulate across operations");
-    assert.notEqual(again.value.hex, step.value.hex);
+    let thrown;
+    try {
+      key.planSend({ to: PAYEE, satoshis: "250000000" }, shared);
+    } catch (e) {
+      thrown = e;
+    }
+    assert.ok(thrown, "a second operation on a finished Answers must be refused");
+    assert.equal(thrown.name, "NotReady");
     shared.free();
-    ok("a reused Answers replans from the cache without asking again");
+    ok("a reused Answers is refused rather than replanned against a stale view");
   }
 
   // -- a login, signed and verified through the driver ----------------------
