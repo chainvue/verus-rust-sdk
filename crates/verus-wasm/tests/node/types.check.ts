@@ -39,6 +39,7 @@ import {
   type SendRequest,
   type TokenSendRequest,
   type SignedTransaction,
+  type SignRequest,
   type VerifyRequest,
   type VerifyResult,
   type DecodedOutput,
@@ -50,6 +51,7 @@ import {
   type PlanSendTokenRequest,
   type PlanSendFromIdentityRequest,
   type PlanSendTokenFromIdentityRequest,
+  type PlanConvertFromIdentityRequest,
   type PlanPublishRequest,
   type TransactionStep,
   type UpdateStep,
@@ -59,6 +61,8 @@ import {
   type HistoryEntry,
   type PlannedTransaction,
   type PlanStep,
+  type LoginRequest,
+  type LoginStep,
   type VerifyLoginRequest,
   type LoggedIn,
   type SpendableRequest,
@@ -68,6 +72,7 @@ import {
   type OffersRequest,
   type Listing,
   type OfferSide,
+  type OfferTermsRequest,
   type OfferTerms,
   type Demand,
   type TakeOfferRequest,
@@ -76,6 +81,7 @@ import {
   type PlanBurnRequest,
   type PlanMintRequest,
   type PlanRegistrationRequest,
+  type PendingRequest,
   type Pending,
   type CommitmentStatus,
   type Registered,
@@ -123,13 +129,14 @@ const spent: string = signed.inputsUsed[0].txid;
 const coins: string = formatCoins(signed.fee);
 void [minimal, alsoSigned, hex, fee, change, spent, coins];
 
+const signRequest: SignRequest = {
+  identity: "iL9bc…", systemId: "iJhCez…", blockHeight: tip, message: "log me in",
+};
 const verify: VerifyRequest = {
   identity: "iL9bc…",
   systemId: "iJhCez…",
   message: "log me in",
-  signature: key.signMessage({
-    identity: "iL9bc…", systemId: "iJhCez…", blockHeight: tip, message: "log me in",
-  }),
+  signature: key.signMessage(signRequest),
   primaryAddresses: [key.address()],
   minimumSignatures: 1,
   currentHeight: tip,
@@ -401,6 +408,20 @@ const tokenIdPlan: PlanSendTokenFromIdentityRequest = {
 };
 const tokenIdStep: TransactionStep = key.planSendTokenFromIdentity(tokenIdPlan, answers);
 
+const convertFromIdPlan: PlanConvertFromIdentityRequest = {
+  identity: "holder@",
+  from: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+  amount: "150000000",
+  kind: "intoFractional",
+  into: "iQihX…",
+  recipient: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+  fee: "20010",
+};
+const convertFromIdStep: TransactionStep = key.planConvertFromIdentity(convertFromIdPlan, answers);
+
+const loginRequest: LoginRequest = { audience: "https://example.com", challenge: "abc" };
+const loginStep: LoginStep = key.planLogin("alice@", loginRequest, answers);
+
 const publishPlan: PlanPublishRequest = {
   identity: "app@", key: "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv", values: ["6d696e65"],
 };
@@ -434,7 +455,8 @@ if (side && side.kind === "currencies") {
   void notHere;
 }
 
-const terms: OfferTerms | undefined = ready(planOfferTerms({ offer: "00" }, answers));
+const termsRequest: OfferTermsRequest = { offer: "00" };
+const terms: OfferTerms | undefined = ready(planOfferTerms(termsRequest, answers));
 const demand: Demand | undefined = terms?.demand;
 if (demand && demand.kind === "token") {
   const which: string = demand.currency;
@@ -503,10 +525,12 @@ const peeked: { reservation: unknown } | undefined = pending?.pending;
 // @ts-expect-error "confirmed" is not one of the two steps
 const badState: boolean = restored.state === "confirmed";
 
+const pendingRequest: PendingRequest = { pending: restored };
+
 // The status union has to narrow — a caller reading `confirmations` off a
 // "ready" status would get `undefined` at runtime with no signal.
 const status: CommitmentStatus | undefined =
-  ready(planCommitmentStatus({ pending: restored }, answers));
+  ready(planCommitmentStatus(pendingRequest, answers));
 if (status && status.kind === "waiting") {
   const seen: number = status.confirmations;
   void seen;
@@ -522,7 +546,7 @@ if (status && status.kind === "reorged") {
 }
 
 const registered: Registered | undefined =
-  ready(key.planRegistrationComplete({ pending: restored }, answers));
+  ready(key.planRegistrationComplete(pendingRequest, answers));
 // Money is a string here too.
 const paid: string | undefined = registered?.feePaid;
 
@@ -577,5 +601,5 @@ void [launched, burned, numericWeight, oddKind, stringStart, setPrices, handSet,
 void [pending, restored, blob, peeked, badState, status, registered, paid, numericPin];
 void [converted, burnAsKind, mintAsKind, typoKind, numericFloor];
 void [listings, side, terms, demand, numericPrice, taken, numericTakeFee];
-void [tokenStep, idStep, tokenIdStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
+void [tokenStep, idStep, tokenIdStep, convertFromIdStep, loginStep, update, publishStep, updateFee, numericFee, numericToken, rawValues];
 void [session, spendable, stored, mismatched, badPolicy, noAddress, strayKey];

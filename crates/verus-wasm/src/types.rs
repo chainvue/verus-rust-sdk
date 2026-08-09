@@ -824,6 +824,118 @@ mod tests {
         );
     }
 
+    /// Whether `word` occurs in `haystack` as a whole identifier — not merely
+    /// as a substring of a longer one.
+    ///
+    /// `TokenSendRequest` contains `SendRequest` as a literal substring, so a
+    /// plain `.contains()` would call `SendRequest` present in a file that
+    /// only ever names `TokenSendRequest`. The same trap `declared_by` above
+    /// guards against for interface headers.
+    fn contains_word(haystack: &str, word: &str) -> bool {
+        let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        haystack.match_indices(word).any(|(at, _)| {
+            let before = haystack[..at].chars().next_back();
+            let after = haystack[at + word.len()..].chars().next();
+            !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+        })
+    }
+
+    /// The guard on the other three guards: every request DTO's interface has
+    /// to be registered in `every_field_of_every_dto_is_declared`, checked in
+    /// `every_shape_matches_the_type_it_guards`, *and* given a use-site in
+    /// `types.check.ts` — or it can drift in all three at once and nothing
+    /// here would know, which is exactly what happened to
+    /// `PlanSendTokenFromIdentityRequest` (and, undetected until this test
+    /// existed, `LoginRequest`, `PlanConvertFromIdentityRequest`,
+    /// `OfferTermsRequest`, `PendingRequest`, and `SignRequest`).
+    ///
+    /// Follows the same shape as `every_decoded_output_variant_is_declared_and_reachable`
+    /// and its siblings: the set that must be covered is derived from a
+    /// source of truth (`types.d.ts`'s own `export interface *Request`
+    /// declarations) rather than hand-listed, and what is *actually*
+    /// registered is read from this file's own source and from
+    /// `types.check.ts`'s, not from a fourth hand-maintained list that could
+    /// itself drift from the other three.
+    #[test]
+    fn every_request_is_registered_in_all_three_guards() {
+        // This file's own text, so the completeness check can find its
+        // existing `assert_declared` and `check::<T>` calls directly.
+        const THIS_FILE: &str = include_str!("types.rs");
+        // The use-site test, so presence there is verified the same way.
+        const TYPES_CHECK: &str = include_str!("../tests/node/types.check.ts");
+
+        fn is_identifier(s: &str) -> bool {
+            !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+
+        // Every `export interface FooRequest` types.d.ts declares — the set
+        // all three guards are supposed to track without missing one.
+        let requests: BTreeSet<String> = TYPESCRIPT
+            .match_indices("export interface ")
+            .filter_map(|(at, m)| {
+                let after = &TYPESCRIPT[at + m.len()..];
+                let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))?;
+                let name = &after[..end];
+                name.ends_with("Request").then(|| name.to_string())
+            })
+            .collect();
+        // A parser that quietly stopped matching would leave this empty and
+        // every assertion below would vacuously pass — the same failure mode
+        // `the_drift_checks_can_detect_drift` exists to rule out elsewhere.
+        assert!(
+            requests.len() > 20,
+            "found suspiciously few `*Request` interfaces in types.d.ts; the scan above \
+             likely stopped matching its syntax"
+        );
+
+        // Guard A: the interface name literal passed to `assert_declared`.
+        let guard_a: BTreeSet<String> = THIS_FILE
+            .match_indices("assert_declared(")
+            .filter_map(|(at, m)| {
+                let after = &THIS_FILE[at + m.len()..];
+                let start = after.find('"')? + 1;
+                let end = start + after[start..].find('"')?;
+                let name = &after[start..end];
+                is_identifier(name).then(|| name.to_string())
+            })
+            .collect();
+
+        // Guard B: the type argument to `check::<T>`. Some call sites qualify
+        // it (`check::<crate::flows::PendingRequest>`), so only the last path
+        // segment is kept.
+        let guard_b: BTreeSet<String> = THIS_FILE
+            .match_indices("check::<")
+            .filter_map(|(at, m)| {
+                let after = &THIS_FILE[at + m.len()..];
+                let end = after.find('>')?;
+                let raw = &after[..end];
+                let name = raw.rsplit("::").next().unwrap_or(raw);
+                is_identifier(name).then(|| name.to_string())
+            })
+            .collect();
+
+        for name in &requests {
+            assert!(
+                guard_a.contains(name),
+                "{name} is declared in types.d.ts but never passed to assert_declared \
+                 in every_field_of_every_dto_is_declared — its fields can drift from the \
+                 interface with nothing to catch it"
+            );
+            assert!(
+                guard_b.contains(name),
+                "{name} is declared in types.d.ts but never checked against a SHAPE \
+                 in every_shape_matches_the_type_it_guards — an unknown key sent for it \
+                 would be silently accepted or a legitimate one silently refused"
+            );
+            assert!(
+                contains_word(TYPES_CHECK, name),
+                "{name} is declared in types.d.ts but has no use-site in types.check.ts, \
+                 so tsc never exercises the published type — a field could be mistyped \
+                 (string vs. number) in the .d.ts and nothing would fail"
+            );
+        }
+    }
+
     /// Both checks must be able to fail, or they prove nothing. The
     /// per-interface parse is the part worth demonstrating: the previous
     /// whole-file substring search passed the first of these.
