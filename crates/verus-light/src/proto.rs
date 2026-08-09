@@ -219,10 +219,30 @@ pub(crate) fn put_varint_field(out: &mut Vec<u8>, field: u32, value: u64) {
 }
 
 /// Append a length-delimited field, omitting it when empty.
+///
+/// Only correct for `bytes`/`string` **scalars** — `proto3` does not transmit
+/// a scalar equal to its default. A message-typed field must go through
+/// [`put_message_field`] instead: `proto3` tracks presence for those, and
+/// eliding an empty-but-present submessage drops the field entirely, not just
+/// its default value.
 pub(crate) fn put_bytes_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
     if value.is_empty() {
         return;
     }
+    put_message_field(out, field, value);
+}
+
+/// Append a length-delimited message field, unconditionally — including when
+/// the submessage serializes to zero bytes.
+///
+/// `proto3` distinguishes a message field being absent from it being present
+/// and equal to its default (every field unset), unlike a `bytes`/`string`
+/// scalar, which has no wire representation for its default at all. A
+/// canonical encoder that has a `BlockID { height: 0 }` to send emits
+/// `tag, len=0`, not nothing — omitting it, the way [`put_bytes_field`] does
+/// for scalars, would make the field disappear on the wire and be
+/// indistinguishable from the caller never having set it.
+pub(crate) fn put_message_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
     put_tag(out, field, WIRE_BYTES);
     put_varint(
         out,
