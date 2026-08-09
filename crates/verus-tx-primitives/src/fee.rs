@@ -8,6 +8,7 @@
 //! genuinely fixed, both sides must change in one commit and the vectors be
 //! regenerated.
 
+use crate::amount::Amount;
 use crate::error::TxError;
 use crate::Utxo;
 
@@ -210,11 +211,22 @@ pub fn select_utxos(
     // Signed: the remainder goes negative once enough value is selected, and the
     // loop condition depends on that.
     let mut remaining_native = i128::from(required_native);
-    let mut fee = estimate_fee(1, num_outputs + 1, fee_per_kb, has_smart_outputs)?;
+    // `num_outputs` is caller-supplied (see the doc above) and feeds a `+ 1`
+    // that `estimate_fee`'s own checked arithmetic cannot see: at `u64::MAX`
+    // this wraps to `0` *before* it ever reaches `checked_mul`, so an unchecked
+    // version of this line would silently turn an absurd output count into a
+    // plausible, wrong fee instead of the overflow it actually is.
+    let change_outputs = num_outputs.checked_add(1).ok_or(TxError::ValueOverflow)?;
+    let mut fee = estimate_fee(1, change_outputs, fee_per_kb, has_smart_outputs)?;
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
-            let available: u64 = utxos.iter().map(|u| u.satoshis.to_sat()).sum();
+            // Best-effort for the error message: on overflow this reports
+            // `u64::MAX` rather than a wrapped, misleading total. Either way
+            // the caller is about to see `InsufficientFunds`.
+            let available = Amount::checked_sum(utxos.iter().map(|u| u.satoshis))
+                .map(Amount::to_sat)
+                .unwrap_or(u64::MAX);
             return Err(TxError::InsufficientFunds {
                 required: required_native.saturating_add(fee),
                 available,
@@ -224,13 +236,15 @@ pub fn select_utxos(
         selected.push(next);
         fee = estimate_fee(
             selected.len() as u64,
-            num_outputs + 1,
+            change_outputs,
             fee_per_kb,
             has_smart_outputs,
         )?;
     }
 
-    let total_in: u64 = selected.iter().map(|u| u.satoshis.to_sat()).sum();
+    let total_in = Amount::checked_sum(selected.iter().map(|u| u.satoshis))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
     // Non-negative by construction: the loop only exits once the selected value
     // covers the requirement plus the fee.
     let actual_change = total_in - required_native - fee;
@@ -259,7 +273,6 @@ pub fn select_utxos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amount;
     use crate::Txid;
 
     fn utxo(byte: u8, satoshis: u64) -> Utxo {
@@ -304,15 +317,49 @@ mod tests {
 
     #[test]
     fn absurd_fee_per_kb_is_refused_rather_than_wrapped() {
-        // Chosen so that the old unchecked `tx_size * fee_per_kb` (tx_size is
-        // 308 for this shape) wraps a u64 down to 292 — which, after
-        // `div_ceil(1000)`, is 1: far below MIN_FEE. The old code took the
+        // Derived from the live constants rather than a hardcoded number, so
+        // that changing TX_OVERHEAD/INPUT_SIZE/P2PKH_OUTPUT_SIZE can't leave
+        // this test passing while it quietly stops exercising the overflow.
+        //
+        // `tx_size * fee_per_kb` used to be unchecked: any `fee_per_kb` over
+        // `u64::MAX / tx_size` wraps the product, and after `div_ceil(1000)`
+        // the wrapped result can land below MIN_FEE — the old code took the
         // `if fee > MIN_FEE` branch's `else` and quietly returned MIN_FEE for
         // a rate that should have produced an astronomical fee. The checked
         // arithmetic must refuse this instead of computing a wrong answer.
-        let wrapping_fee_per_kb = 59_892_026_213_342_701;
+        let tx_size = TX_OVERHEAD + INPUT_SIZE + 2 * P2PKH_OUTPUT_SIZE; // 1 input, 2 outputs, matching the call below
+        let wrapping_fee_per_kb = u64::MAX / tx_size + 1;
         assert!(matches!(
             estimate_fee(1, 2, wrapping_fee_per_kb, false),
+            Err(TxError::ValueOverflow)
+        ));
+    }
+
+    /// #166: `num_outputs + 1` used to be unchecked in `select_utxos`, one line
+    /// above `estimate_fee`'s own checked arithmetic. At `u64::MAX` it wraps to
+    /// `0` before `checked_mul` ever sees it, so an absurd caller-supplied
+    /// output count silently turned into `Ok` at `MIN_FEE` instead of the
+    /// overflow it actually is.
+    #[test]
+    fn absurd_num_outputs_is_refused_rather_than_wrapped() {
+        let utxos = [utxo(1, 100_000_000)];
+        assert!(matches!(
+            select_utxos(&utxos, 1_000, u64::MAX, DEFAULT_FEE_PER_KB, false),
+            Err(TxError::ValueOverflow)
+        ));
+    }
+
+    /// #166: the UTXO sums in `select_utxos` used to escape `Amount` to raw
+    /// `u64` and add with plain `+`/`.sum()`, exactly the operation `Amount`
+    /// exists to forbid (see `amount.rs`'s module doc). This selection needs
+    /// two selected UTXOs to force the loop past a single input, and their
+    /// combined value to exceed `u64::MAX`, so `total_in` overflows on the
+    /// success path rather than in the `available` error-reporting path.
+    #[test]
+    fn total_in_overflow_is_refused_rather_than_wrapped() {
+        let utxos = [utxo(1, u64::MAX), utxo(2, u64::MAX)];
+        assert!(matches!(
+            select_utxos(&utxos, u64::MAX, 1, DEFAULT_FEE_PER_KB, false),
             Err(TxError::ValueOverflow)
         ));
     }

@@ -352,9 +352,20 @@ pub fn build_token_send(
     let mut candidates = candidates.into_iter();
 
     let declared_outputs = params.recipients.len() as u64;
+    // `declared_outputs` and the change count are both caller-influenced.
+    // Unchecked, `+ 1` here wraps to `0` before `estimate_fee`'s own
+    // `checked_mul` can see it, turning an absurd output count into a
+    // plausible, wrong fee instead of the overflow it actually is — the same
+    // pattern fixed in `verus-tx-primitives::fee::select_utxos` (#166).
+    let total_outputs = |balances: &Balances| -> Result<u64, TxError> {
+        declared_outputs
+            .checked_add(1)
+            .and_then(|n| n.checked_add(balances.change().len() as u64))
+            .ok_or(TxError::ValueOverflow)
+    };
     let mut fee = estimate_fee(
         selected.len() as u64 + 1,
-        declared_outputs + 1 + balances.change().len() as u64,
+        total_outputs(&balances)?,
         params.fee_per_kb,
         true,
     )?;
@@ -376,7 +387,7 @@ pub fn build_token_send(
         selected.push(next);
         fee = estimate_fee(
             selected.len() as u64,
-            declared_outputs + 1 + balances.change().len() as u64,
+            total_outputs(&balances)?,
             params.fee_per_kb,
             true,
         )?;
