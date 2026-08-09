@@ -9,76 +9,80 @@
 //! is absent by construction: the SDK signs locally and hands over finished
 //! bytes.
 
-/// A JSON-RPC method this crate is allowed to call.
+/// Defines [`Method`], its wire [`Method::name`], and [`Method::ALL`] from one
+/// list.
 ///
-/// Deliberately private to the crate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Method {
+/// This used to be three hand-written lists — the enum, the `name` match and
+/// the `ALL` array — kept in sync by hand. `Method::GetAddressMempool` shows
+/// what that costs: it landed in the enum and in `name`, but a fourth place,
+/// `ALL`, was never touched, and nothing checked that it should have been.
+/// `every_variant_is_listed` only ever walked `ALL`, so a variant missing
+/// *from* `ALL` was invisible to it — the test could confirm entries were
+/// correct, never that the list was complete. Generating all three from this
+/// one macro removes the fourth place: a variant that exists has to be typed
+/// here once, and `ALL` is built from the exact same tokens as the enum, so
+/// there is nothing left for them to disagree about.
+macro_rules! methods {
+    ($($(#[$meta:meta])* $variant:ident => $name:literal),+ $(,)?) => {
+        /// A JSON-RPC method this crate is allowed to call.
+        ///
+        /// Deliberately private to the crate.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum Method {
+            $($(#[$meta])* $variant),+
+        }
+
+        impl Method {
+            /// The wire name.
+            pub(crate) const fn name(self) -> &'static str {
+                match self {
+                    $(Method::$variant => $name),+
+                }
+            }
+
+            /// Every variant, generated from the same list as the enum and
+            /// [`name`](Method::name) above. There is no separate,
+            /// hand-maintained array left to fall out of sync with the enum.
+            const ALL: &'static [Method] = &[$(Method::$variant),+];
+        }
+    };
+}
+
+methods! {
     // Chain
-    GetInfo,
-    GetBlockCount,
-    GetBestBlockHash,
-    GetBlockHash,
-    GetBlock,
+    GetInfo => "getinfo",
+    GetBlockCount => "getblockcount",
+    GetBestBlockHash => "getbestblockhash",
+    GetBlockHash => "getblockhash",
+    GetBlock => "getblock",
     // Funds
-    GetAddressUtxos,
-    GetAddressBalance,
-    GetAddressDeltas,
-    GetAddressMempool,
+    GetAddressUtxos => "getaddressutxos",
+    GetAddressBalance => "getaddressbalance",
+    GetAddressDeltas => "getaddressdeltas",
+    GetAddressMempool => "getaddressmempool",
     // Policy
-    GetCurrency,
-    GetCurrencyState,
-    ListCurrencies,
-    GetCurrencyConverters,
-    EstimateConversion,
-    EstimateFee,
-    GetIdentity,
-    GetIdentityHistory,
-    GetIdentityContent,
-    GetVdxfId,
-    GetOffers,
-    VerifyMessage,
-    GetRawMempool,
+    GetCurrency => "getcurrency",
+    GetCurrencyState => "getcurrencystate",
+    ListCurrencies => "listcurrencies",
+    GetCurrencyConverters => "getcurrencyconverters",
+    EstimateConversion => "estimateconversion",
+    EstimateFee => "estimatefee",
+    GetIdentity => "getidentity",
+    GetIdentityHistory => "getidentityhistory",
+    GetIdentityContent => "getidentitycontent",
+    GetVdxfId => "getvdxfid",
+    GetOffers => "getoffers",
+    VerifyMessage => "verifymessage",
+    GetRawMempool => "getrawmempool",
     // Transactions
-    GetRawTransaction,
-    DecodeRawTransaction,
+    GetRawTransaction => "getrawtransaction",
+    DecodeRawTransaction => "decoderawtransaction",
     /// The one method that changes anything, and it takes bytes that were
     /// already signed elsewhere.
-    SendRawTransaction,
+    SendRawTransaction => "sendrawtransaction",
 }
 
 impl Method {
-    /// The wire name.
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Method::GetInfo => "getinfo",
-            Method::GetBlockCount => "getblockcount",
-            Method::GetBestBlockHash => "getbestblockhash",
-            Method::GetBlockHash => "getblockhash",
-            Method::GetBlock => "getblock",
-            Method::GetAddressUtxos => "getaddressutxos",
-            Method::GetAddressBalance => "getaddressbalance",
-            Method::GetAddressDeltas => "getaddressdeltas",
-            Method::GetAddressMempool => "getaddressmempool",
-            Method::GetCurrency => "getcurrency",
-            Method::GetCurrencyState => "getcurrencystate",
-            Method::ListCurrencies => "listcurrencies",
-            Method::GetCurrencyConverters => "getcurrencyconverters",
-            Method::EstimateFee => "estimatefee",
-            Method::EstimateConversion => "estimateconversion",
-            Method::GetIdentity => "getidentity",
-            Method::GetIdentityHistory => "getidentityhistory",
-            Method::GetIdentityContent => "getidentitycontent",
-            Method::GetVdxfId => "getvdxfid",
-            Method::GetOffers => "getoffers",
-            Method::VerifyMessage => "verifymessage",
-            Method::GetRawMempool => "getrawmempool",
-            Method::GetRawTransaction => "getrawtransaction",
-            Method::DecodeRawTransaction => "decoderawtransaction",
-            Method::SendRawTransaction => "sendrawtransaction",
-        }
-    }
-
     /// Whether calling this can change state anywhere.
     ///
     /// Exactly one method can, which is the property the read/write split in
@@ -96,8 +100,8 @@ impl Method {
     /// following the documented "post `ask` verbatim" contract.
     ///
     /// Listing the reads makes that a compile error instead. Same reason the
-    /// `name` match above is exhaustive, applied to the arm where being wrong
-    /// costs money rather than a label.
+    /// `name` match generated by `methods!` is exhaustive, applied to the arm
+    /// where being wrong costs money rather than a label.
     pub(crate) const fn is_write(self) -> bool {
         match self {
             Method::SendRawTransaction => true,
@@ -128,34 +132,6 @@ impl Method {
             | Method::DecodeRawTransaction => false,
         }
     }
-
-    /// Every variant.
-    const ALL: &'static [Method] = &[
-        Method::GetInfo,
-        Method::GetBlockCount,
-        Method::GetBestBlockHash,
-        Method::GetBlockHash,
-        Method::GetBlock,
-        Method::GetAddressUtxos,
-        Method::GetAddressBalance,
-        Method::GetAddressDeltas,
-        Method::GetCurrency,
-        Method::GetCurrencyState,
-        Method::ListCurrencies,
-        Method::GetCurrencyConverters,
-        Method::EstimateConversion,
-        Method::EstimateFee,
-        Method::GetIdentity,
-        Method::GetIdentityHistory,
-        Method::GetIdentityContent,
-        Method::GetVdxfId,
-        Method::GetOffers,
-        Method::VerifyMessage,
-        Method::GetRawMempool,
-        Method::GetRawTransaction,
-        Method::DecodeRawTransaction,
-        Method::SendRawTransaction,
-    ];
 }
 
 #[cfg(test)]
@@ -179,16 +155,21 @@ mod tests {
     /// `ALL` has to actually be all of them, or every test that iterates it
     /// proves less than it looks like it does.
     ///
-    /// Checked through `name`, whose match *is* exhaustive: a variant missing
-    /// from `ALL` has a name no entry produces.
+    /// This used to be the guard: a loop over `ALL` checking names are
+    /// non-empty, plus a hand-pinned count. Neither can see a variant that
+    /// `ALL` never mentions — `Method::GetAddressMempool` was in the enum and
+    /// in `name`, absent from `ALL`, and this test passed anyway because the
+    /// count had been pinned to match the omission rather than the enum.
+    /// `ALL` is no longer a hand-written array to fall behind: `methods!`
+    /// builds the enum, `name` and `ALL` from one list, so a variant present
+    /// in the enum is present in `ALL` by construction. What is left to check
+    /// is the ordinary kind of bug — a typo'd or duplicated name.
     #[test]
     fn every_variant_is_listed() {
         for method in Method::ALL {
             assert!(!method.name().is_empty());
         }
-        // Distinctness is checked separately; this is the count, pinned so a
-        // variant added to the enum and to `name` but not to `ALL` is caught.
-        assert_eq!(Method::ALL.len(), 24);
+        assert_eq!(Method::ALL.len(), 25);
     }
 
     #[test]
