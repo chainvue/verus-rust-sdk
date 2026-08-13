@@ -14,10 +14,10 @@ use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
     converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
-    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityContent,
-    IdentityRecord, MempoolDelta, OfferListing, RawAddressBalance, RawAddressDelta, RawAddressUtxo,
-    RawChainInfo, RawConversionEstimate, RawCurrency, RawCurrencyEntry, RawIdentity,
-    RawMempoolDelta, RawOfferEntry,
+    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityAtAddress,
+    IdentityContent, IdentityRecord, MempoolDelta, OfferListing, RawAddressBalance,
+    RawAddressDelta, RawAddressUtxo, RawChainInfo, RawConversionEstimate, RawCurrency,
+    RawCurrencyEntry, RawIdentity, RawIdentityAtAddress, RawMempoolDelta, RawOfferEntry,
 };
 
 /// Asking a node questions.
@@ -275,6 +275,49 @@ pub trait ChainReader {
     fn estimate_fee(&self, blocks: u32) -> Result<Option<Amount>, RpcError>;
     /// A VerusID, including the output that holds it.
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError>;
+    /// Every identity that lists `address` among its **primary addresses**.
+    ///
+    /// The one identity read that does not start from the identity. A wallet
+    /// holds keys, not names, and without this it cannot answer "which
+    /// identities do I control" — only "tell me about this one", which requires
+    /// already knowing the answer.
+    ///
+    /// Scoped on purpose. This is not a way to enumerate identities in general:
+    /// the caller nominates an address, and the daemon answers about that
+    /// address alone.
+    ///
+    /// # What comes back, and what does not
+    ///
+    /// [`IdentityAtAddress`], not [`IdentityRecord`] — the reply is the
+    /// identity objects themselves rather than the envelope, so it carries no
+    /// fully-qualified name, no status string and no block height. See that
+    /// type for why inventing them would be worse than not having them.
+    ///
+    /// An empty list is a real answer: an address that controls nothing gives
+    /// one.
+    ///
+    /// # `unspent: true`, deliberately
+    ///
+    /// The daemon defaults this to **false**, which searches the whole history:
+    /// an identity that listed `address` in some earlier version comes back
+    /// even though its current version does not, and the `txout` it comes back
+    /// with is that earlier, already-spent output.
+    ///
+    /// Both halves of that are wrong for a caller asking what it controls. The
+    /// first shows an identity somebody no longer has any key for. The second is
+    /// worse: an identity update has to spend the output currently holding the
+    /// identity, so building one against a superseded outpoint produces a
+    /// transaction the chain rejects — after it has been signed.
+    ///
+    /// So this asks the present-tense question, which is the only one whose
+    /// answer is safe to act on. The historical search is a different question
+    /// and would be a different method.
+    ///
+    /// Sent as one object argument, matching the daemon's own usage message.
+    /// The allowlist in front of `api.verustest.net` serves it — verified
+    /// 2026-08-13, where the bare call answers `-1` (usage) rather than
+    /// `-32601` (absent).
+    fn identities_with_address(&self, address: &str) -> Result<Vec<IdentityAtAddress>, RpcError>;
     /// A VerusID **as it stood at `height`**.
     ///
     /// An identity's controlling addresses can change, so verifying a signature
@@ -891,6 +934,16 @@ impl<T: Transport> ChainReader for RpcClient<T> {
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
         let raw: RawIdentity = self.call(Method::GetIdentity, json!([name_or_id]))?;
         raw.into_typed()
+    }
+
+    fn identities_with_address(&self, address: &str) -> Result<Vec<IdentityAtAddress>, RpcError> {
+        let raw: Vec<RawIdentityAtAddress> = self.call(
+            Method::GetIdentitiesWithAddress,
+            json!([{ "address": address, "unspent": true }]),
+        )?;
+        raw.into_iter()
+            .map(RawIdentityAtAddress::into_typed)
+            .collect()
     }
 
     fn identity_content(&self, name_or_id: &str) -> Result<IdentityContent, RpcError> {

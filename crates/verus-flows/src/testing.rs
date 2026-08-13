@@ -653,6 +653,44 @@ impl ChainReader for ScriptedReader {
             })
     }
 
+    /// Every scripted identity whose `primaryaddresses` contains `address`.
+    ///
+    /// Answered from the same script `identity` uses, rather than from a second
+    /// list: two lists would let a test set up an identity that this method can
+    /// find and `identity` cannot, which is a state the chain cannot be in.
+    fn identities_with_address(
+        &self,
+        address: &str,
+    ) -> Result<Vec<verus_rpc::IdentityAtAddress>, RpcError> {
+        self.count();
+        let mut found = Vec::new();
+        for (_, record) in self.identities.borrow().iter() {
+            let lists_it = record.identity["primaryaddresses"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|one| one.as_str() == Some(address)));
+            if !lists_it {
+                continue;
+            }
+            found.push(verus_rpc::IdentityAtAddress {
+                identity_address: record.identity_address.clone(),
+                name: record.identity["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                parent: record.identity["parent"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                flags: u32::try_from(record.identity["flags"].as_u64().unwrap_or(0)).unwrap_or(0),
+                timelock: u32::try_from(record.identity["timelock"].as_u64().unwrap_or(0))
+                    .unwrap_or(0),
+                outpoint: record.outpoint,
+                identity: record.identity.clone(),
+            });
+        }
+        Ok(found)
+    }
+
     fn vdxf_id(&self, _name: &str) -> Result<[u8; 20], RpcError> {
         self.count();
         Err(RpcError::Unexpected(

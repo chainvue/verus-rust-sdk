@@ -216,6 +216,25 @@ impl ChainReader for Node {
         let record = self.identity_record(name_or_id);
         self.record(&format!("getidentity {name_or_id}"), record)
     }
+    fn identities_with_address(
+        &self,
+        address: &str,
+    ) -> Result<Vec<verus_rpc::IdentityAtAddress>, RpcError> {
+        let record = self.identity_record(address);
+        // One entry, so a node that answered with none would be a difference
+        // the corroboration has to catch — the failure this method is most
+        // exposed to is a shorter list, not a wrong one.
+        let found = vec![verus_rpc::IdentityAtAddress {
+            identity_address: record.identity_address,
+            name: self.name.to_string(),
+            parent: String::new(),
+            flags: 0,
+            timelock: 0,
+            outpoint: record.outpoint,
+            identity: record.identity,
+        }];
+        self.record(&format!("getidentitieswithaddress {address}"), found)
+    }
     fn identity_at(
         &self,
         name_or_id: &str,

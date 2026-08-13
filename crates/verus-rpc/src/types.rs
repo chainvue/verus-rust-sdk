@@ -631,6 +631,59 @@ impl IdentityRecord {
     }
 }
 
+/// One identity found by [`crate::ChainReader::identities_with_address`].
+///
+/// # Why this is not an [`IdentityRecord`]
+///
+/// `getidentitieswithaddress` answers with the identity objects themselves —
+/// the same shape as `getidentity`'s **inner** `identity` field — rather than
+/// with the envelope around them. Three fields an [`IdentityRecord`] promises
+/// are simply not in the reply: `fullyqualifiedname`, `status`, and
+/// `blockheight`. Filling them in would mean inventing two of them, and an
+/// invented `fullyqualifiedname` is the field a person reads to decide which
+/// identity they are looking at.
+///
+/// So this type carries what the reply carries. For the full envelope, and for
+/// the consensus-accurate view before anything is signed, ask
+/// [`crate::ChainReader::identity`] about [`IdentityAtAddress::identity_address`]
+/// — which is the identifier to prefer for anything destructive anyway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityAtAddress {
+    /// The identity's own `i` address.
+    pub identity_address: String,
+    /// The **name component only**, without the parent and without the `@`.
+    ///
+    /// `vdxf1171008`, not `vdxf1171008.VRSCTEST@`. Qualifying it needs the
+    /// parent's name, and [`IdentityAtAddress::parent`] is an i-address — so
+    /// that is another request, and the caller decides whether to spend it.
+    pub name: String,
+    /// The parent currency's i-address. All-zero-ish roots have none.
+    pub parent: String,
+    /// Raw identity flags. Interpreted for you by
+    /// [`IdentityAtAddress::is_revoked`]; `verus_tx::identity` names the bits.
+    pub flags: u32,
+    /// The identity's `unlock_after` field, whose meaning **depends on
+    /// `flags`** — an absolute height when unlocked, a relative delay when
+    /// locked. `verus_tx::identity::Timelock` is what reads it correctly; do
+    /// not compare it against a block height without checking the flag first.
+    pub timelock: u32,
+    /// The output currently holding the identity, which moves with every
+    /// update.
+    pub outpoint: (Txid, u32),
+    /// The whole object, for the fields not lifted above.
+    pub identity: serde_json::Value,
+}
+
+impl IdentityAtAddress {
+    /// Whether the identity is revoked.
+    ///
+    /// Read off the flag rather than off a `status` string, because this reply
+    /// has no status string. Same answer, different source.
+    pub fn is_revoked(&self) -> bool {
+        self.flags & verus_tx::identity::FLAG_REVOKED != 0
+    }
+}
+
 // ---- deserialization ----
 
 #[derive(Deserialize)]
@@ -1199,6 +1252,68 @@ impl RawIdentity {
             ),
             block_height: self.blockheight,
             identity: self.identity,
+        })
+    }
+}
+
+/// One element of `getidentitieswithaddress`'s reply.
+///
+/// The identity object itself, plus the `txout` that holds it. Deserialized
+/// permissively — every field this does not name stays in `rest` — because the
+/// daemon adds fields to identity objects across versions and a strict struct
+/// would refuse a reply that is merely newer than this crate.
+#[derive(Deserialize)]
+pub(crate) struct RawIdentityAtAddress {
+    pub identityaddress: String,
+    pub name: String,
+    #[serde(default)]
+    pub parent: String,
+    #[serde(default)]
+    pub flags: u32,
+    #[serde(default)]
+    pub timelock: u32,
+    pub txout: RawTxOut,
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `getidentitieswithaddress` spells the outpoint differently from
+/// `getidentity`: nested under `txout`, and `voutnum` rather than `vout`.
+#[derive(Deserialize)]
+pub(crate) struct RawTxOut {
+    pub txid: String,
+    pub voutnum: u32,
+}
+
+impl RawIdentityAtAddress {
+    pub(crate) fn into_typed(self) -> Result<IdentityAtAddress, RpcError> {
+        let outpoint = (
+            Txid::from_display_hex(&self.txout.txid)
+                .map_err(|e| RpcError::OutOfRange(format!("txout.txid: {e}")))?,
+            self.txout.voutnum,
+        );
+
+        // Rebuilt rather than kept alongside, so `identity` is the whole object
+        // exactly as `getidentity`'s inner field would be — which is what
+        // `content_multimap` and `Timelock` both expect to be handed.
+        let mut identity = self.rest;
+        identity.insert(
+            "identityaddress".into(),
+            self.identityaddress.clone().into(),
+        );
+        identity.insert("name".into(), self.name.clone().into());
+        identity.insert("parent".into(), self.parent.clone().into());
+        identity.insert("flags".into(), self.flags.into());
+        identity.insert("timelock".into(), self.timelock.into());
+
+        Ok(IdentityAtAddress {
+            identity_address: self.identityaddress,
+            name: self.name,
+            parent: self.parent,
+            flags: self.flags,
+            timelock: self.timelock,
+            outpoint,
+            identity: serde_json::Value::Object(identity),
         })
     }
 }

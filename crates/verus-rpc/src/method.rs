@@ -68,6 +68,13 @@ methods! {
     EstimateConversion => "estimateconversion",
     EstimateFee => "estimatefee",
     GetIdentity => "getidentity",
+    /// The one identity read that is not a lookup by name.
+    ///
+    /// A wallet cannot otherwise answer "which identities do my keys control":
+    /// every other identity method takes the identity you are already asking
+    /// about. There is deliberately still no way to list identities in general
+    /// — this is scoped to an address the caller nominates.
+    GetIdentitiesWithAddress => "getidentitieswithaddress",
     GetIdentityHistory => "getidentityhistory",
     GetIdentityContent => "getidentitycontent",
     GetVdxfId => "getvdxfid",
@@ -119,6 +126,7 @@ impl Method {
             | Method::GetCurrencyState
             | Method::ListCurrencies
             | Method::GetCurrencyConverters
+            | Method::GetIdentitiesWithAddress
             | Method::EstimateFee
             | Method::EstimateConversion
             | Method::GetIdentity
@@ -169,7 +177,7 @@ mod tests {
         for method in Method::ALL {
             assert!(!method.name().is_empty());
         }
-        assert_eq!(Method::ALL.len(), 25);
+        assert_eq!(Method::ALL.len(), 26);
     }
 
     #[test]

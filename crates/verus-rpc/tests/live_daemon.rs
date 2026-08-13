@@ -925,6 +925,89 @@ fn the_marketplace_still_lists_offers_in_the_shape_we_parse() {
     );
 }
 
+/// The address-scoped identity lookup parses, and answers about the right one.
+///
+/// A fixture cannot carry the weight here. The reply is not the shape
+/// `getidentity` returns — no `fullyqualifiedname`, no `status`, and the
+/// outpoint nested under `txout` with `voutnum` rather than `vout` — and that
+/// difference was found by asking the daemon, not by reading the help text. A
+/// frozen fixture would keep agreeing with whatever this crate happened to
+/// assume on the day it was captured.
+///
+/// The identity used is `vdxf1171008.VRSCTEST@`, which the module's other tests
+/// already lean on: it has one primary address and two content-multimap keys.
+#[test]
+fn the_public_endpoint_finds_identities_by_their_primary_address() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    const PRIMARY: &str = "RK9izAySZHQAaCEkRmVV4Xtu73uV5sqsZy";
+    const EXPECTED: &str = "i92nDT1FzULuXGGXbCt8VHC4qpYc2R1Bfr";
+
+    let found = client()
+        .identities_with_address(PRIMARY)
+        .expect("getidentitieswithaddress");
+
+    let one = found
+        .iter()
+        .find(|entry| entry.identity_address == EXPECTED)
+        .unwrap_or_else(|| panic!("{PRIMARY} controls {EXPECTED}, found {found:?}"));
+
+    // The name component alone, which is the whole point of the type carrying
+    // `name` rather than a fully-qualified one it would have to invent.
+    assert_eq!(one.name, "vdxf1171008");
+    assert!(!one.is_revoked());
+
+    // Every entry really does list the address asked about. A daemon answering
+    // with somebody else's identity is the failure that would matter most, and
+    // it is invisible unless checked.
+    for entry in &found {
+        let lists_it = entry.identity["primaryaddresses"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|a| a.as_str() == Some(PRIMARY)));
+        assert!(
+            lists_it,
+            "{} came back for {PRIMARY} but does not list it",
+            entry.identity_address
+        );
+    }
+
+    // The rebuilt `identity` object has to be the same shape `getidentity`
+    // hands back, because `content_multimap` and the timelock reader are both
+    // written against that shape.
+    let whole = client().identity(EXPECTED).expect("getidentity");
+    assert_eq!(
+        verus_rpc::content_multimap(&one.identity).expect("content"),
+        verus_rpc::content_multimap(&whole.identity).expect("content"),
+        "the two readings of the same identity disagree about its content",
+    );
+
+    // One address can control many identities. `RQr2cUk…`, this crate's own
+    // fixture address, controls nineteen on VRSCTEST — which is worth knowing
+    // before a caller assumes a wallet key maps to at most one name.
+    let many = client()
+        .identities_with_address("RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX")
+        .expect("getidentitieswithaddress");
+    assert!(
+        many.len() > 1,
+        "expected the fixture address to control several, found {}",
+        many.len()
+    );
+
+    // An address that controls nothing is an empty list, not an error. Derived
+    // from a fixed scalar rather than typed, so it is a valid address that
+    // nobody has ever held a key for.
+    let nobody = verus_keys::PrivateKey::from_bytes(&[0x2a; 32], true)
+        .expect("a fixed scalar is a valid key")
+        .address()
+        .to_string();
+    let none = client()
+        .identities_with_address(&nobody)
+        .expect("an address controlling nothing still answers");
+    assert!(none.is_empty(), "unexpectedly found {none:?}");
+}
+
 /// The four reads added for chain discovery still parse from the live node.
 ///
 /// Each has a way of drifting quietly, which is why a fixture is not enough:

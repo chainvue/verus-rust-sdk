@@ -169,7 +169,8 @@ use crate::client::ChainReader;
 use crate::error::RpcError;
 use crate::types::{
     AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyConverter,
-    CurrencyPolicy, CurrencySummary, IdentityContent, IdentityRecord, MempoolDelta, OfferListing,
+    CurrencyPolicy, CurrencySummary, IdentityAtAddress, IdentityContent, IdentityRecord,
+    MempoolDelta, OfferListing,
 };
 
 /// A [`ChainReader`] that asks two nodes the questions where being lied to
@@ -284,6 +285,27 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
         let primary = self.primary.identity(name_or_id);
         let secondary = self.secondary.identity(name_or_id);
         agreed(format!("getidentity {name_or_id}"), primary, secondary)
+    }
+
+    /// Both nodes.
+    ///
+    /// Worth corroborating for the same reason [`Self::identity`] is, and with
+    /// a sharper edge: a node that *omits* an identity here does not produce a
+    /// visibly wrong answer, it produces a shorter list. A wallet showing one
+    /// identity fewer than it controls looks exactly like a wallet that is
+    /// working, which is why silence is the failure worth catching.
+    ///
+    /// Two honest nodes can still legitimately differ — an identity updated
+    /// between the calls moves to a new output — so this cries wolf in the same
+    /// safe direction as [`Self::identity`]: ask again.
+    fn identities_with_address(&self, address: &str) -> Result<Vec<IdentityAtAddress>, RpcError> {
+        let primary = self.primary.identities_with_address(address);
+        let secondary = self.secondary.identities_with_address(address);
+        agreed(
+            format!("getidentitieswithaddress {address}"),
+            primary,
+            secondary,
+        )
     }
 
     /// Both nodes, compared in full.
