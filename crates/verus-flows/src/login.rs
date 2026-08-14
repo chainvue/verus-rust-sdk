@@ -288,6 +288,16 @@ fn authority(record: &verus_rpc::IdentityRecord) -> Result<(Vec<Address>, u32), 
             "an identity with no primary addresses cannot sign".into(),
         ));
     }
+
+    // Refused here rather than left to `verify_message`'s own guard: a login is
+    // the one caller whose threshold nothing re-checks on-chain, so the last
+    // checker of it should be the one that enforces it. A 0-of-n identity would
+    // accept any signature, or none.
+    if minimum == 0 {
+        return Err(FlowError::NotReady(
+            "an identity requiring zero signatures would accept anything".into(),
+        ));
+    }
     Ok((addresses, minimum))
 }
 
@@ -610,6 +620,29 @@ mod tests {
         ) {
             Err(FlowError::NotReady(message)) => assert!(message.contains("minimumsignatures")),
             other => panic!("expected a missing-threshold refusal, got {other:?}"),
+        }
+    }
+
+    /// A 0-of-n identity would accept any signature, or none. The refusal has
+    /// to come from *this* crate — `verify_message` has its own zero guard, but
+    /// a login is the one caller whose threshold nothing re-checks on-chain, so
+    /// matching on `NotReady` is what makes this fail if the check ever moves
+    /// back out of `authority`.
+    #[test]
+    fn a_zero_minimumsignatures_is_refused() {
+        let address = key().address().to_string();
+        let node = chain(1_000, record(&[&address], 0, false));
+        let signature = sign_login(&node, &key(), "alice@", &request()).unwrap();
+
+        match verify_login(
+            &node,
+            "alice@",
+            &signature,
+            &request(),
+            &LoginPolicy::default(),
+        ) {
+            Err(FlowError::NotReady(message)) => assert!(message.contains("zero signatures")),
+            other => panic!("expected a zero-threshold refusal, got {other:?}"),
         }
     }
 
