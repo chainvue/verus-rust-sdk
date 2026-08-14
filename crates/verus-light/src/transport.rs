@@ -118,11 +118,32 @@ mod blocking {
             self
         }
 
+        /// Refuse an endpoint this transport should never have been handed.
+        ///
+        /// Two independent decisions live here, and they are deliberately
+        /// sequenced so neither can shadow the other. The **userinfo** rule
+        /// applies to both schemes: this crate has no `Credentials` type, no
+        /// zeroize-on-drop and no redacting `Debug`, so a `user:pass@` in an
+        /// endpoint is never intentional, and TLS does not make it meaningful
+        /// — it only stops a network observer reading it, while it still
+        /// reaches a terminal or a log through `ureq`'s error text, which
+        /// embeds the whole URL. The **plaintext** rule applies to `http://`
+        /// alone. Running the first before the second is what keeps
+        /// `https://user:pass@evil.example` from being waved through.
+        ///
+        /// `verus-rpc` deliberately does the opposite and *supports* userinfo,
+        /// because it has a `Credentials` type that zeroizes on drop and
+        /// redacts in `Debug`, and it strips the userinfo with
+        /// `split_userinfo` before its own scheme check. That asymmetry is
+        /// intentional and should not be "harmonised" — #161 exists precisely
+        /// because a check was once copied between these two crates without
+        /// the thing that made it safe.
         fn check_scheme(base: &str) -> Result<(), LightError> {
-            if base.starts_with("https://") {
-                return Ok(());
-            }
-            let Some(rest) = base.strip_prefix("http://") else {
+            let (rest, is_tls) = if let Some(rest) = base.strip_prefix("https://") {
+                (rest, true)
+            } else if let Some(rest) = base.strip_prefix("http://") {
+                (rest, false)
+            } else {
                 // Never echo the raw endpoint here: this is the arm a stray
                 // leading space (a YAML value, an env var) or an uppercase
                 // `HTTPS://` typo falls into, and both are exactly the kind
@@ -166,17 +187,31 @@ mod blocking {
             // `verus-rpc`, which carries node credentials), so refuse it
             // outright rather than parse around it.
             //
+            // This runs *before* the `is_tls` shortcut below, and must keep
+            // doing so. When it sat after it, the whole check was dead on
+            // the TLS path: `https://user:pass@evil.example` was accepted
+            // outright, and a later transport failure — a DNS miss is
+            // enough — surfaced `ureq`'s own error text, which embeds the
+            // full URL, straight through `LightError::Transport`.
+            //
             // The refusal must not itself leak whatever was in there: unlike
             // `verus-rpc`'s `Credentials`, nothing here is going to zeroize
             // or redact this string on the way to a `Debug` impl or a log
             // line, so the message reports only what follows the last `@`
             // — never the authority as a whole, which is where a password
-            // would be sitting.
+            // would be sitting. `rsplit_once`, not `split_once`: an `@`
+            // inside the password (`user:pa@ss@host`) splits early under
+            // `split_once` and lets the password tail through.
             if let Some((_, host_part)) = authority.rsplit_once('@') {
                 return Err(LightError::Refused(format!(
-                    "refusing plaintext http:// to {host_part}: this endpoint takes no \
+                    "refusing endpoint for {host_part}: this endpoint takes no \
                      user:password@ — remove it, this transport never sends credentials"
                 )));
+            }
+            // Everything past this point is the plaintext rule, which TLS
+            // genuinely does settle.
+            if is_tls {
+                return Ok(());
             }
             // Whatever trails a host must be nothing, or a `:` followed only
             // by digits — anything else past this point is refused outright
