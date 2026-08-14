@@ -20,6 +20,38 @@ pub const WIF_VERSION: u8 = 0xbc;
 /// this module derives from it is wrapped in [`Zeroizing`]. That shortens the
 /// window in which key material sits in memory; it does not defend against a
 /// host that can read the process, and nothing here pretends otherwise.
+///
+/// # Known residue this crate cannot fix
+///
+/// On wasm32, constructing a key — `SigningKey::from_slice` -> `NonZeroScalar`
+/// -> `Scalar::from_repr`, plus the public-key derivation that follows —
+/// leaves compiler-spilled copies of the scalar sitting in linear memory:
+/// seven of them, measured on `k256` 0.13.4 / `crypto-bigint` 0.5.5, release +
+/// `wasm-opt`. Six are on the shadow stack, one on the heap. `SigningKey`
+/// itself does implement `Drop`/`ZeroizeOnDrop`, so the *live* key is wiped;
+/// these are spills the optimizer leaves around it, upstream of anything
+/// `verus-keys` controls. They are bounded, not permanent: a single
+/// subsequent key construction (`fromEntropy` + `free`) overwrites all seven
+/// — 0 remaining, measured at churn = 1, 2, 5, 10, 20, 50, 200, and 500 —
+/// which makes this materially weaker than a key that stays readable for the
+/// life of the page, but it is not nothing, and exploiting it requires a
+/// same-realm memory read the wasm bindings already disclaim defending
+/// against.
+///
+/// The byte-order trap, because it is the detail that costs the most time to
+/// rediscover: `k256` stores the scalar as `crypto_bigint::U256` limbs,
+/// **little-endian on wasm32**. A memory search for the key in canonical
+/// big-endian order finds none of these seven copies. Search with a uniform
+/// fill (e.g. every byte set to the same value) instead, which reads
+/// identically regardless of byte order. See issue #170 for the measurement
+/// method and addresses.
+///
+/// `to_bytes`'s own source temporary does *not* contribute to this residue.
+/// Measured separately: wrapping or explicitly zeroizing
+/// `SigningKey::to_bytes`'s return leaves an unrelated canonical-order copy
+/// in the same place either way, and removing `to_wif`'s base58check
+/// encoding removes that copy entirely. It belongs to `encode_check`'s
+/// SHA-256 block buffer, not to `to_bytes`.
 #[derive(Clone)]
 pub struct PrivateKey {
     signing_key: SigningKey,
@@ -40,6 +72,10 @@ impl core::fmt::Debug for PrivateKey {
 
 impl PrivateKey {
     /// Build from raw scalar bytes.
+    ///
+    /// See the memory-hygiene note on [`PrivateKey`] itself for the residue
+    /// this construction path leaves behind on wasm32, which this crate
+    /// cannot fix.
     pub fn from_bytes(bytes: &[u8; 32], compressed: bool) -> Result<Self, KeyError> {
         let signing_key = SigningKey::from_slice(bytes).map_err(|_| KeyError::InvalidPrivateKey)?;
         Ok(Self {
@@ -92,8 +128,17 @@ impl PrivateKey {
 
     /// The raw scalar.
     pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+        // `SigningKey::to_bytes` returns a plain `FieldBytes` (a `GenericArray`
+        // with no `Drop`/zeroize of its own) holding the scalar in canonical
+        // order. Wrapping it here is defensible hygiene and costs nothing
+        // measurable — but measurement (issue #170) found no residual copy
+        // attributable to this temporary specifically: the canonical-order
+        // copy left behind on the wasm32 `to_wif` path comes from
+        // `encode_check`'s SHA-256 block buffer, not from here. See the note
+        // on `PrivateKey` for the full picture.
+        let raw = Zeroizing::new(self.signing_key.to_bytes());
         let mut out = Zeroizing::new([0u8; 32]);
-        out.copy_from_slice(&self.signing_key.to_bytes());
+        out.copy_from_slice(&raw);
         out
     }
 
