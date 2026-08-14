@@ -194,6 +194,12 @@ pub struct MempoolDelta {
     /// spend whose native value is zero, which covers every token-only output
     /// and the CryptoCondition outputs an identity registration spends.
     ///
+    /// Two invariants the reader does enforce, and which are worth relying on:
+    /// `spends.is_some()` implies `spending`, and a `spending` row with no
+    /// `spends` always has `satoshis == 0`. The second is what makes accepting
+    /// the unnamed row safe — a spend that reported native value leaving while
+    /// naming nothing would be a reply this reader does not understand.
+    ///
     /// A row that *contradicts* itself — a receive carrying a prevout, or a
     /// spend naming half of one — is still refused rather than reconciled.
     pub spends: Option<(Txid, u32)>,
@@ -866,8 +872,11 @@ impl RawMempoolDelta<'_> {
         // those are exactly the rows `best_effort_spent` needs to withhold
         // coins an unconfirmed transaction already spends.
         //
-        // A spend that reports value leaving and *still* names no prevout is
-        // not explained by any of that, so it stays refused.
+        // A spend that reports *native* value leaving and still names no
+        // prevout is not explained by any of that, so it stays refused. Note
+        // "native": a token-only spend accepted here moves value in
+        // `currency_values` while `satoshis` is zero, which is exactly the
+        // case the gate above is about.
         let satoshis = json::signed_satoshis(self.satoshis, "satoshis")?;
         let spends = match (self.spending, self.prevtxid, self.prevout) {
             (true, Some(txid), Some(vout)) => Some((
@@ -875,7 +884,7 @@ impl RawMempoolDelta<'_> {
                     .map_err(|e| RpcError::OutOfRange(format!("prevtxid: {e}")))?,
                 vout,
             )),
-            (true, None, None) if satoshis == SignedAmount::from_sat(0) => None,
+            (true, None, None) if satoshis == SignedAmount::ZERO => None,
             (false, None, None) => None,
             (spending, txid, vout) => {
                 return Err(RpcError::Unexpected(format!(

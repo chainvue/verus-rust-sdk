@@ -1182,6 +1182,25 @@ fn an_unnamed_spend_does_not_discard_the_named_ones() {
     assert_eq!(named[0].1, 7);
 }
 
+/// A zero-value *receive* still decodes as a receive.
+///
+/// The guarded arm requires `spending: true`, so this can never reach it — but
+/// nothing else pins that. Reordering the match arms or widening the guard to
+/// key off `satoshis` alone would turn an ordinary token-only receipt into a
+/// spend, and a wallet would withhold a coin that was arriving.
+#[test]
+fn a_zero_value_receive_is_still_a_receive() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":0,"spending":false,"timestamp":1}]}"#,
+    ));
+    let rows = node
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("a token-only receipt is an ordinary reply");
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].spending, "a receive must not become a spend");
+    assert_eq!(rows[0].spends, None);
+}
+
 /// A spend naming only half a prevout stays refused — still contradictory.
 #[test]
 fn a_half_present_prevout_is_refused() {

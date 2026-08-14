@@ -243,6 +243,18 @@ fn best_effort_spent(
 
 /// The outpoints an unconfirmed transaction already consumes.
 ///
+/// # A gap this cannot close
+///
+/// The outpoints the daemon leaves unnamed are exactly the zero-native-value
+/// ones — which is what [`identity_held_tokens`] returns. So on the token path
+/// this filter is structurally blind: it cannot withhold a reserve output an
+/// unconfirmed transaction already spends, because the node never said which
+/// one that was. That matters more there than elsewhere, since an identity
+/// spend consumes every output it is handed. Closing it needs the pending
+/// transaction's own inputs, which means a `getrawtransaction` fallback this
+/// does not do. Not a regression — refusing the reply withheld nothing at all,
+/// including for the named spends — but not a solved problem either.
+///
 /// Both filters below are load-bearing, and they are not interchangeable.
 /// `spending` is the direction and is always present; `spends` names the
 /// consumed outpoint and is absent on a spend the daemon left unnamed — which
@@ -257,9 +269,9 @@ fn already_spent(pending: &[verus_rpc::MempoolDelta]) -> Vec<(verus_tx::Txid, u3
         .iter()
         // Not redundant with the `filter_map` below: a spend of a
         // zero-native-value output arrives with `spending` true and no
-        // prevout, so the two select different rows. Selecting on `spending`
-        // first states the condition that actually matters, and keeps this
-        // correct if a future reply ever carries a prevout on a receive.
+        // prevout, so the two genuinely select different rows. Naming the
+        // direction explicitly is what makes the intent readable — this
+        // withholds what is *being spent*, and that is `spending`'s job.
         .filter(|row| row.spending)
         .filter_map(|row| row.spends)
         .collect()
