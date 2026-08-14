@@ -123,8 +123,33 @@ mod blocking {
                 return Ok(());
             }
             let Some(rest) = base.strip_prefix("http://") else {
+                // Never echo the raw endpoint here: this is the arm a stray
+                // leading space (a YAML value, an env var) or an uppercase
+                // `HTTPS://` typo falls into, and both are exactly the kind
+                // of mistake that has real credentials sitting in the rest
+                // of the string. Report only the scheme — `" http"` still
+                // shows the stray space, `"HTTPS"` still shows the casing —
+                // and nothing past the `://` ever reaches the message. A
+                // `base.split("://").next()` would look equivalent but is
+                // not: with no `://` anywhere (`user:pass@host`, no scheme
+                // at all) that yields the *entire* string unchanged, so the
+                // separator's presence is checked explicitly instead.
+                //
+                // Nor is "whatever precedes the first `://`" necessarily a
+                // scheme: `user:SECRET@https://node.example` — the mangled
+                // form of `https://user:SECRET@node.example` — puts a
+                // password before the `://` too, so a bare prefix still
+                // leaks it. A real scheme can never itself contain `:`, `@`
+                // or `/`; `" http"`, `"\thttp"`, `"HTTPS"` and `"http "`
+                // don't, so the check costs nothing on the cases this is
+                // meant to diagnose while refusing to print anything on the
+                // ones it isn't.
+                let scheme = match base.find("://") {
+                    Some(end) if !base[..end].contains([':', '@', '/']) => &base[..end],
+                    _ => "",
+                };
                 return Err(LightError::Refused(format!(
-                    "endpoint must start with http:// or https://, got {base}"
+                    "endpoint must start with http:// or https://, got scheme {scheme:?}"
                 )));
             };
             // Bound the authority the way a URL parser would: up to the
