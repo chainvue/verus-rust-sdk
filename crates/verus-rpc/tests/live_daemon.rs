@@ -1130,11 +1130,15 @@ fn the_public_endpoint_serves_the_address_mempool() {
     // is worth asserting is the invariant a caller depends on.
     for row in &rows {
         assert_eq!(row.address, "RK9izAySZHQAaCEkRmVV4Xtu73uV5sqsZy");
-        assert_eq!(
-            row.spending,
-            row.spends.is_some(),
-            "a spend must name its prevout and a receive must not"
-        );
+        // Only one direction of this holds. A named prevout implies a spend;
+        // the converse does not, because the daemon omits the prevout pair
+        // for a spend whose native value is zero — so a live reply carrying
+        // an unconfirmed token-only or identity-registration spend has
+        // `spending` true with `spends` absent, and asserting equality here
+        // would fail against a perfectly conforming node.
+        if row.spends.is_some() {
+            assert!(row.spending, "a named prevout means the row is a spend");
+        }
         println!(
             "  {} {} {}",
             if row.spending { "spend " } else { "receive" },

@@ -241,6 +241,29 @@ impl ScriptedReader {
         self
     }
 
+    /// An unconfirmed spend the node reports **without** naming the outpoint.
+    ///
+    /// Not a malformed row: `getaddressmempool` omits `prevtxid`/`prevout` for
+    /// a spend whose native value is zero, which is every token-only output and
+    /// the CryptoCondition output an identity registration spends. The reader
+    /// accepts it with `spends: None`, so the direction is known and the
+    /// outpoint is not — a coin this filter cannot withhold, sitting in the
+    /// same reply as coins it can.
+    pub fn with_unnamed_mempool_spend(self, address: &str) -> Self {
+        let row = MempoolDelta {
+            address: address.to_string(),
+            txid: Txid::from_internal([0xfd; 32]),
+            index: 0,
+            satoshis: verus_rpc::SignedAmount::from_sat(0),
+            currency_values: std::collections::BTreeMap::new(),
+            spending: true,
+            spends: None,
+            timestamp: 1_785_894_733,
+        };
+        self.address_mempool.borrow_mut().push(row);
+        self
+    }
+
     /// Serve blocks that carry no `finalsaplingroot` at all.
     ///
     /// A node that omits the field must not read as agreement, and the default

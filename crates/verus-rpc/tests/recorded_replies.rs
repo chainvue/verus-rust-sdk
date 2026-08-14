@@ -1111,11 +1111,17 @@ fn a_receive_and_a_spend_sharing_an_index_are_both_kept() {
     assert_eq!(rows.len(), 3);
 }
 
-/// A spend whose prevout is missing is refused rather than read as a receipt.
+/// A spend that reports value leaving and still names no prevout is refused.
 ///
-/// The dangerous direction: `spending` says money left, the absent
-/// `prevtxid`/`prevout` says nothing was consumed. Silently trusting either
-/// half gives a wallet a row it will show as incoming.
+/// The daemon omits the prevout pair exactly when the delta amount is not
+/// negative, so a row claiming `satoshis: -1` with no `prevtxid` is not
+/// something a conforming node emits — and the dangerous reading is right
+/// there: `spending` says money left, the absent prevout says nothing was
+/// consumed. Silently trusting either half gives a wallet a row it will show
+/// as incoming.
+///
+/// Contrast `a_zero_value_spend_without_a_prevout_is_accepted` below, which is
+/// the shape a node really does send.
 #[test]
 fn a_spend_without_a_prevout_is_refused() {
     let node = RpcClient::new(Fixed(
@@ -1125,6 +1131,66 @@ fn a_spend_without_a_prevout_is_refused() {
         Err(RpcError::Unexpected(message)) => {
             assert!(message.contains("spending=true"), "{message}");
             assert!(message.contains("prevtxid=absent"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// Spending a zero-native-value output is accepted with no prevout named.
+///
+/// This is not a malformed reply — it is what every conforming node sends for
+/// the case. `getaddressmempool` emits `spending` unconditionally from the
+/// address-index key but gates `prevtxid`/`prevout` on `amount < 0`, and a
+/// spend's amount is `prevout.nValue * -1`. So an output worth zero natively —
+/// a token-only output, or the CryptoCondition output an identity registration
+/// spends — yields `spending: true`, `satoshis: 0`, and neither prevout field.
+///
+/// Refusing it failed the **whole** reply, discarding the well-formed spend
+/// rows alongside it; see `an_unnamed_spend_does_not_discard_the_named_ones`.
+/// The direction survives because it is read from `spending`, never inferred
+/// from `spends`.
+#[test]
+fn a_zero_value_spend_without_a_prevout_is_accepted() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":0,"spending":true,"timestamp":1}]}"#,
+    ));
+    let rows = node
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("an unnamed zero-value spend is a shape the daemon really sends");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].spending, "the direction must survive");
+    assert_eq!(rows[0].spends, None, "the node named no outpoint");
+}
+
+/// One unnamed spend must not take the named ones down with it.
+///
+/// This is the reason the refusal was worse than the acceptance: rows are
+/// collected with `collect::<Result<_, _>>()`, so a single refused row failed
+/// the entire reply — and `best_effort_spent` then withheld *nothing*,
+/// including for the perfectly well-formed spend sitting beside it.
+#[test]
+fn an_unnamed_spend_does_not_discard_the_named_ones() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":0,"spending":true,"timestamp":1},{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","index":1,"satoshis":-500,"spending":true,"prevtxid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prevout":7,"timestamp":1}]}"#,
+    ));
+    let rows = node
+        .address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"])
+        .expect("the unnamed row must not fail the reply");
+    assert_eq!(rows.len(), 2);
+    let named: Vec<_> = rows.iter().filter_map(|row| row.spends).collect();
+    assert_eq!(named.len(), 1, "the named spend must still be withholdable");
+    assert_eq!(named[0].1, 7);
+}
+
+/// A spend naming only half a prevout stays refused — still contradictory.
+#[test]
+fn a_half_present_prevout_is_refused() {
+    let node = RpcClient::new(Fixed(
+        r#"{"result":[{"address":"RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp","txid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"satoshis":-1,"spending":true,"prevtxid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":1}]}"#,
+    ));
+    match node.address_mempool(&["RJ7gsKDjUjPS8XZzENqmQMmWJRLuTnw5hp"]) {
+        Err(RpcError::Unexpected(message)) => {
+            assert!(message.contains("prevout=absent"), "{message}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
