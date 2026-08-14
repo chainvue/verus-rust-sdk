@@ -128,12 +128,14 @@ pub enum FlowError {
     /// A spent [`Answers`](crate::drive::Answers) handle was driven again.
     ///
     /// **Retrying cannot fix this.** Deliberately not [`FlowError::NotReady`],
-    /// which the crate raises in some forty places to mean the chain does not
-    /// yet support a step — a stale login, an unmatured commitment, a reserve
-    /// too thin — and where waiting and retrying is the correct response. This
-    /// one is a caller bug: the handle already carried an operation to
-    /// `Ready`, so no amount of waiting makes it usable and a retry loop can
-    /// only spin. Only a fresh handle helps.
+    /// which the crate raises in some forty places and which almost always
+    /// means the chain does not yet support a step — a stale login, an
+    /// unmatured commitment, a reserve too thin — where waiting and retrying
+    /// is the correct response. (`Answers::record`'s reply-size refusal is the
+    /// one exception, and is itself a mis-shaped use of the variant.) This one
+    /// is a caller bug: the handle already carried an operation to `Ready`, so
+    /// no amount of waiting makes it usable and a retry loop can only spin.
+    /// Only a fresh handle helps.
     ///
     /// Typed rather than folded into `NotReady` because the two need opposite
     /// actions and are otherwise indistinguishable across the WebAssembly
