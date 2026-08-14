@@ -829,9 +829,13 @@ mod tests {
     /// rather than merely mentioning the name somewhere.
     ///
     /// The annotation is what makes `tsc` actually check the type: a bare
-    /// `type Foo,` import line, or the name in a comment, compiles whatever
-    /// the `.d.ts` happens to say, while an annotated const forces the object
-    /// literal to be checked against the published interface.
+    /// `type Foo,` import line compiles whatever the `.d.ts` happens to say,
+    /// while an annotated const forces the object literal to be checked
+    /// against the published interface.
+    ///
+    /// This does **not** itself discount a name that appears in a comment —
+    /// the caller strips comments from the haystack first, which is what makes
+    /// a commented-out use-site stop counting.
     ///
     /// The trailing boundary matters for the same reason `declared_by` needs
     /// it for interface headers: `TokenSendRequest` contains `SendRequest` as
@@ -894,27 +898,48 @@ mod tests {
              likely stopped matching its syntax"
         );
 
-        // Comments in this file name both call forms in prose — including the
-        // comments describing this very guard — so a raw-text scan counts a
-        // comment as a registration and the guard goes blind for that type.
-        // Guards A and B therefore scan a copy with whole-line comments
-        // blanked out. Blanking whole lines is exact here: the file has no
-        // raw strings and no multi-line string literal whose continuation
-        // lines begin with `//`, so no line stripped below is anything but a
-        // comment, and every occurrence of either call form inside a comment
-        // is on a line that is a comment from its first non-space character.
+        // Comments name these forms in prose — including the comments
+        // describing this very guard — so a raw-text scan counts a comment as
+        // a registration and the guard goes blind for that type. Every scan
+        // below therefore reads a comment-blanked copy, and that applies to
+        // `types.check.ts` as much as to this file: guard C was satisfiable by
+        // a commented-out use-site for exactly the same reason.
+        //
         // Line numbering is preserved so failures stay easy to locate.
-        let code: String = THIS_FILE
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with("//") {
-                    ""
-                } else {
-                    line
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        fn strip_comments(source: &str) -> String {
+            source
+                .lines()
+                .map(|line| {
+                    let t = line.trim_start();
+                    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                        ""
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let code = strip_comments(THIS_FILE);
+        let types_check = strip_comments(TYPES_CHECK);
+
+        // Blanking whole lines only helps if no *trailing* comment carries one
+        // of these forms — `foo(); // check::<Bar>` would survive it and put
+        // the original bug straight back. That holds today, and this is what
+        // keeps it holding rather than leaving it to a code-review habit.
+        assert!(
+            !THIS_FILE.lines().any(|line| {
+                let code_part = line.trim_start();
+                !code_part.starts_with("//")
+                    && line.split_once("//").is_some_and(|(_, tail)| {
+                        tail.contains("check::<") || tail.contains("assert_declared(")
+                    })
+            }),
+            "a trailing comment names one of the scanned call forms; whole-line \
+             blanking leaves it in place and the guard would start counting prose \
+             as a registration again — move it to its own line"
+        );
 
         // Guard A: the interface name literal passed to `assert_declared`.
         // The literal has to be the *first* argument: the union tests call
@@ -959,7 +984,7 @@ mod tests {
                  would be silently accepted or a legitimate one silently refused"
             );
             assert!(
-                has_annotated_use_site(TYPES_CHECK, name),
+                has_annotated_use_site(&types_check, name),
                 "{name} is declared in types.d.ts but has no annotated use-site \
                  (`const … : {name} = …`) in types.check.ts, so tsc never exercises the \
                  published type — a field could be mistyped (string vs. number) in the \
