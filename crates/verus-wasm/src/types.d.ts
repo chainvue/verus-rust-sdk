@@ -1034,6 +1034,21 @@ export interface PlanRegistrationRequest {
     /** An identity to credit as referrer, which reduces the fee. */
     referral?: string;
     /**
+     * Who may revoke the identity. A name or an i-address. Omit and it
+     * defaults to the identity itself, which is what the daemon does.
+     */
+    revocationAuthority?: string;
+    /**
+     * Who may recover it after a revocation. Omit and it defaults to the
+     * identity itself — and an identity that is its own recovery authority
+     * **cannot be revoked**, because consensus rejects a revocation whose
+     * subject is its own recovery authority. That is a usable state rather
+     * than a trap, since the identity's own keys can redirect it later, but
+     * doing so costs a second transaction. Setting it here is the cheap
+     * moment.
+     */
+    recoveryAuthority?: string;
+    /**
      * Override the registration fee read from chain policy, in satoshis. The
      * node reports that figure and it is spent before it can be checked against
      * anything, so a wrong one is discovered after the commitment.

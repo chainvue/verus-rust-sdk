@@ -1268,6 +1268,22 @@ pub struct PlanRegistrationRequest {
     /// An identity to credit as referrer, which reduces the fee.
     #[serde(default)]
     pub referral: Option<String>,
+    /// Who may revoke the identity. A name or an i-address.
+    ///
+    /// Omit and it defaults to the identity itself, which is what the daemon
+    /// does. See [`PlanRegistrationRequest::recovery_authority`].
+    #[serde(default)]
+    pub revocation_authority: Option<String>,
+    /// Who may recover it after a revocation.
+    ///
+    /// Omit and it defaults to the identity itself — and an identity that is
+    /// its own recovery authority **cannot be revoked**, because consensus
+    /// rejects a revocation whose subject is its own recovery authority. That
+    /// is a usable state rather than a trap, since the identity's own keys can
+    /// redirect it later, but doing so costs a second transaction. Setting it
+    /// here is the cheap moment.
+    #[serde(default)]
+    pub recovery_authority: Option<String>,
     /// Override the registration fee read from chain policy, in satoshis.
     ///
     /// The node reports this figure and it is spent before it can be checked
@@ -1304,6 +1320,8 @@ impl PlanRegistrationRequest {
             ("primaryAddresses", None),
             ("minSigs", None),
             ("referral", None),
+            ("revocationAuthority", None),
+            ("recoveryAuthority", None),
             ("pinFee", None),
             ("salt", None),
         ],
@@ -3013,6 +3031,8 @@ impl Key {
             primary_addresses: request.primary_addresses.clone(),
             min_sigs: request.min_sigs,
             referral: request.referral.clone(),
+            revocation_authority: request.revocation_authority.clone(),
+            recovery_authority: request.recovery_authority.clone(),
             pin_fee: match &request.pin_fee {
                 Some(text) => Some(dto::sats(text)?),
                 None => None,

@@ -138,6 +138,20 @@ pub struct Pending<S> {
     pub system_id: [u8; 20],
     /// Where change goes.
     pub change_address: String,
+    /// Who may revoke the identity, resolved at step one.
+    ///
+    /// Resolved before the commitment rather than at step two, for the reason
+    /// the referral chain is: a name that cannot be resolved should refuse the
+    /// registration while that still costs nothing.
+    ///
+    /// `#[serde(default)]` so a `Pending` written before this field existed
+    /// still loads, landing as `None` — which is the behaviour those
+    /// reservations were built with.
+    #[serde(default)]
+    pub revocation_authority: Option<[u8; 20]>,
+    /// Who may recover it. As [`Pending::revocation_authority`].
+    #[serde(default)]
+    pub recovery_authority: Option<[u8; 20]>,
     /// `(height, best block hash)` when the commitment was broadcast, so a
     /// reorg underneath it can be noticed.
     pub anchored_at: Option<(u32, String)>,
@@ -188,6 +202,8 @@ impl<S> Pending<S> {
             min_sigs: self.min_sigs,
             system_id: self.system_id,
             change_address: self.change_address,
+            revocation_authority: self.revocation_authority,
+            recovery_authority: self.recovery_authority,
             anchored_at: self.anchored_at,
             expiry_height: self.expiry_height,
             state: PhantomData,
@@ -325,6 +341,20 @@ pub struct RegistrationOptions {
     pub min_sigs: Option<u32>,
     /// A referrer, which reduces what the registrant pays.
     pub referral: Option<String>,
+    /// Who may revoke the identity. A name or an i-address, resolved here.
+    ///
+    /// `None` leaves it at the daemon's default, which is the identity itself.
+    /// See [`RegistrationOptions::recovery_authority`] for what that costs.
+    pub revocation_authority: Option<String>,
+    /// Who may recover it after a revocation.
+    ///
+    /// `None` leaves it at the identity itself — and an identity that is its
+    /// own recovery authority **cannot be revoked**, because consensus rejects
+    /// a revocation whose subject is its own recovery authority. That is the
+    /// daemon's default and it is a usable state, not a trap: the identity is
+    /// all three authorities at once, so its own keys can point recovery
+    /// somewhere else later. Setting it here saves that second transaction.
+    pub recovery_authority: Option<String>,
     /// Use this fee instead of the one the node reports.
     ///
     /// A node that misreports `idregistrationfees` is discovered *after* the
@@ -420,6 +450,17 @@ pub fn prepare_registration_with_salt(
         Some(referrer) => referral_chain(reader, referrer, policy.id_referral_levels)?,
         None => Vec::new(),
     };
+    // Resolved here for the same reason the referral chain is: a name nobody
+    // can look up should stop the registration while stopping is still free.
+    let revocation_authority = match &options.revocation_authority {
+        Some(name) => Some(referral_id(reader, name)?),
+        None => None,
+    };
+    let recovery_authority = match &options.recovery_authority {
+        Some(name) => Some(referral_id(reader, name)?),
+        None => None,
+    };
+
     let reservation = NameReservation::new(name, system_id, referral, salt)?;
 
     let from = key.address();
@@ -456,6 +497,8 @@ pub fn prepare_registration_with_salt(
         min_sigs: options.min_sigs.unwrap_or(1),
         system_id,
         change_address: from.to_string(),
+        revocation_authority,
+        recovery_authority,
         anchored_at: None,
         expiry_height: expiry.to_height(),
         state: PhantomData,
@@ -756,6 +799,10 @@ impl Pending<ReadyToRegister> {
             Expiry::within(funding.tip, DEFAULT_EXPIRY_BLOCKS),
         )
         .with_min_sigs(self.min_sigs)
+        // Both `None` leaves the daemon's default — the identity as its own
+        // authority — which is what every registration through this crate did
+        // before these were options.
+        .with_authorities(self.revocation_authority, self.recovery_authority)
         // H2: without this, `referral_levels` stays at `RegistrationParams`'s
         // default of 0 and `build_identity_registration` computes
         // `referrers = vec![referrer]` for every referred reservation, then

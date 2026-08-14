@@ -982,3 +982,81 @@ fn a_referrer_who_was_themselves_referred_has_their_own_referrer_paid_too() {
         "the transaction must pay both referrers, in order"
     );
 }
+
+/// The authorities chosen at registration reach the identity that gets built.
+///
+/// # Why this is worth a test rather than a glance
+///
+/// Left unset, both authorities default to the identity itself — which is what
+/// the daemon does, and which makes the identity **unrevokable**: consensus
+/// rejects a revocation whose subject is its own recovery authority. That
+/// default is escapable, since a self-authority identity is all three
+/// authorities at once and its own keys can redirect them later, but escaping
+/// it costs a second transaction and a second fee.
+///
+/// So the options exist, and what matters is that they are not merely stored:
+/// they have to survive being resolved at step one, persisted, carried across
+/// the typestate transition, and applied at step two. Every one of those is a
+/// place they could quietly be dropped, and a dropped authority produces a
+/// perfectly valid identity that is wrong in a way nothing complains about.
+/// This reads them back out of the signed bytes.
+#[test]
+fn the_authorities_asked_for_are_the_ones_registered() {
+    let recovery = "iGRp1CGkuro3LtGazX8W1PRjVupPVfe8Pv";
+    let revocation = "i87QZVSS7SosM5choTJE7Dy4SNRt5vAEhr";
+
+    let chain = funded_chain(1_000);
+    let options = RegistrationOptions {
+        revocation_authority: Some(revocation.to_string()),
+        recovery_authority: Some(recovery.to_string()),
+        ..RegistrationOptions::default()
+    };
+
+    let mut pending =
+        prepare_registration_with_salt(&chain, &key(), "authtest", &options, SALT).unwrap();
+
+    // Resolved at step one, before anything is broadcast — a name nobody can
+    // look up should stop the registration while stopping is still free.
+    assert!(pending.revocation_authority.is_some());
+    assert!(pending.recovery_authority.is_some());
+
+    // And it survives the round trip to disk a wallet makes here.
+    let stored = serde_json::to_string(&pending).unwrap();
+    let reloaded: Pending<verus_flows::AwaitingCommitment> = serde_json::from_str(&stored).unwrap();
+    assert_eq!(reloaded.recovery_authority, pending.recovery_authority);
+
+    pending.broadcast_commitment(&chain, &chain).unwrap();
+    let ready = match pending.poll(&chain).unwrap() {
+        CommitmentStatus::Ready(ready) => ready,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let registered = ready.complete(&chain, &chain, &key()).unwrap();
+
+    // Read back out of the transaction that was actually signed, not off the
+    // struct that described it.
+    let broadcast = chain.broadcasts().pop().expect("the registration");
+    let tx = TxV4::deserialize(&hex::decode(&broadcast).unwrap()).unwrap();
+    let identity = tx
+        .outputs
+        .iter()
+        .find_map(
+            |out| match verus_tx::decode_output_script(&out.script_pubkey) {
+                Ok(verus_tx::OutputKind::IdentityPrimary { identity }) => Some(identity),
+                _ => None,
+            },
+        )
+        .expect("the registration carries an identity output");
+
+    let expect = |address: &str| {
+        address
+            .parse::<verus_keys::Address>()
+            .expect("a valid i-address")
+            .hash()
+    };
+    assert_eq!(identity.revocation_authority, expect(revocation));
+    assert_eq!(identity.recovery_authority, expect(recovery));
+    assert_ne!(
+        identity.recovery_authority, registered.identity_address,
+        "the identity is still its own recovery authority, so it cannot be revoked",
+    );
+}
