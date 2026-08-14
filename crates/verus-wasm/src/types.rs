@@ -824,19 +824,29 @@ mod tests {
         );
     }
 
-    /// Whether `word` occurs in `haystack` as a whole identifier — not merely
-    /// as a substring of a longer one.
+    /// Whether `haystack` annotates something with `name` — the
+    /// `const foo: FooRequest = …` form `types.check.ts` standardises on —
+    /// rather than merely mentioning the name somewhere.
     ///
-    /// `TokenSendRequest` contains `SendRequest` as a literal substring, so a
-    /// plain `.contains()` would call `SendRequest` present in a file that
-    /// only ever names `TokenSendRequest`. The same trap `declared_by` above
-    /// guards against for interface headers.
-    fn contains_word(haystack: &str, word: &str) -> bool {
+    /// The annotation is what makes `tsc` actually check the type: a bare
+    /// `type Foo,` import line compiles whatever the `.d.ts` happens to say,
+    /// while an annotated const forces the object literal to be checked
+    /// against the published interface.
+    ///
+    /// This does **not** itself discount a name that appears in a comment —
+    /// the caller strips comments from the haystack first, which is what makes
+    /// a commented-out use-site stop counting.
+    ///
+    /// The trailing boundary matters for the same reason `declared_by` needs
+    /// it for interface headers: `TokenSendRequest` contains `SendRequest` as
+    /// a literal substring, so a plain `.contains()` would call `SendRequest`
+    /// present in a file that only ever names `TokenSendRequest`.
+    fn has_annotated_use_site(haystack: &str, name: &str) -> bool {
         let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
-        haystack.match_indices(word).any(|(at, _)| {
-            let before = haystack[..at].chars().next_back();
-            let after = haystack[at + word.len()..].chars().next();
-            !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+        let annotation = format!(": {name}");
+        haystack.match_indices(&annotation).any(|(at, _)| {
+            let after = haystack[at + annotation.len()..].chars().next();
+            !after.is_some_and(is_word_char)
         })
     }
 
@@ -888,25 +898,71 @@ mod tests {
              likely stopped matching its syntax"
         );
 
+        // Comments name these forms in prose — including the comments
+        // describing this very guard — so a raw-text scan counts a comment as
+        // a registration and the guard goes blind for that type. Every scan
+        // below therefore reads a comment-blanked copy, and that applies to
+        // `types.check.ts` as much as to this file: guard C was satisfiable by
+        // a commented-out use-site for exactly the same reason.
+        //
+        // Line numbering is preserved so failures stay easy to locate.
+        fn strip_comments(source: &str) -> String {
+            source
+                .lines()
+                .map(|line| {
+                    let t = line.trim_start();
+                    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                        ""
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let code = strip_comments(THIS_FILE);
+        let types_check = strip_comments(TYPES_CHECK);
+
+        // Blanking whole lines only helps if no *trailing* comment carries one
+        // of these forms — `foo(); // check::<Bar>` would survive it and put
+        // the original bug straight back. That holds today, and this is what
+        // keeps it holding rather than leaving it to a code-review habit.
+        assert!(
+            !THIS_FILE.lines().any(|line| {
+                let code_part = line.trim_start();
+                !code_part.starts_with("//")
+                    && line.split_once("//").is_some_and(|(_, tail)| {
+                        tail.contains("check::<") || tail.contains("assert_declared(")
+                    })
+            }),
+            "a trailing comment names one of the scanned call forms; whole-line \
+             blanking leaves it in place and the guard would start counting prose \
+             as a registration again — move it to its own line"
+        );
+
         // Guard A: the interface name literal passed to `assert_declared`.
-        let guard_a: BTreeSet<String> = THIS_FILE
+        // The literal has to be the *first* argument: the union tests call
+        // `assert_declared(side_interface(side), side)` with no literal at
+        // all, and an unbounded search for the next quote there walks into a
+        // later statement and harvests a phantom entry from it.
+        let guard_a: BTreeSet<String> = code
             .match_indices("assert_declared(")
             .filter_map(|(at, m)| {
-                let after = &THIS_FILE[at + m.len()..];
-                let start = after.find('"')? + 1;
-                let end = start + after[start..].find('"')?;
-                let name = &after[start..end];
+                let after = code[at + m.len()..].trim_start();
+                let rest = after.strip_prefix('"')?;
+                let end = rest.find('"')?;
+                let name = &rest[..end];
                 is_identifier(name).then(|| name.to_string())
             })
             .collect();
 
         // Guard B: the type argument to `check::<T>`. Some call sites qualify
-        // it (`check::<crate::flows::PendingRequest>`), so only the last path
-        // segment is kept.
-        let guard_b: BTreeSet<String> = THIS_FILE
+        // the type path, so only the last segment is kept.
+        let guard_b: BTreeSet<String> = code
             .match_indices("check::<")
             .filter_map(|(at, m)| {
-                let after = &THIS_FILE[at + m.len()..];
+                let after = &code[at + m.len()..];
                 let end = after.find('>')?;
                 let raw = &after[..end];
                 let name = raw.rsplit("::").next().unwrap_or(raw);
@@ -928,10 +984,12 @@ mod tests {
                  would be silently accepted or a legitimate one silently refused"
             );
             assert!(
-                contains_word(TYPES_CHECK, name),
-                "{name} is declared in types.d.ts but has no use-site in types.check.ts, \
-                 so tsc never exercises the published type — a field could be mistyped \
-                 (string vs. number) in the .d.ts and nothing would fail"
+                has_annotated_use_site(&types_check, name),
+                "{name} is declared in types.d.ts but has no annotated use-site \
+                 (`const … : {name} = …`) in types.check.ts, so tsc never exercises the \
+                 published type — a field could be mistyped (string vs. number) in the \
+                 .d.ts and nothing would fail. A bare `type {name},` import does not \
+                 count: only the annotation makes tsc check anything."
             );
         }
     }
