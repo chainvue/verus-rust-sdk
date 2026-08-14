@@ -185,11 +185,23 @@ pub struct MempoolDelta {
     pub currency_values: BTreeMap<String, SignedAmount>,
     /// Whether this row is an input being spent rather than an output created.
     pub spending: bool,
-    /// The output being spent, when this row is a spend.
+    /// The output being spent, when the node named it.
     ///
-    /// `Some` exactly when [`MempoolDelta::spending`] is true. A reply where the
-    /// two disagree is refused rather than reconciled: a spend whose prevout
-    /// went missing would read as a receipt, and be counted as incoming money.
+    /// **Never read this as the direction** — that is [`MempoolDelta::spending`],
+    /// always, and the two are not interchangeable. `None` on a row whose
+    /// `spending` is true means the node did not say *which* output was
+    /// consumed, not that nothing was: the daemon omits the prevout pair for a
+    /// spend whose native value is zero, which covers every token-only output
+    /// and the CryptoCondition outputs an identity registration spends.
+    ///
+    /// Two invariants the reader does enforce, and which are worth relying on:
+    /// `spends.is_some()` implies `spending`, and a `spending` row with no
+    /// `spends` always has `satoshis == 0`. The second is what makes accepting
+    /// the unnamed row safe — a spend that reported native value leaving while
+    /// naming nothing would be a reply this reader does not understand.
+    ///
+    /// A row that *contradicts* itself — a receive carrying a prevout, or a
+    /// spend naming half of one — is still refused rather than reconciled.
     pub spends: Option<(Txid, u32)>,
     /// When the transaction entered **this node's** mempool, in seconds.
     ///
@@ -826,23 +838,60 @@ impl RawMempoolDelta<'_> {
             );
         }
 
-        // `spending` and the prevout must agree. Neither is derived from the
-        // other, because the disagreement is the interesting case: a spend
-        // whose `prevtxid` went missing would otherwise decode as a receipt,
-        // and a caller summing positive rows would count money leaving the
+        // `spending` and the prevout must not *contradict* each other.
+        // Neither is derived from the other, because the disagreement is the
+        // interesting case: a receive that carries a prevout, or a spend that
+        // names half of one, is a reply this reader does not understand, and
+        // guessing at it is how a caller ends up counting money leaving the
         // address as money arriving at it.
+        //
+        // A spend with **no** prevout at all is a different thing, and is
+        // accepted — but only for the one reason the daemon actually has for
+        // omitting it. `spending` comes unconditionally from the
+        // address-index key, while the prevout pair is gated on the delta's
+        // amount (`src/rpc/misc.cpp`):
+        //
+        //     delta.push_back(Pair("spending", (bool)it->first.spending));
+        //     if (it->second.amount < 0) {
+        //         delta.push_back(Pair("prevtxid", ...));
+        //         delta.push_back(Pair("prevout", ...));
+        //     }
+        //
+        // and `addAddressIndex` stores `prevout.nValue * -1` as that amount.
+        // So for a spend row the two are locked together: a prevout is
+        // present exactly when `satoshis < 0`, and absent exactly when
+        // `satoshis == 0` — which is every output whose *native* value is
+        // zero, covering token-only outputs and the CryptoCondition output an
+        // identity registration spends.
+        //
+        // That case is incomplete, not contradictory: the direction still
+        // comes from `spending`, which is its own field and is never inferred
+        // from `spends`. Refusing it was actively worse than accepting it,
+        // because `collect()` fails the whole reply on one bad row — a single
+        // unnamed spend discarded every well-formed spend beside it, and
+        // those are exactly the rows `best_effort_spent` needs to withhold
+        // coins an unconfirmed transaction already spends.
+        //
+        // A spend that reports *native* value leaving and still names no
+        // prevout is not explained by any of that, so it stays refused. Note
+        // "native": a token-only spend accepted here moves value in
+        // `currency_values` while `satoshis` is zero, which is exactly the
+        // case the gate above is about.
+        let satoshis = json::signed_satoshis(self.satoshis, "satoshis")?;
         let spends = match (self.spending, self.prevtxid, self.prevout) {
             (true, Some(txid), Some(vout)) => Some((
                 Txid::from_display_hex(&txid)
                     .map_err(|e| RpcError::OutOfRange(format!("prevtxid: {e}")))?,
                 vout,
             )),
+            (true, None, None) if satoshis == SignedAmount::ZERO => None,
             (false, None, None) => None,
             (spending, txid, vout) => {
                 return Err(RpcError::Unexpected(format!(
-                    "getaddressmempool row for {} says spending={spending} but \
-                     prevtxid={} and prevout={}",
+                    "getaddressmempool row for {} says spending={spending} and \
+                     satoshis={} but prevtxid={} and prevout={}",
                     self.address,
+                    satoshis.to_sat(),
                     txid.map_or("absent".into(), |t| t),
                     vout.map_or("absent".to_string(), |v| v.to_string()),
                 )))
@@ -854,7 +903,7 @@ impl RawMempoolDelta<'_> {
             txid: Txid::from_display_hex(&self.txid)
                 .map_err(|e| RpcError::OutOfRange(format!("txid: {e}")))?,
             index: self.index,
-            satoshis: json::signed_satoshis(self.satoshis, "satoshis")?,
+            satoshis,
             currency_values,
             spending: self.spending,
             spends,

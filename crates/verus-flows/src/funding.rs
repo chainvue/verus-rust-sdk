@@ -148,7 +148,7 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
     // It is an optimisation over the confirmed UTXO set: it withholds coins
     // some unconfirmed transaction already spends. If the answer cannot be
     // had — an endpoint that does not serve `getaddressmempool`, or a reply
-    // the reader refuses because a row's `spending` and `spends` disagree —
+    // the reader refuses because a row contradicts itself —
     // the honest degradation is to withhold nothing and fund from what is
     // confirmed, which is exactly what every flow did before this filter
     // existed.
@@ -215,7 +215,7 @@ pub fn spendable(reader: &impl ChainReader, address: &str) -> Result<Funding, Fl
 /// The mempool filter is an **optimisation over the confirmed UTXO set**: it
 /// withholds coins some unconfirmed transaction already spends. When the answer
 /// cannot be had — an endpoint that does not serve `getaddressmempool`, or a
-/// reply the reader refuses because a row's `spending` and `spends` disagree —
+/// reply the reader refuses because a row contradicts itself —
 /// the honest degradation is to withhold nothing and fund from what is
 /// confirmed, which is what every flow did before the filter existed.
 ///
@@ -243,21 +243,35 @@ fn best_effort_spent(
 
 /// The outpoints an unconfirmed transaction already consumes.
 ///
-/// `spends` is `Some` exactly when the row is a spend, and
-/// [`verus_rpc::ChainReader::address_mempool`] refuses a reply where those two
-/// disagree — so this cannot read a receipt as a spend and withhold a coin
-/// that was arriving rather than leaving.
+/// # A gap this cannot close
+///
+/// The outpoints the daemon leaves unnamed are exactly the zero-native-value
+/// ones — which is what [`identity_held_tokens`] returns. So on the token path
+/// this filter is structurally blind: it cannot withhold a reserve output an
+/// unconfirmed transaction already spends, because the node never said which
+/// one that was. That matters more there than elsewhere, since an identity
+/// spend consumes every output it is handed. Closing it needs the pending
+/// transaction's own inputs, which means a `getrawtransaction` fallback this
+/// does not do. Not a regression — refusing the reply withheld nothing at all,
+/// including for the named spends — but not a solved problem either.
+///
+/// Both filters below are load-bearing, and they are not interchangeable.
+/// `spending` is the direction and is always present; `spends` names the
+/// consumed outpoint and is absent on a spend the daemon left unnamed — which
+/// it does for any output whose native value is zero. So a row can be a spend
+/// this cannot withhold anything for, and that is a coin left selectable, not
+/// a receipt misread as a spend.
 ///
 /// Shared by [`spendable`] and [`identity_held`] so the two cannot drift, the
 /// same reason `probe_coinbase_heights` is shared.
 fn already_spent(pending: &[verus_rpc::MempoolDelta]) -> Vec<(verus_tx::Txid, u32)> {
     pending
         .iter()
-        // Redundant with the `filter_map` below, and kept anyway. The reader
-        // guarantees `spends.is_some()` exactly when `spending`, so selecting
-        // on either field alone gives the same rows — no test can tell the two
-        // apart without constructing a reply the reader would have refused.
-        // Stating the condition that actually matters is worth one line.
+        // Not redundant with the `filter_map` below: a spend of a
+        // zero-native-value output arrives with `spending` true and no
+        // prevout, so the two genuinely select different rows. Naming the
+        // direction explicitly is what makes the intent readable — this
+        // withholds what is *being spent*, and that is `spending`'s job.
         .filter(|row| row.spending)
         .filter_map(|row| row.spends)
         .collect()
@@ -580,6 +594,45 @@ mod tests {
         assert!(
             identity_held(&after, IDENTITY).unwrap().is_empty(),
             "a coin already spent in the mempool must not be offered again"
+        );
+    }
+
+    /// An unnamed spend in the reply must not cost the named ones their filter.
+    ///
+    /// This is the regression the mempool reader's old contract created. A
+    /// spend of a zero-native-value output — which is what step two of a
+    /// VerusID registration produces — arrives with `spending` true and no
+    /// prevout, and the reader used to refuse the **entire** reply for it.
+    /// `best_effort_spent` then degraded to withholding nothing at all, so the
+    /// well-formed spend sitting beside it stopped being filtered and its coin
+    /// became selectable again.
+    ///
+    /// What is still true, and is asserted here too: the unnamed spend's own
+    /// outpoint cannot be withheld, because the node never said which one it
+    /// was. That is the honest cost of accepting the row, and it is strictly
+    /// smaller than losing the whole reply.
+    #[test]
+    fn an_unnamed_mempool_spend_does_not_unfilter_the_named_ones() {
+        let reader = ScriptedReader::new(1_000)
+            .with_utxo("R1", 100, 5_000_000)
+            .with_utxo("R1", 200, 3_000_000);
+        let before = spendable(&reader, "R1").unwrap();
+        assert_eq!(before.utxos.len(), 2);
+        let outpoint = (before.utxos[0].txid, before.utxos[0].vout);
+
+        let after = reader
+            .with_mempool_spend("R1", outpoint, 5_000_000)
+            .with_unnamed_mempool_spend("R1");
+
+        let funding = spendable(&after, "R1").unwrap();
+        assert_eq!(
+            funding.utxos.len(),
+            1,
+            "the named spend must still be withheld despite the unnamed row"
+        );
+        assert!(
+            !funding.utxos.iter().any(|u| (u.txid, u.vout) == outpoint),
+            "the coin the mempool already spends must not be offered again"
         );
     }
 
