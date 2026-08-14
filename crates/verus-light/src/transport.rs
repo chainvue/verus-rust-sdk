@@ -79,6 +79,13 @@ mod blocking {
         /// also modifiable in flight. Loopback is allowed because the intended
         /// deployment is an SSH tunnel or a local proxy, where TLS would be
         /// ceremony.
+        ///
+        /// Also refuses `user:password@` in the endpoint, on **either**
+        /// scheme. This transport never sends credentials, so they can only
+        /// have arrived by mistake — and left in place they reach every
+        /// request and land in `ureq`'s error text, which embeds the whole
+        /// URL. If an endpoint is being read from an environment variable or
+        /// a config file, that is the form this will reject.
         pub fn new(base: impl Into<String>) -> Result<Self, LightError> {
             let base = base.into();
             let base = base.trim_end_matches('/').to_string();

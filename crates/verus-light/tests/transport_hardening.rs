@@ -172,6 +172,13 @@ fn https_still_accepts_ordinary_endpoints() {
         "https://node.example:443/path",
         "https://[::1]:9067/",
         "https://127.0.0.1:9067",
+        // An `@` *past* the authority is not userinfo and must not be read as
+        // such. This is what pins the `find(['/', '?', '#'])` bound: swapping
+        // `authority` for `rest` in the refusal would still pass every other
+        // test here while breaking each of these.
+        "https://node.example/p@th",
+        "https://node.example/?token=a@b",
+        "https://node.example#frag@ment",
     ]
     .into_iter()
     .filter(|url| GrpcWebTransport::new(*url).is_err())
