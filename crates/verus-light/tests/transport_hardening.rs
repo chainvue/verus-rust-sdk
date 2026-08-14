@@ -127,6 +127,89 @@ fn the_userinfo_refusal_does_not_print_the_password() {
     );
 }
 
+/// The userinfo refusal above must apply to `https://` too, and for a while it
+/// did not: `check_scheme` returned `Ok(())` for `https://` *before* running
+/// any authority check, so every url below was accepted outright. TLS settles
+/// the plaintext question and nothing else — this crate has no `Credentials`
+/// type, no zeroize-on-drop and no redacting `Debug`, so `user:pass@` in an
+/// endpoint is never intentional whatever the scheme.
+///
+/// It is not only about what is *sent*: an accepted endpoint reaches
+/// `call()`, and an ordinary transport failure (a DNS miss will do) surfaces
+/// `ureq`'s own error text — which embeds the full url, userinfo included —
+/// through `LightError::Transport`.
+///
+/// Collected rather than short-circuited, for the same reason as the bracket
+/// test above.
+#[test]
+fn https_does_not_skip_the_userinfo_refusal() {
+    let still_accepted: Vec<&str> = [
+        "https://rpcuser:s3cr3t-password@evil.example",
+        "https://rpcuser:s3cr3t-password@evil.example/path",
+        // The bracket-reads-as-loopback shape, on the TLS path this time.
+        "https://[::1]@evil.example/",
+        "https://user@evil.example",
+    ]
+    .into_iter()
+    .filter(|url| GrpcWebTransport::new(*url).is_ok())
+    .collect();
+    assert!(
+        still_accepted.is_empty(),
+        "should all have been refused, but accepted: {still_accepted:?}"
+    );
+}
+
+/// The fix above must not drag the `http://` loopback grammar onto the TLS
+/// path with it. `https://` is exactly as permissive as it always was about
+/// *hosts* — any host, any port, any path — and only the userinfo rule is
+/// new. Without this, hoisting the authority checks could silently start
+/// refusing every ordinary remote lightwalletd endpoint.
+#[test]
+fn https_still_accepts_ordinary_endpoints() {
+    let refused: Vec<&str> = [
+        "https://node.example",
+        "https://node.example/",
+        "https://node.example:443/path",
+        "https://[::1]:9067/",
+        "https://127.0.0.1:9067",
+        // An `@` *past* the authority is not userinfo and must not be read as
+        // such. This is what pins the `find(['/', '?', '#'])` bound: swapping
+        // `authority` for `rest` in the refusal would still pass every other
+        // test here while breaking each of these.
+        "https://node.example/p@th",
+        "https://node.example/?token=a@b",
+        "https://node.example#frag@ment",
+    ]
+    .into_iter()
+    .filter(|url| GrpcWebTransport::new(*url).is_err())
+    .collect();
+    assert!(
+        refused.is_empty(),
+        "should all have been accepted, but refused: {refused:?}"
+    );
+}
+
+/// The `https://` userinfo refusal must redact exactly as the `http://` one
+/// does — same `rsplit_once('@')` reasoning, same mutation risk. See
+/// `the_userinfo_refusal_does_not_print_the_password` for why a password
+/// containing `@` is the case that actually pins `rsplit` over `split`.
+#[test]
+fn the_https_userinfo_refusal_does_not_print_the_password() {
+    for case in [
+        "https://rpcuser:s3cr3t-password@node.example/",
+        "https://rpcuser:pa@ss-w0rd@node.example/",
+    ] {
+        let err = GrpcWebTransport::new(case)
+            .map(|_| ())
+            .expect_err("userinfo must be refused");
+        let message = err.to_string();
+        assert!(
+            !message.contains("s3cr3t-password") && !message.contains("ss-w0rd"),
+            "the password leaked into the error message for {case:?}: {message}"
+        );
+    }
+}
+
 /// The *other* arm of `check_scheme` — an endpoint that never even matches
 /// `http://` or `https://` — used to echo the whole endpoint verbatim into
 /// its refusal. The inputs that land here are mundane, not adversarial: an
