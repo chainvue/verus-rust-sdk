@@ -40,8 +40,29 @@ impl Method {
 
     /// Whether the call hands the network something, rather than asking it a
     /// question.
+    ///
+    /// # Why every read is written out
+    ///
+    /// `matches!(self, Self::SendTransaction)` says the same thing in one line
+    /// and fails to the wrong side. A write method added later without a case
+    /// here would silently be a read — and [`callable_methods`], the list an
+    /// audit or a proxy allowlist asserts against, would report it as one.
+    /// Nothing would fail: not the build, not a test.
+    ///
+    /// Listing the reads makes that a compile error instead. Same argument
+    /// `verus_rpc::Method::is_write` makes one crate over, and lightwalletd
+    /// does accept transaction submission, so the arm being wrong is not a
+    /// labelling mistake.
     pub(crate) fn writes(self) -> bool {
-        matches!(self, Self::SendTransaction)
+        match self {
+            Self::SendTransaction => true,
+
+            Self::GetLatestBlock
+            | Self::GetTreeState
+            | Self::GetBlockRange
+            | Self::GetTransaction
+            | Self::GetLightdInfo => false,
+        }
     }
 
     const ALL: [Self; 6] = [
