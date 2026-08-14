@@ -279,6 +279,12 @@ mod tests {
             .code(),
             "BroadcastUncertain"
         );
+        // A unit variant, and the one a JS caller most needs told apart from
+        // `NotReady`: "your code is wrong" against "retry later".
+        assert_eq!(
+            WasmError::from(FlowError::AnswersSpent).code(),
+            "AnswersSpent"
+        );
     }
 
     /// The fallback exists so a `Debug` rendering that does not begin with an

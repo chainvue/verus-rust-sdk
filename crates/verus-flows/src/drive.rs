@@ -164,7 +164,7 @@ pub enum Step<T> {
 /// long ago that was — quietly, because a cached answer is indistinguishable
 /// from a fresh one. The concrete cost is a payment built from coins a
 /// still-unconfirmed transaction already spends. [`advance`] returns
-/// [`FlowError::NotReady`] instead of obliging.
+/// [`FlowError::AnswersSpent`] instead of obliging.
 #[derive(Debug, Default)]
 pub struct Answers {
     cassette: Cassette,
@@ -231,7 +231,7 @@ impl Answers {
 ///
 /// # Errors
 ///
-/// [`FlowError::NotReady`] if this `Answers` already carried an earlier
+/// [`FlowError::AnswersSpent`] if this `Answers` already carried an earlier
 /// operation to [`Step::Ready`]. See the type's docs for why reuse is refused
 /// rather than merely discouraged — start the next operation from
 /// [`Answers::new`].
@@ -247,12 +247,7 @@ where
     // how many rounds it has left, and the message should say why rather than
     // report a coincidental cap.
     if answers.finished {
-        return Err(FlowError::NotReady(
-            "this Answers already finished one operation; start the next one from \
-             Answers::new — reusing it would plan against the first operation's frozen tip \
-             and UTXO set"
-                .into(),
-        ));
+        return Err(FlowError::AnswersSpent);
     }
     if answers.rounds >= MAX_ROUNDS {
         return Err(FlowError::Stalled(format!(
@@ -424,9 +419,52 @@ mod tests {
         let second: Result<Step<u32>, FlowError> = advance(&mut answers, |client| {
             Ok(verus_rpc::ChainReader::block_count(client)? + 1)
         });
+        // Its own variant, not `NotReady`: `NotReady` means the chain does not
+        // yet support a step and a retry can succeed, which sends a caller
+        // into a loop that never can.
         assert!(
-            matches!(second, Err(FlowError::NotReady(_))),
+            matches!(second, Err(FlowError::AnswersSpent)),
             "a finished handle must refuse a second operation: {second:?}"
         );
+    }
+
+    /// The poison must not be over-eager: it fires on `Ready`, not on a round
+    /// that merely asked.
+    ///
+    /// The same operation is routinely driven more than once — that is what
+    /// rounds are — and a caller whose fetch failed mid-flight re-drives it
+    /// with the answers it did get. Refusing there would break the ordinary
+    /// path, so the handle stays live until an operation actually completes.
+    #[test]
+    fn the_same_operation_can_be_re_driven_before_it_is_ready() {
+        let mut answers = Answers::new();
+
+        let step = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("a miss is not a failure");
+        assert!(matches!(step, Step::Ask(_)));
+
+        // Nothing recorded — the caller's fetch failed. The very same
+        // operation goes round again and must still be allowed.
+        let again = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("an unfinished handle must still drive its own operation");
+        let bodies = match again {
+            Step::Ask(bodies) => bodies,
+            Step::Ready(value) => panic!("nothing was known, yet it answered {value}"),
+        };
+
+        answers
+            .record(bodies[0].clone(), r#"{"result":1171000}"#)
+            .expect("a small reply");
+
+        let done = advance(&mut answers, |client| {
+            Ok(verus_rpc::ChainReader::block_count(client)?)
+        })
+        .expect("the answer is known now");
+        assert_eq!(done, Step::Ready(1_171_000));
+        assert_eq!(answers.rounds(), 3);
     }
 }

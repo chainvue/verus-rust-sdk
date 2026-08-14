@@ -125,6 +125,25 @@ pub enum FlowError {
     #[error("{0}")]
     NotReady(String),
 
+    /// A spent [`Answers`](crate::drive::Answers) handle was driven again.
+    ///
+    /// **Retrying cannot fix this.** Deliberately not [`FlowError::NotReady`],
+    /// which the crate raises in some forty places to mean the chain does not
+    /// yet support a step — a stale login, an unmatured commitment, a reserve
+    /// too thin — and where waiting and retrying is the correct response. This
+    /// one is a caller bug: the handle already carried an operation to
+    /// `Ready`, so no amount of waiting makes it usable and a retry loop can
+    /// only spin. Only a fresh handle helps.
+    ///
+    /// Typed rather than folded into `NotReady` because the two need opposite
+    /// actions and are otherwise indistinguishable across the WebAssembly
+    /// boundary, where all a caller has to branch on is `e.name`.
+    #[error(
+        "this Answers already finished one operation; start the next one from Answers::new — \
+         reusing it would plan against the first operation's frozen tip and UTXO set"
+    )]
+    AnswersSpent,
+
     /// The name commitment can never be mined, so the reservation is dead.
     ///
     /// **Retrying cannot fix this.** `expiryHeight` is inside the bytes the
