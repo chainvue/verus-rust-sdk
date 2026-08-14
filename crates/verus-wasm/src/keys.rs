@@ -96,13 +96,19 @@ impl Key {
     /// anything else.
     ///
     /// The JavaScript string is built straight from the zeroizing buffer, so
-    /// no plaintext copy is left behind on the Rust side. That is a deliberate
-    /// detail rather than an incidental one: returning a `String` would clone
-    /// the WIF into an ordinary allocation that is dropped **without** being
-    /// wiped, and wasm's allocator does not zero freed memory — so a single
-    /// `toWif()` used to leave the key readable in the module's linear memory
-    /// for the lifetime of the page, surviving even `free()`. What this cannot
-    /// fix is the copy JavaScript now holds; that one is the caller's.
+    /// no unwiped copy of the *WIF* is left behind on the Rust side. That is a
+    /// deliberate detail rather than an incidental one: returning a `String`
+    /// would clone the WIF into an ordinary allocation that is dropped
+    /// **without** being wiped, and wasm's allocator does not zero freed
+    /// memory — so a single `toWif()` used to leave the key readable in the
+    /// module's linear memory for the lifetime of the page, surviving even
+    /// `free()`. What this cannot fix is the copy JavaScript now holds; that
+    /// one is the caller's.
+    ///
+    /// It does not make the call leave *nothing*: base58check-encoding the
+    /// scalar deposits one canonical-order copy of it in sha2's block buffer
+    /// on the shadow stack, which is this path's own residue and is unrelated
+    /// to the WIF string. See issue #170 for the measurement.
     #[wasm_bindgen(js_name = toWif)]
     pub fn to_wif(&self) -> JsText {
         use wasm_bindgen::JsCast;
@@ -178,12 +184,21 @@ impl Key {
 /// touch; worth its own issue against `verus-keys`.
 ///
 /// [`Key::to_wif`] adds one more, in canonical order this time and separate
-/// from the seven above: `to_wif` → `PrivateKey::to_bytes`
-/// (`verus-keys/src/key.rs`) calls `SigningKey::to_bytes()`, which is
-/// `secret_scalar.to_repr()` — a plain `FieldBytes` that nothing zeroizes —
-/// before `verus-keys` copies it into its own `Zeroizing<[u8; 32]>`. That
-/// source copy outlives the call. Reading the key back out through
-/// `address()`, `publicKey()`, or `scriptPubKey()` instead leaves none.
+/// from the seven above — but the mechanism first attributed to it here was
+/// wrong, and cost a round of review before the correction. It is **not**
+/// `PrivateKey::to_bytes`'s `SigningKey::to_bytes()` temporary
+/// (`verus-keys/src/key.rs`): wrapping or explicitly zeroizing that
+/// `FieldBytes` leaves the residue in exactly the same place. The actual
+/// source is `to_wif`'s base58check encoding (`verus-keys/src/base58.rs`) —
+/// sha2's 64-byte block buffer, holding `0xbc ‖ scalar ‖ 0x01`, deposited on
+/// the shadow stack by the checksum pass inside `bs58`'s
+/// `encode_check_into`. (`encode_check` prepends the version byte into its
+/// own buffer and calls `bs58::encode(&data).with_check()` with no version
+/// argument, so what runs is `Sha256::new().chain_update(input)` over the
+/// whole `0xbc ‖ scalar ‖ 0x01` — not the `update([version])` branch, which
+/// this crate never takes.) Reading the key back out through `address()`,
+/// `publicKey()`, or `scriptPubKey()` — none of which base58check-encode the
+/// scalar — leaves none. See issue #170 for the corrected measurement.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
     if entropy.len() != 32 {
         return Err(WasmError::new(
