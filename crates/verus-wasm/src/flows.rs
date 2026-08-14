@@ -128,6 +128,11 @@ use crate::types::{
 /// around and reused it would eventually build a payment from coins it had
 /// already spent, with nothing on this side to notice.
 ///
+/// The throw carries `e.name === "AnswersSpent"`, its own name and not the
+/// `NotReady` that some forty retryable chain conditions share. Branch on it:
+/// this one never becomes retryable, so a retry loop can only spin. Make a new
+/// handle instead.
+///
 /// Within one operation that same frozen view is exactly what is wanted: every
 /// round sees the same chain, so a plan cannot be built half from one view and
 /// half from another. Driving the *same* operation again after a round's fetch

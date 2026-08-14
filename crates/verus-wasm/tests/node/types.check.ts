@@ -295,6 +295,12 @@ const notAReason: boolean = validateMnemonic("…").reason === "valid";
 // The flow bindings.
 // ---------------------------------------------------------------------------
 
+// A type-level stand-in, not a usage pattern to copy. This file is checked
+// with `tsc --noEmit` and nothing in it runs, so one handle can be passed to
+// every `plan…` call below purely to type them. A real caller needs **one
+// `Answers` per operation**: the runtime refuses a handle that already carried
+// an operation to `"ready"`, throwing with `e.name === "AnswersSpent"`, because
+// reusing it would plan against the first operation's frozen tip and UTXO set.
 declare const answers: Answers;
 
 /**

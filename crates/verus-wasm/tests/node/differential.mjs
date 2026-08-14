@@ -1173,8 +1173,14 @@ console.log("\nflows, driven with no network");
   // against it must be refused rather than quietly resolved from the cache.
   {
     const shared = new Answers();
+    let driven = 0;
     for (;;) {
       const s = key.planSend({ to: PAYEE, satoshis: "150000000" }, shared);
+      driven += 1;
+      // The public `rounds` getter must count the rounds actually driven —
+      // it is what a caller watches to tell a slow operation from a stuck
+      // one, and a count that lagged or reset would say neither.
+      assert.equal(shared.rounds, driven, "rounds must count every round driven");
       if (s.kind === "ready") break;
       for (const body of s.ask) shared.record(body, post(body));
     }
@@ -1185,7 +1191,10 @@ console.log("\nflows, driven with no network");
       thrown = e;
     }
     assert.ok(thrown, "a second operation on a finished Answers must be refused");
-    assert.equal(thrown.name, "NotReady");
+    // Its own name, not the `NotReady` that ~40 retryable conditions share:
+    // a caller must be able to tell "make a new handle" from "try again".
+    assert.equal(thrown.name, "AnswersSpent");
+    assert.match(thrown.message, /already finished one operation/);
     shared.free();
     ok("a reused Answers is refused rather than replanned against a stale view");
   }
