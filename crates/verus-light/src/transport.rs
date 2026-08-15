@@ -145,7 +145,42 @@ mod blocking {
         /// intentional and should not be "harmonised" — #161 exists precisely
         /// because a check was once copied between these two crates without
         /// the thing that made it safe.
+        ///
+        /// # Agreeing with the parser that actually connects
+        ///
+        /// The authority is bounded here by hand, and `ureq` finds it with the
+        /// `url` crate's WHATWG parser. Anywhere the two disagree, this
+        /// function is validating a different string than the one the request
+        /// is sent to — which is not a hypothetical: `https:///user:pass@host`
+        /// was accepted outright, because a leading `/` made the authority
+        /// read as empty here while WHATWG collapses those slashes and reads
+        /// the userinfo. So the two normalisation rules WHATWG applies before
+        /// the authority even starts are applied here too: ASCII tab, CR and
+        /// LF are removed from the whole URL, and any run of `/` or `\` after
+        /// the scheme is skipped. `\` also ends the authority, as it does
+        /// there.
+        ///
+        /// `the_authority_we_validate_is_the_one_ureq_connects_to` in
+        /// `tests/transport_hardening.rs` pins the agreement against the real
+        /// parser rather than against a string form, so the next divergence
+        /// fails there instead of in production.
         fn check_scheme(base: &str) -> Result<(), LightError> {
+            // WHATWG removes these three bytes from a URL entirely before
+            // parsing it, so a check that keeps them is looking at a string
+            // ureq never sees. `https://\t/user:pass@host` is the shape that
+            // matters: the tab makes the authority read as `\t` here while
+            // the parser sees `https:///user:pass@host` and finds credentials.
+            let scrubbed: String;
+            let base = if base.bytes().any(|b| matches!(b, b'\t' | b'\r' | b'\n')) {
+                scrubbed = base
+                    .chars()
+                    .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+                    .collect();
+                scrubbed.as_str()
+            } else {
+                base
+            };
+
             let (rest, is_tls) = if let Some(rest) = base.strip_prefix("https://") {
                 (rest, true)
             } else if let Some(rest) = base.strip_prefix("http://") {
@@ -180,11 +215,17 @@ mod blocking {
                     "endpoint must start with http:// or https://, got scheme {scheme:?}"
                 )));
             };
-            // Bound the authority the way a URL parser would: up to the
-            // first '/', '?' or '#'. Everything below compares against this,
+            // Skip the slashes WHATWG collapses. For a special scheme it
+            // consumes *any* run of `/` or `\` after `scheme:` before the
+            // authority starts, so `https:///user:pass@host` addresses
+            // `host` with credentials — while bounding the authority without
+            // this made it read as empty and sailed past the `@` check below.
+            let rest = rest.trim_start_matches(['/', '\\']);
+            // Bound the authority the way that parser would: up to the first
+            // '/', '\', '?' or '#'. Everything below compares against this,
             // not against `rest`, so a path segment can never be mistaken
             // for part of the host.
-            let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            let authority_end = rest.find(['/', '\\', '?', '#']).unwrap_or(rest.len());
             let authority = &rest[..authority_end];
             // `user:pass@host` puts the host *after* the `@`, so a check
             // that only looks at a leading `[::1]` and ignores the rest

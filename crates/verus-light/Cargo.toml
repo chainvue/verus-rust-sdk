@@ -33,6 +33,9 @@ ureq = { version = "2", default-features = false, features = ["tls"], optional =
 
 [dev-dependencies]
 verus-wire = { path = "../verus-wire" }
+# The parser `ureq` uses. Only the hardening tests touch it — see the note in
+# the workspace manifest.
+url = { workspace = true }
 
 # Uses `GrpcWebTransport`, which lives behind the default `grpc-web` feature.
 [[test]]

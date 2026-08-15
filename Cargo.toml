@@ -55,6 +55,14 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # still a KDF, and this one is already reviewed.
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 
+# Test-only. `ureq` already parses every endpoint with this exact crate, so
+# `verus-light`'s hardening tests can assert that what `check_scheme` validates
+# is what the request is actually sent to, instead of asserting against string
+# forms and drifting apart from it. Dev-only on purpose: the production check
+# stays hand-rolled and dependency-free, and cargo unifies this with the copy
+# `ureq` already builds.
+url = "2"
+
 # Shielded path (feature-gated; this is where bellman/Groth16 enters).
 sapling-crypto = { version = "0.7", default-features = false }
 zcash_note_encryption = "0.4"
