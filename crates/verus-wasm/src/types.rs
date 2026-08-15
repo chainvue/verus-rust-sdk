@@ -898,58 +898,23 @@ mod tests {
              likely stopped matching its syntax"
         );
 
-        // Comments name these forms in prose — including the comments
-        // describing this very guard — so a raw-text scan counts a comment as
-        // a registration and the guard goes blind for that type. Every scan
-        // below therefore reads a comment-blanked copy, and that applies to
-        // `types.check.ts` as much as to this file: guard C was satisfiable by
-        // a commented-out use-site for exactly the same reason.
-        //
-        // Line numbering is preserved so failures stay easy to locate.
-        fn strip_comments(source: &str) -> String {
-            source
-                .lines()
-                .map(|line| {
-                    let t = line.trim_start();
-                    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
-                        ""
-                    } else {
-                        line
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        assert_only_modeled_constructs(THIS_FILE, Lang::Rust, "types.rs");
+        assert_only_modeled_constructs(TYPES_CHECK, Lang::TypeScript, "types.check.ts");
 
-        let code = strip_comments(THIS_FILE);
-        let types_check = strip_comments(TYPES_CHECK);
-
-        // Blanking whole lines only helps if no *trailing* comment carries one
-        // of these forms — `foo(); // check::<Bar>` would survive it and put
-        // the original bug straight back. That holds today, and this is what
-        // keeps it holding rather than leaving it to a code-review habit.
-        assert!(
-            !THIS_FILE.lines().any(|line| {
-                let code_part = line.trim_start();
-                !code_part.starts_with("//")
-                    && line.split_once("//").is_some_and(|(_, tail)| {
-                        tail.contains("check::<") || tail.contains("assert_declared(")
-                    })
-            }),
-            "a trailing comment names one of the scanned call forms; whole-line \
-             blanking leaves it in place and the guard would start counting prose \
-             as a registration again — move it to its own line"
-        );
+        // Guard A needs the name literals; guards B and C must not see them.
+        let code_with_literals = strip_comments(THIS_FILE, Lang::Rust, Strings::Keep);
+        let code = strip_comments(THIS_FILE, Lang::Rust, Strings::Blank);
+        let types_check = strip_comments(TYPES_CHECK, Lang::TypeScript, Strings::Blank);
 
         // Guard A: the interface name literal passed to `assert_declared`.
         // The literal has to be the *first* argument: the union tests call
         // `assert_declared(side_interface(side), side)` with no literal at
         // all, and an unbounded search for the next quote there walks into a
         // later statement and harvests a phantom entry from it.
-        let guard_a: BTreeSet<String> = code
+        let guard_a: BTreeSet<String> = code_with_literals
             .match_indices("assert_declared(")
             .filter_map(|(at, m)| {
-                let after = code[at + m.len()..].trim_start();
+                let after = code_with_literals[at + m.len()..].trim_start();
                 let rest = after.strip_prefix('"')?;
                 let end = rest.find('"')?;
                 let name = &rest[..end];
@@ -992,6 +957,546 @@ mod tests {
                  count: only the annotation makes tsc check anything."
             );
         }
+    }
+
+    // Comments name these forms in prose — including the comments
+    // describing this very guard — so a raw-text scan counts a comment as
+    // a registration and the guard goes blind for that type. Every scan
+    // below therefore reads a comment-blanked copy, of `types.check.ts`
+    // as much as of this file.
+    //
+    // This replaces a line-based stripper that blanked a line only when
+    // its first non-space characters were `//`, `/*` or `*`. Two shapes
+    // walked straight through it, and both are how a person actually
+    // disables code:
+    //
+    //     /* disabled for now:
+    //     check::<OffersRequest>("OffersRequest", &OffersRequest::SHAPE);
+    //     */
+    //
+    //     const browse = { … }; // was typed: OffersRequest
+    //
+    // The middle line of the block starts with `check`, and the trailing
+    // comment is not at the start of its line, so both survived blanking
+    // and satisfied a guard whose real registration was gone. Patching
+    // each shape as it is found loses to the next one, so this is a real
+    // (if small) scanner instead: it tracks whether it is inside a block
+    // comment, honours `//` anywhere on a line, and skips string literals
+    // so a `"//"` in a literal is not mistaken for a comment. Both
+    // languages here have all three constructs, which is why one scanner
+    // serves both files.
+    //
+    // Line count is preserved so failures stay easy to locate.
+    /// Which language's comment and literal rules to apply.
+    ///
+    /// One scanner served both files at first, and it mis-modelled each of
+    /// them: Rust nests block comments and TypeScript does not, `'` is a char
+    /// literal or a lifetime in Rust and a string delimiter in TypeScript, and
+    /// only TypeScript has template literals. Every one of those differences
+    /// was a way to hide a deleted registration behind prose, so the scanner
+    /// is told which language it is reading.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Lang {
+        Rust,
+        TypeScript,
+    }
+
+    /// Whether string *contents* survive stripping.
+    ///
+    /// Only guard A needs them: it reads the interface-name literal passed to
+    /// `assert_declared`. Guards B and C look for `check::<T>` and `: Name` in
+    /// code, and a string that happens to contain either — an assert message
+    /// describing the guard, say, of which this file has several — is prose,
+    /// not a registration. Keeping strings for those two is how a deleted
+    /// registration could hide inside the very message explaining it.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Strings {
+        Keep,
+        Blank,
+    }
+
+    /// Byte length of the Rust char literal starting at `s`, if it is one.
+    ///
+    /// `s[0]` is `'`. Returns `None` for a lifetime, which is the same byte
+    /// followed by an identifier and no closing quote. Both readings are in
+    /// `types.rs`: `'"'` in the guard-A scan is a char literal holding a
+    /// quote, and `&'static str` is a lifetime. Treating a lifetime as a
+    /// string opener leaves a trailing `//` on that line unstripped, which is
+    /// a bypass; treating `'"'` as one swallows the rest of the line.
+    fn char_literal_len(s: &[u8]) -> Option<usize> {
+        if s.len() < 3 {
+            return None;
+        }
+        if s[1] == b'\\' {
+            // An escape: `'\n'`, `'\\'`, `'\''`. Bounded so a stray backslash
+            // cannot run to a quote far down the line.
+            let close = s[2..].iter().take(12).position(|&c| c == b'\'')?;
+            return Some(2 + close + 1);
+        }
+        // One character, possibly multi-byte, then the closing quote.
+        let width = match s[1] {
+            0x00..=0x7f => 1,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return None,
+        };
+        (s.len() > 1 + width && s[1 + width] == b'\'').then_some(width + 2)
+    }
+
+    /// Refuse to scan a file containing a construct the scanner does not model.
+    ///
+    /// The scanner handles line and block comments (nested, for Rust), string
+    /// literals, Rust char literals and lifetimes, and TypeScript template
+    /// literals. Three things it does **not** model would each let prose scan
+    /// as code — the precise failure this guard exists to catch:
+    ///
+    ///   - Rust raw strings (`r"…"`, `r#"…"#`), where `\` is not an escape and
+    ///     the closing quote is not the first `"`;
+    ///   - TypeScript regex literals, whose `'` and `/` are not delimiters;
+    ///   - nested template literals, where an inner backtick would close the
+    ///     outer one.
+    ///
+    /// None appear in either file today, so rather than model three unused
+    /// constructs — and get them subtly wrong, which is how this guard has
+    /// failed twice already — this fails loudly the day one is introduced. The
+    /// guard going *blind* is the outcome that must never happen quietly; a
+    /// build error telling someone to extend the scanner is fine.
+    fn assert_only_modeled_constructs(source: &str, lang: Lang, file: &str) {
+        // Every check below reads a *stripped* copy, never the raw source.
+        // The first version of this read the raw text and promptly fired on
+        // the `r#` in its own failure message — the same "prose satisfies the
+        // scan" bug the whole guard exists to catch, one level up.
+        let code = strip_comments(source, lang, Strings::Blank);
+        let bytes = code.as_bytes();
+        match lang {
+            Lang::Rust => {
+                // `r"`/`r#`/`br"`/`br#`, but only where `r` starts a token —
+                // otherwise the `r"` ending a word like `…ReserveTransfer"`
+                // matches.
+                let raw = (0..bytes.len()).any(|i| {
+                    let starts_token =
+                        i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                    if !starts_token {
+                        return false;
+                    }
+                    let rest = &bytes[i..];
+                    let rest = rest.strip_prefix(b"b").unwrap_or(rest);
+                    rest.starts_with(b"r\"") || rest.starts_with(b"r#")
+                });
+                assert!(
+                    !raw,
+                    "{file} has gained a raw string literal, which strip_comments does not \
+                     model: `\\` is not an escape there and the closing quote is not the \
+                     first one, so its contents would scan as code and prose inside it \
+                     would satisfy a guard. Teach the scanner the `r`/`r#` prefixes, or \
+                     move the literal out of this file."
+                );
+            }
+            Lang::TypeScript => {
+                // Comments stripped but string contents kept, so an inner
+                // backtick inside `${…}` is still visible.
+                let with_literals = strip_comments(source, lang, Strings::Keep);
+                // Refuse any quote or backtick inside an interpolation.
+                //
+                // Deliberately crude, after four attempts at being precise
+                // were each evaded — the last one *by the fix for the one
+                // before it*. The pattern every time: this detector and
+                // `strip_comments` tokenised `${…}` differently, and the
+                // disagreement was the hole. Teaching this scanner about
+                // strings (round 4) immediately opened round 5, because
+                // `strip_comments` closes a template at the first backtick it
+                // sees — including one inside a string inside `${…}` — and it
+                // structurally cannot do otherwise, since it never re-enters
+                // code at `${`.
+                //
+                // So there is nothing to agree about any more. A quote or a
+                // backtick inside an interpolation is refused outright, which
+                // also makes the brace count unambiguous: a `}` can no longer
+                // hide inside a string, because the string is refused first.
+                //
+                // The cost is real and bounded: an interpolation needing a
+                // quoted string has to be restructured. The three in
+                // `types.check.ts` today (`describe()`) contain neither.
+                //
+                // This is a holding position, not a design. See #191.
+                let nested = with_literals.match_indices("${").any(|(at, _)| {
+                    let mut depth = 1usize;
+                    for c in with_literals[at + 2..].chars() {
+                        match c {
+                            '`' | '"' | '\'' => return true,
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    return false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Unbalanced: refuse rather than guess.
+                    true
+                });
+                assert!(
+                    !nested,
+                    "{file} has gained a nested template literal, which strip_comments does \
+                     not model: the inner backtick closes the outer template, so everything \
+                     after it scans as code. Teach the scanner `${{`/`}}` nesting, or split \
+                     the literal."
+                );
+                // A regex literal's `/` and `'` are not delimiters. Detecting
+                // one properly needs real parsing, so this refuses the shape
+                // outright: after stripping, no bare `/` should remain in code.
+                let stray = code.match_indices('/').next();
+                assert!(
+                    stray.is_none(),
+                    "{file} has a `/` left in code after comment stripping, at byte {:?}. \
+                     That is either a regex literal — whose `/` and `'` are not delimiters, \
+                     so its contents would scan as code — or a comment shape the scanner \
+                     mis-parsed. Either way the guard cannot be trusted until it is modelled.",
+                    stray.map(|(at, _)| at)
+                );
+            }
+        }
+    }
+
+    /// Blank every comment, leaving code and string contents in place.
+    ///
+    /// The guards below scan text, so anything they match inside a comment is
+    /// prose being counted as a registration — which is the whole failure
+    /// #169 was filed for, and which a line-based stripper kept re-opening:
+    /// a block comment whose continuation lines start with code, a trailing
+    /// `//` after real code, a lifetime, a template literal. Each was patched
+    /// in turn and the next one appeared, so this models the two languages
+    /// properly instead.
+    ///
+    /// Byte-wise on purpose. Every delimiter is ASCII, and non-ASCII bytes are
+    /// either copied through untouched or replaced whole, so the output stays
+    /// valid UTF-8 — but slicing `&str` by byte index panicked the moment a
+    /// comment held an em dash, and this file is full of them.
+    ///
+    /// String **contents are kept**: guard A reads the name literals passed to
+    /// `assert_declared`. So a scanned form planted inside a real string still
+    /// counts as a registration. That is inherent to a text-scan guard and is
+    /// adversarial rather than accidental — unlike a comment, which is how
+    /// people actually disable code.
+    ///
+    /// Line count is preserved so failures stay locatable.
+    fn strip_comments(source: &str, lang: Lang, strings: Strings) -> String {
+        let src = source.as_bytes();
+        let mut out: Vec<u8> = Vec::with_capacity(src.len());
+        // Rust nests block comments; TypeScript closes at the first `*/`.
+        let mut block_depth: usize = 0;
+        let mut in_string: Option<u8> = None;
+        let mut i = 0;
+        while i < src.len() {
+            let b = src[i];
+            if block_depth > 0 {
+                if src[i..].starts_with(b"*/") {
+                    block_depth -= 1;
+                    out.extend_from_slice(b"  ");
+                    i += 2;
+                } else if lang == Lang::Rust && src[i..].starts_with(b"/*") {
+                    block_depth += 1;
+                    out.extend_from_slice(b"  ");
+                    i += 2;
+                } else {
+                    // Keep newlines so line numbering survives.
+                    out.push(if b == b'\n' { b'\n' } else { b' ' });
+                    i += 1;
+                }
+                continue;
+            }
+            match in_string {
+                // Deliberately no reset at a newline. A Rust string and a
+                // TypeScript template literal both span lines, and resetting
+                // made their continuation lines scan as code — so prose on the
+                // second line of a wrapped assert message counted as a
+                // registration. Valid source has balanced delimiters, which is
+                // what makes running to the real closer safe.
+                Some(quote) => {
+                    let keep = strings == Strings::Keep;
+                    if b == b'\\' && i + 1 < src.len() {
+                        if keep {
+                            out.extend_from_slice(&src[i..i + 2]);
+                        } else {
+                            out.extend_from_slice(b"  ");
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    // The delimiters themselves always survive, so guard A can
+                    // still find where a literal starts.
+                    if keep || b == quote || b == b'\n' {
+                        out.push(b);
+                    } else {
+                        out.push(b' ');
+                    }
+                    if b == quote {
+                        in_string = None;
+                    }
+                    i += 1;
+                }
+                None => {
+                    if src[i..].starts_with(b"//") {
+                        while i < src.len() && src[i] != b'\n' {
+                            out.push(b' ');
+                            i += 1;
+                        }
+                    } else if src[i..].starts_with(b"/*") {
+                        block_depth = 1;
+                        out.extend_from_slice(b"  ");
+                        i += 2;
+                    } else if lang == Lang::Rust && b == b'\'' {
+                        match char_literal_len(&src[i..]) {
+                            Some(len) => {
+                                out.extend_from_slice(&src[i..i + len]);
+                                i += len;
+                            }
+                            // A lifetime. Ordinary byte, opens nothing.
+                            None => {
+                                out.push(b);
+                                i += 1;
+                            }
+                        }
+                    } else {
+                        let opens = match lang {
+                            Lang::Rust => b == b'"',
+                            // TypeScript has three, and a template literal is
+                            // the one that spans lines.
+                            Lang::TypeScript => matches!(b, b'"' | b'\'' | b'`'),
+                        };
+                        if opens {
+                            in_string = Some(b);
+                        }
+                        out.push(b);
+                        i += 1;
+                    }
+                }
+            }
+        }
+        String::from_utf8(out).expect("only ASCII delimiters were substituted")
+    }
+
+    /// Shorthand for the tests below, which are all about Rust shapes unless
+    /// they say otherwise.
+    fn strip_comments_rust(source: &str) -> String {
+        strip_comments(source, Lang::Rust, Strings::Keep)
+    }
+
+    /// The comment stripper the guard above depends on, tested directly.
+    ///
+    /// It is the whole basis of "the guard cannot be satisfied by prose", and
+    /// the guard only exercises it against the two real files — which happen
+    /// not to contain the shapes that once defeated it. These are those
+    /// shapes, plus the two ways a scanner like this usually goes wrong:
+    /// mistaking a `//` inside a string literal for a comment, and letting an
+    /// escaped quote end the literal early.
+    #[test]
+    fn the_comment_stripper_removes_prose_and_keeps_code() {
+        // Shadow the guard's private helper by re-declaring the same logic is
+        // not possible here, so exercise it through the same path the guard
+        // uses: a small source with each shape, asserted on the stripped text.
+        let stripped = strip_comments_rust(concat!(
+            "let a = 1; // check::<Ghost>(\"Ghost\")\n",
+            "/* disabled:\n",
+            "check::<Blocked>(\"Blocked\");\n",
+            "*/\n",
+            "let sep = \"//\"; let kept = 2;\n",
+            "let esc = \"a\\\"// still a literal\"; let after = 3;\n",
+            "check::<Real>(\"Real\");\n",
+        ));
+
+        assert!(
+            !stripped.contains("Ghost"),
+            "trailing // survived: {stripped}"
+        );
+        assert!(
+            !stripped.contains("Blocked"),
+            "block comment survived: {stripped}"
+        );
+        assert!(
+            stripped.contains("check::<Real>"),
+            "real code was eaten: {stripped}"
+        );
+        assert!(
+            stripped.contains("let kept = 2;"),
+            "a `//` inside a string literal was treated as a comment: {stripped}"
+        );
+        assert!(
+            stripped.contains("let after = 3;"),
+            "an escaped quote ended the literal early: {stripped}"
+        );
+        assert_eq!(
+            stripped.lines().count(),
+            7,
+            "line numbering must survive so failures stay locatable"
+        );
+    }
+
+    /// The scanner refuses what it cannot model, rather than going blind.
+    ///
+    /// Raw strings, regex literals and nested template literals each have
+    /// delimiter rules the scanner does not implement, and in each case the
+    /// consequence is prose scanning as code — a deleted registration staying
+    /// green. None are in either file, so they are refused outright instead of
+    /// modelled; these pin that the refusal actually fires.
+    #[test]
+    fn a_construct_the_scanner_cannot_model_is_refused() {
+        let raw = std::panic::catch_unwind(|| {
+            assert_only_modeled_constructs("let m = r#\"x\"#;\n", Lang::Rust, "f.rs");
+        });
+        assert!(raw.is_err(), "a raw string was accepted");
+
+        // ...but an `r` that merely ends a word is not a raw string. This file
+        // has `\"DecodedReserveTransfer\"`, which is why the check looks at
+        // token starts.
+        assert_only_modeled_constructs("let s = \"DecodedReserveTransfer\";\n", Lang::Rust, "f.rs");
+
+        let nested = std::panic::catch_unwind(|| {
+            assert_only_modeled_constructs("const t = `${`inner`}`;\n", Lang::TypeScript, "f.ts");
+        });
+        assert!(nested.is_err(), "a nested template literal was accepted");
+
+        // A plain interpolation is fine, and this file has several.
+        assert_only_modeled_constructs(
+            "const t = `${o.address} holds`;\n",
+            Lang::TypeScript,
+            "f.ts",
+        );
+
+        // An interpolation may hold its own braces. Stopping at the *first*
+        // `}` closed the window before the inner backtick, so this exact shape
+        // read as modelled while its contents scanned as code.
+        let braced = std::panic::catch_unwind(|| {
+            assert_only_modeled_constructs(
+                "const t = `${ {a:1}.a + `inner` }`;\n",
+                Lang::TypeScript,
+                "f.ts",
+            );
+        });
+        assert!(
+            braced.is_err(),
+            "a nested template behind a brace was accepted"
+        );
+
+        // ...and behind a `}` inside a string, which defeated the brace count
+        // because the counter tokenised differently from the stripper.
+        for decoy in [
+            "const t = `${ \"}\" + `x` }z`;\n",
+            "const t = `${ '}' + `x` }z`;\n",
+        ] {
+            let quoted = std::panic::catch_unwind(move || {
+                assert_only_modeled_constructs(decoy, Lang::TypeScript, "f.ts");
+            });
+            assert!(
+                quoted.is_err(),
+                "a nested template behind a quoted brace was accepted: {decoy}"
+            );
+        }
+
+        // ...and one that merely contains braces is still fine.
+        assert_only_modeled_constructs(
+            "const t = `${ {a:1}.a } holds`;\n",
+            Lang::TypeScript,
+            "f.ts",
+        );
+
+        let regex = std::panic::catch_unwind(|| {
+            assert_only_modeled_constructs("const m = s.split(/x/);\n", Lang::TypeScript, "f.ts");
+        });
+        assert!(regex.is_err(), "a regex literal was accepted");
+    }
+
+    /// The three shapes a single-language scanner got wrong, one per rule.
+    ///
+    /// Each was demonstrated live against the previous version: the guard
+    /// stayed green with a real registration deleted. They are here as unit
+    /// tests because the guard only ever scans the two real files, and those
+    /// happen not to contain any of these.
+    #[test]
+    fn the_stripper_models_each_language_rather_than_guessing() {
+        // Rust nests block comments — closing at the first `*/` left the
+        // second half of the comment scanning as code.
+        let stripped = strip_comments_rust("/* off /* note */\ncheck::<Ghost>(\"Ghost\");\n*/\n");
+        assert!(
+            !stripped.contains("Ghost"),
+            "a nested block comment ended early: {stripped}"
+        );
+
+        // A Rust string spans lines. Resetting at the newline made the
+        // continuation of a wrapped assert message scan as code.
+        let stripped = strip_comments(
+            "let m = \"first line \\\n     check::<Ghost>(\";\n",
+            Lang::Rust,
+            Strings::Blank,
+        );
+        assert!(
+            !stripped.contains("check::<Ghost>("),
+            "a continued string literal scanned as code: {stripped}"
+        );
+
+        // TypeScript does *not* nest, so the first `*/` really does close.
+        let stripped = strip_comments(
+            "/* off /* note */\nconst browse: OffersRequest = {};\n",
+            Lang::TypeScript,
+            Strings::Keep,
+        );
+        assert!(
+            stripped.contains(": OffersRequest"),
+            "TypeScript block comments must not nest: {stripped}"
+        );
+
+        // A template literal spans lines and can hold anything, including an
+        // apostrophe that would otherwise open a phantom literal.
+        let stripped = strip_comments(
+            "const note = `it's fine\nstill inside`; const browse: OffersRequest = {};\n",
+            Lang::TypeScript,
+            Strings::Keep,
+        );
+        assert!(
+            stripped.contains(": OffersRequest"),
+            "a template literal swallowed the code after it: {stripped}"
+        );
+    }
+
+    /// `'` means two different things in Rust and this file contains both.
+    ///
+    /// A lifetime that opened a literal would leave a trailing `//` on the
+    /// same line unstripped — the bypass this stripper exists to close. A
+    /// char literal holding a quote that did *not* open one would swallow the
+    /// rest of the line instead, hiding real registrations. Both shapes are
+    /// in `types.rs` already (`&'static str`, and `'\"'` in the guard-A scan),
+    /// so neither is hypothetical.
+    #[test]
+    fn an_apostrophe_is_read_as_a_lifetime_or_a_char_literal_correctly() {
+        // A lifetime must not start a literal, so the `//` after it is still
+        // a comment.
+        let stripped = strip_comments_rust("const T: &'static str = x; // check::<Ghost>\n");
+        assert!(
+            !stripped.contains("Ghost"),
+            "a lifetime opened a phantom literal, so a trailing comment survived: {stripped}"
+        );
+        assert!(
+            stripped.contains("&'static str"),
+            "the lifetime itself was eaten: {stripped}"
+        );
+
+        // A char literal holding a quote must not start a string, or the rest
+        // of the line disappears into it.
+        let stripped = strip_comments_rust("let q = '\"'; check::<Real>(\"Real\");\n");
+        assert!(
+            stripped.contains("check::<Real>"),
+            "a char literal holding a quote swallowed the code after it: {stripped}"
+        );
+
+        // And an escaped char literal must not either.
+        let stripped = strip_comments_rust("let e = '\\''; check::<Also>(\"Also\");\n");
+        assert!(
+            stripped.contains("check::<Also>"),
+            "an escaped char literal swallowed the code after it: {stripped}"
+        );
     }
 
     /// Both checks must be able to fail, or they prove nothing. The
