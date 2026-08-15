@@ -22,21 +22,25 @@ use crate::error::KeyError;
 /// [`Zeroizing`] `Vec`, and the block buffer that saw the payload belongs to a
 /// hasher this function owns.
 ///
-/// **What actually removes the copy is the second pass, not the scrub below.**
-/// `sha2` 0.10 has no `zeroize` feature and does not wipe its block buffer on
-/// reset — but the second hash writes the 32-byte first digest into that same
-/// buffer, overwriting the version byte and all but the last byte of the
-/// payload before the hasher is dropped. That is structural, not luck: it
-/// happens for the same reason on any optimizer setting.
+/// **The second pass is what clears the block buffer**, and it does so
+/// completely. `sha2` 0.10 has no `zeroize` feature, and `BlockBuffer::reset`
+/// only moves the cursor — it never zeroes the bytes — so after the *first*
+/// digest the payload is still sitting there. Then:
 ///
-/// Measured on wasm32 (uniform-fill search, so byte order cannot hide
-/// anything): removing the explicit scrub changes **nothing** — 0 copies with
-/// it and 0 without, on both `--release` + `wasm-opt` and `--dev`. It is kept
-/// as belt-and-braces for the handful of trailing bytes the second pass does
-/// not reach, and it is deliberately *not* described as what fixes this. Issue
-/// #179 has the full numbers; re-run them before changing any of this, because
-/// an earlier attempt that merely wrapped `bs58`'s own buffer relocated the
-/// copy instead of removing it and looked like a fix.
+/// - the second `update` writes the 32-byte first digest over offsets `0..32`;
+/// - the second `finalize` runs `digest_pad`, which writes `0x80` at the cursor
+///   and **zeros every byte from there to the end of the block**.
+///
+/// Between them the whole 64-byte block is overwritten, whatever the payload
+/// length. That is structural, not an optimizer accident, which is why this
+/// does not depend on a build profile.
+///
+/// Verified both ways rather than assumed. Measured on wasm32 with a
+/// uniform-fill search (byte order cannot hide anything): the copy is gone on
+/// `--release` + `wasm-opt` and on `--dev`, and it is *gone* rather than
+/// relocated — an earlier attempt that merely wrapped `bs58`'s own `Vec` moved
+/// it a few bytes and looked like a fix. Issue #179 has the addresses. Re-run
+/// them before changing any of this.
 pub fn encode_check(version: u8, payload: &[u8]) -> String {
     // Capacity for the whole frame up front: a realloc mid-build would copy the
     // secret into a fresh allocation and leave the old one unwiped behind it.
@@ -53,21 +57,11 @@ pub fn encode_check(version: u8, payload: &[u8]) -> String {
     let checksum = hasher.finalize_reset();
     data.extend_from_slice(&checksum[..CHECKSUM_LEN]);
 
-    // Belt-and-braces, and measured to make no difference on its own — see the
-    // note above. The second pass has already overwritten all but the tail of
-    // the block buffer; this clears that tail. Same instance deliberately: a
-    // fresh `Sha256` would sit somewhere else and scrub nothing.
-    hasher.update([0u8; BLOCK_LEN]);
-    let _ = hasher.finalize();
-
     bs58::encode(&data[..]).into_string()
 }
 
 /// Bytes of double-SHA256 appended as the base58check checksum.
 const CHECKSUM_LEN: usize = 4;
-
-/// SHA-256's input block, and so the size of the buffer being scrubbed above.
-const BLOCK_LEN: usize = 64;
 
 /// Decode base58check, returning `(version, payload)`.
 ///
