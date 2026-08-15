@@ -210,7 +210,76 @@ fn the_https_userinfo_refusal_does_not_print_the_password() {
     }
 }
 
-/// The *other* arm of `check_scheme` — an endpoint that never even matches
+/// An endpoint we accept must be one `ureq` sends without credentials.
+///
+/// Every other test here asserts against a *string form*, which is exactly how
+/// `https:///user:pass@host` slipped through: the authority was bounded by hand
+/// at the first `/`, so a leading slash made it read as empty and the userinfo
+/// check saw nothing — while `ureq`'s parser collapses those slashes and
+/// addresses `host` with the credentials attached. Two parsers, two answers,
+/// and the wrong one was doing the refusing.
+///
+/// So this pins the property that actually matters, against the real parser
+/// rather than a transcription of it: **if we accept an endpoint, `url` must
+/// agree it carries no username and no password.** A future divergence — a
+/// separator WHATWG honours and this does not, a normalisation step it applies
+/// first — fails here rather than in someone's log.
+///
+/// `url` is a dev-dependency for this test alone; `ureq` already builds the
+/// same version, and cargo unifies them.
+#[test]
+fn the_authority_we_validate_is_the_one_ureq_connects_to() {
+    // Shapes that differ between a hand-rolled bound and WHATWG: collapsed
+    // slashes, backslashes, the tab/CR/LF the parser strips outright, and an
+    // `@` that is genuinely past the authority and must stay allowed.
+    let corpus = [
+        "https://user:pass@evil.example",
+        "https:///user:pass@evil.example",
+        "https:////user:pass@evil.example",
+        "https://\\/user:pass@evil.example",
+        "https:/\\/user:pass@evil.example",
+        "https://\t/user:pass@evil.example",
+        "https://\r\n/user:pass@evil.example",
+        "https://user:pa@ss-w0rd@evil.example",
+        "https://[::1]@evil.example/",
+        "https://node.example",
+        "https://node.example/",
+        "https://node.example:443/path",
+        "https://node.example/p@th",
+        "https://node.example/?token=a@b",
+        "https://node.example#frag@ment",
+        "https://[::1]:9067/",
+        "http://localhost:9067",
+        "http://127.0.0.1",
+        "http://[::1]:9067",
+        "http:///user:pass@evil.example",
+        "http://user:pass@localhost",
+    ];
+
+    let mut leaked = Vec::new();
+    for endpoint in corpus {
+        if GrpcWebTransport::new(endpoint).is_err() {
+            continue;
+        }
+        // `new` trims trailing slashes and `call` appends "/<path>", so this
+        // is the shape ureq is actually handed.
+        let parsed = match url::Url::parse(&format!("{}/x", endpoint.trim_end_matches('/'))) {
+            Ok(parsed) => parsed,
+            // If the parser refuses it outright, ureq cannot send credentials
+            // anywhere — the request simply fails. Not a leak.
+            Err(_) => continue,
+        };
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            leaked.push((endpoint, parsed.host_str().unwrap_or("?").to_string()));
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "accepted endpoints that ureq would send credentials for: {leaked:?}"
+    );
+}
+
+/// The *other* arm of `check_scheme`  — an endpoint that never even matches
 /// `http://` or `https://` — used to echo the whole endpoint verbatim into
 /// its refusal. The inputs that land here are mundane, not adversarial: an
 /// uppercase `HTTPS://` typo, or a leading space pasted in from a YAML value

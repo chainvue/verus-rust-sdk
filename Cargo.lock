@@ -2284,6 +2284,7 @@ dependencies = [
  "hex",
  "thiserror 2.0.19",
  "ureq",
+ "url",
  "verus-wire",
 ]
 
