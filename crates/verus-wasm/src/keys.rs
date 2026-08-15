@@ -105,10 +105,11 @@ impl Key {
     /// `free()`. What this cannot fix is the copy JavaScript now holds; that
     /// one is the caller's.
     ///
-    /// It does not make the call leave *nothing*: base58check-encoding the
-    /// scalar deposits one canonical-order copy of it in sha2's block buffer
-    /// on the shadow stack, which is this path's own residue and is unrelated
-    /// to the WIF string. See issue #170 for the measurement.
+    /// Base58check-encoding the scalar used to deposit one canonical-order
+    /// copy of it in sha2's block buffer on the shadow stack — this path's own
+    /// residue, unrelated to the WIF string. `verus-keys` now computes that
+    /// checksum itself over zeroizing buffers, and the copy is measured gone.
+    /// See issues #170 and #179.
     #[wasm_bindgen(js_name = toWif)]
     pub fn to_wif(&self) -> JsText {
         use wasm_bindgen::JsCast;
@@ -183,22 +184,24 @@ impl Key {
 /// `PrivateKey`, not something this function's own fix touches or could
 /// touch; worth its own issue against `verus-keys`.
 ///
-/// [`Key::to_wif`] adds one more, in canonical order this time and separate
-/// from the seven above — but the mechanism first attributed to it here was
-/// wrong, and cost a round of review before the correction. It is **not**
-/// `PrivateKey::to_bytes`'s `SigningKey::to_bytes()` temporary
-/// (`verus-keys/src/key.rs`): wrapping or explicitly zeroizing that
-/// `FieldBytes` leaves the residue in exactly the same place. The actual
-/// source is `to_wif`'s base58check encoding (`verus-keys/src/base58.rs`) —
-/// sha2's 64-byte block buffer, holding `0xbc ‖ scalar ‖ 0x01`, deposited on
-/// the shadow stack by the checksum pass inside `bs58`'s
-/// `encode_check_into`. (`encode_check` prepends the version byte into its
-/// own buffer and calls `bs58::encode(&data).with_check()` with no version
-/// argument, so what runs is `Sha256::new().chain_update(input)` over the
-/// whole `0xbc ‖ scalar ‖ 0x01` — not the `update([version])` branch, which
-/// this crate never takes.) Reading the key back out through `address()`,
-/// `publicKey()`, or `scriptPubKey()` — none of which base58check-encode the
-/// scalar — leaves none. See issue #170 for the corrected measurement.
+/// [`Key::to_wif`] used to add one more, in canonical order this time and
+/// separate from the seven above. Worth recording how it was diagnosed,
+/// because the first attribution was wrong and cost a round of review: it was
+/// **not** `PrivateKey::to_bytes`'s `SigningKey::to_bytes()` temporary —
+/// wrapping or explicitly zeroizing that `FieldBytes` left the copy in exactly
+/// the same place. It was sha2's 64-byte block buffer holding
+/// `0xbc ‖ scalar ‖ 0x01`, deposited on the shadow stack by the checksum pass
+/// inside `bs58`, which `verus-keys` had no way to reach.
+///
+/// That one is now **fixed**, not merely documented: `encode_check` computes
+/// the double-SHA256 itself over [`Zeroizing`](zeroize::Zeroizing) buffers, so
+/// the block buffer holding the secret belongs to this workspace and the
+/// second hash pass overwrites it. Measured gone on `--release` + `wasm-opt`
+/// and on `--dev`. See issue #179.
+///
+/// Reading the key back out through `address()`, `publicKey()` or
+/// `scriptPubKey()` never left one anyway — none of them base58check-encode
+/// the scalar.
 pub(crate) fn private_key_from_entropy(entropy: &[u8]) -> WasmResult<PrivateKey> {
     if entropy.len() != 32 {
         return Err(WasmError::new(

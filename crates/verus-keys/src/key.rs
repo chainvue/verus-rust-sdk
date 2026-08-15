@@ -49,9 +49,10 @@ pub const WIF_VERSION: u8 = 0xbc;
 /// `to_bytes`'s own source temporary does *not* contribute to this residue.
 /// Measured separately: wrapping or explicitly zeroizing
 /// `SigningKey::to_bytes`'s return leaves an unrelated canonical-order copy
-/// in the same place either way, and removing `to_wif`'s base58check
-/// encoding removes that copy entirely. It belongs to `encode_check`'s
-/// SHA-256 block buffer, not to `to_bytes`.
+/// in the same place either way. That copy belonged to `encode_check`'s
+/// SHA-256 block buffer, not to `to_bytes` — and it is now gone, since
+/// [`crate::base58::encode_check`] computes the checksum itself rather than
+/// handing the secret to `bs58`. See issue #179.
 #[derive(Clone)]
 pub struct PrivateKey {
     signing_key: SigningKey,
