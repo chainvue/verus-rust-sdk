@@ -638,7 +638,8 @@ pub struct CurrencyStateAt {
     /// on average and not on purpose — so this is the axis and `height` is the
     /// label.
     pub block_time: i64,
-    /// The state itself, in the same shape [`ChainReader::currency_state`]
+    /// The state itself, in the same shape
+    /// [`ChainReader::currency_state`](crate::ChainReader::currency_state)
     /// returns for the tip.
     ///
     /// Left as JSON for the same reason that one is: what is in it depends on
