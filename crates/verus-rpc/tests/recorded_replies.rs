@@ -1300,3 +1300,59 @@ fn a_currency_definition_carries_what_the_policy_view_drops() {
         "including the txid that proves where the definition came from"
     );
 }
+
+/// A price moving, which is the only thing this method exists to show.
+///
+/// The fixture is four daily samples of `Bridge.vETH` from VRSCTEST, captured
+/// across the one block range in that month where the pool actually moved:
+/// three readings at `0.53768553` VRSCTEST-in-DAI and a fourth at
+/// `0.53722594`. A range where nothing changed would pass whether or not the
+/// samples were being read in order, or read at all.
+///
+/// It also pins the two fields that are easy to assume and wrong to: the
+/// **height** comes back per sample rather than being the step counted out, and
+/// the timestamp is the block's rather than the reply's.
+#[test]
+fn reads_a_price_history_and_keeps_each_sample_at_its_own_height() {
+    let client = client("getcurrencystate_range_vrsctest");
+    let history = client
+        .currency_state_range("Bridge.vETH", 1_152_973, 1_157_293, 1_440)
+        .unwrap();
+
+    assert_eq!(history.len(), 4);
+    assert_eq!(
+        history.iter().map(|at| at.height).collect::<Vec<_>>(),
+        [1_152_973, 1_154_413, 1_155_853, 1_157_293],
+    );
+    // Ascending, and a minute apart on average — 1440 blocks is about a day.
+    assert!(history
+        .windows(2)
+        .all(|w| w[1].block_time > w[0].block_time));
+    assert_eq!(history[0].block_time, 1_784_432_667);
+
+    // The range is one argument, spaces included. Sending three would be
+    // `getcurrencystate` with four parameters, which the daemon refuses.
+    let asked = client.transport().asked.borrow().join("");
+    assert!(
+        asked.contains(r#""1152973, 1157293, 1440""#),
+        "the range was not sent as one string: {asked}"
+    );
+
+    // And the state is the same shape `currency_state` returns, which is what
+    // lets one price derivation read both.
+    let price = |at: &verus_rpc::CurrencyStateAt| {
+        let reserves = at.state["reservecurrencies"].as_array().unwrap();
+        let of = |id: &str| {
+            reserves.iter().find(|r| r["currencyid"] == id).unwrap()["priceinreserve"]
+                .as_f64()
+                .unwrap()
+        };
+        of("iN9vbHXexEh6GTZ45fRoJGKTQThfbgUwMh") / of("iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq")
+    };
+
+    assert!((price(&history[0]) - 0.537_685_53).abs() < 1e-8);
+    assert!(
+        (price(&history[3]) - 0.537_225_94).abs() < 1e-8,
+        "the price did not move across the fixture, so this proves nothing",
+    );
+}

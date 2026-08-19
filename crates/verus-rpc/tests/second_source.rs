@@ -200,6 +200,15 @@ impl ChainReader for Node {
     fn currency_state(&self, _n: &str) -> Result<serde_json::Value, RpcError> {
         unimplemented!("not asked by these tests")
     }
+    fn currency_state_range(
+        &self,
+        _n: &str,
+        _from: u32,
+        _to: u32,
+        _step: u32,
+    ) -> Result<Vec<verus_rpc::CurrencyStateAt>, RpcError> {
+        unimplemented!("not asked by these tests")
+    }
     fn list_currencies(&self) -> Result<Vec<verus_rpc::CurrencySummary>, RpcError> {
         unimplemented!("not asked by these tests")
     }

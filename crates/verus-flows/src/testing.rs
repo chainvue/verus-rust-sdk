@@ -663,6 +663,21 @@ impl ChainReader for ScriptedReader {
         Ok(json!({}))
     }
 
+    /// Empty rather than a fabricated series. A flow that priced something
+    /// against invented history would be tested against a chain that has never
+    /// existed, and an empty history is a real answer — a currency that has
+    /// published no state in the window returns exactly this.
+    fn currency_state_range(
+        &self,
+        _name_or_id: &str,
+        _from: u32,
+        _to: u32,
+        _step: u32,
+    ) -> Result<Vec<verus_rpc::CurrencyStateAt>, RpcError> {
+        self.count();
+        Ok(Vec::new())
+    }
+
     fn identity(&self, name_or_id: &str) -> Result<IdentityRecord, RpcError> {
         self.count();
         self.identities
