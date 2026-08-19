@@ -619,6 +619,35 @@ pub struct ConversionEstimate {
     pub fee: Option<Amount>,
 }
 
+/// One reading of a fractional currency's state, at a height.
+///
+/// # Why the caller gets the height back rather than counting
+///
+/// `getcurrencystate` walks a range in steps, and what it returns is not
+/// necessarily the step it was asked for: the daemon answers for the blocks it
+/// has, and a range that runs past the tip comes back shorter. Deriving the
+/// height from the index would put every sample in the wrong place the first
+/// time that happens, on a chart, silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurrencyStateAt {
+    /// The block this reading is from.
+    pub height: u32,
+    /// The block's timestamp, in Unix seconds.
+    ///
+    /// A chart's x-axis is time rather than height — blocks are a minute apart
+    /// on average and not on purpose — so this is the axis and `height` is the
+    /// label.
+    pub block_time: i64,
+    /// The state itself, in the same shape
+    /// [`ChainReader::currency_state`](crate::ChainReader::currency_state)
+    /// returns for the tip.
+    ///
+    /// Left as JSON for the same reason that one is: what is in it depends on
+    /// the kind of currency, and a typed shape here would be a shape that only
+    /// fits a fractional one.
+    pub state: serde_json::Value,
+}
+
 /// A VerusID as a node reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityRecord {

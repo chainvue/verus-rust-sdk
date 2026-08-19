@@ -266,9 +266,9 @@ pub mod network {
     };
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,
-        ContentValue, ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary,
-        HttpTransport, IdentityAtAddress, IdentityContent, IdentityRecord, MempoolDelta,
-        OfferListing, OfferSide, RpcClient, RpcError, SecondSourced, SignedAmount,
+        ContentValue, ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencyStateAt,
+        CurrencySummary, HttpTransport, IdentityAtAddress, IdentityContent, IdentityRecord,
+        MempoolDelta, OfferListing, OfferSide, RpcClient, RpcError, SecondSourced, SignedAmount,
     };
 }
 

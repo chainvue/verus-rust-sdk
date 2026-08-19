@@ -105,7 +105,7 @@ pub use transport::HttpTransport;
 pub use transport::{RequestBody, Transport};
 pub use types::{
     spendable_at, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
-    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityAtAddress,
-    IdentityContent, IdentityRecord, MempoolDelta, OfferListing, OfferSide, SignedAmount,
-    COINBASE_MATURITY,
+    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencyStateAt, CurrencySummary,
+    IdentityAtAddress, IdentityContent, IdentityRecord, MempoolDelta, OfferListing, OfferSide,
+    SignedAmount, COINBASE_MATURITY,
 };

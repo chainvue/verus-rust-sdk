@@ -169,8 +169,8 @@ use crate::client::ChainReader;
 use crate::error::RpcError;
 use crate::types::{
     AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ConversionEstimate, CurrencyConverter,
-    CurrencyPolicy, CurrencySummary, IdentityAtAddress, IdentityContent, IdentityRecord,
-    MempoolDelta, OfferListing,
+    CurrencyPolicy, CurrencyStateAt, CurrencySummary, IdentityAtAddress, IdentityContent,
+    IdentityRecord, MempoolDelta, OfferListing,
 };
 
 /// A [`ChainReader`] that asks two nodes the questions where being lied to
@@ -414,6 +414,19 @@ impl<A: ChainReader, B: ChainReader> ChainReader for SecondSourced<A, B> {
 
     fn currency_state(&self, name_or_id: &str) -> Result<Value, RpcError> {
         self.primary.currency_state(name_or_id)
+    }
+
+    /// Primary only, for the same reason `currency_definition` is: a price
+    /// history is read, never spent against.
+    fn currency_state_range(
+        &self,
+        name_or_id: &str,
+        from: u32,
+        to: u32,
+        step: u32,
+    ) -> Result<Vec<CurrencyStateAt>, RpcError> {
+        self.primary
+            .currency_state_range(name_or_id, from, to, step)
     }
 
     fn list_currencies(&self) -> Result<Vec<CurrencySummary>, RpcError> {

@@ -14,10 +14,11 @@ use crate::method::Method;
 use crate::transport::Transport;
 use crate::types::{
     converter_from_entry, AddressBalance, AddressDelta, AddressUtxo, ChainInfo, ContentValue,
-    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencySummary, IdentityAtAddress,
-    IdentityContent, IdentityRecord, MempoolDelta, OfferListing, RawAddressBalance,
-    RawAddressDelta, RawAddressUtxo, RawChainInfo, RawConversionEstimate, RawCurrency,
-    RawCurrencyEntry, RawIdentity, RawIdentityAtAddress, RawMempoolDelta, RawOfferEntry,
+    ConversionEstimate, CurrencyConverter, CurrencyPolicy, CurrencyStateAt, CurrencySummary,
+    IdentityAtAddress, IdentityContent, IdentityRecord, MempoolDelta, OfferListing,
+    RawAddressBalance, RawAddressDelta, RawAddressUtxo, RawChainInfo, RawConversionEstimate,
+    RawCurrency, RawCurrencyEntry, RawIdentity, RawIdentityAtAddress, RawMempoolDelta,
+    RawOfferEntry,
 };
 
 /// Asking a node questions.
@@ -238,6 +239,38 @@ pub trait ChainReader {
     ) -> Result<ConversionEstimate, RpcError>;
     /// The current reserves, weights and prices of a fractional currency.
     fn currency_state(&self, name_or_id: &str) -> Result<serde_json::Value, RpcError>;
+    /// The same, sampled across a range of blocks.
+    ///
+    /// `getcurrencystate` takes an optional second argument — `"from, to,
+    /// step"` — and answers with one reading per sampled block. This is the
+    /// only way to see a price move: everything else here reports the tip, and
+    /// a price at the tip is a number with no shape.
+    ///
+    /// `step` is a block count, not a sample count. Blocks average a minute on
+    /// VRSCTEST, so `1440` is roughly daily.
+    ///
+    /// # What comes back
+    ///
+    /// One [`CurrencyStateAt`] per block the daemon had, **which is not
+    /// necessarily one per step**: a range running past the tip is answered
+    /// short rather than refused. Read the height off each sample rather than
+    /// counting.
+    ///
+    /// # Errors
+    ///
+    /// `-8` for a currency the chain does not know. A range that finds nothing
+    /// is an empty list, which is a different answer and means the currency
+    /// exists and did not publish state in that window. A sample missing a
+    /// height, a block time, or a state is refused rather than defaulted —
+    /// defaulted, the last of those is indistinguishable from that empty
+    /// answer.
+    fn currency_state_range(
+        &self,
+        name_or_id: &str,
+        from: u32,
+        to: u32,
+        step: u32,
+    ) -> Result<Vec<CurrencyStateAt>, RpcError>;
     /// Every currency the chain knows about.
     ///
     /// One large reply — 290 currencies on VRSCTEST — and no pagination, so
@@ -890,6 +923,52 @@ impl<T: Transport> ChainReader for RpcClient<T> {
 
     fn currency_state(&self, name_or_id: &str) -> Result<serde_json::Value, RpcError> {
         self.call(Method::GetCurrencyState, json!([name_or_id]))
+    }
+
+    fn currency_state_range(
+        &self,
+        name_or_id: &str,
+        from: u32,
+        to: u32,
+        step: u32,
+    ) -> Result<Vec<CurrencyStateAt>, RpcError> {
+        // One string, spaces and all — the daemon parses this argument itself
+        // rather than taking three. Sending three would be `getcurrencystate`
+        // with four parameters, which it refuses.
+        let range = format!("{from}, {to}, {step}");
+        let entries: Vec<serde_json::Value> =
+            self.call(Method::GetCurrencyState, json!([name_or_id, range]))?;
+
+        entries
+            .into_iter()
+            .map(|mut entry| {
+                let height = entry["height"].as_u64().ok_or_else(|| {
+                    RpcError::Unexpected("getcurrencystate: a sample with no height".to_string())
+                })?;
+                let block_time = entry["blocktime"].as_i64().ok_or_else(|| {
+                    RpcError::Unexpected("getcurrencystate: a sample with no blocktime".to_string())
+                })?;
+                // Refused rather than defaulted, like the two above it. A
+                // missing state indexes to `null`, and `null` reads downstream
+                // as a currency that published nothing in the window — which is
+                // a real answer, and not this one. A chart would come out empty
+                // instead of the read coming out failed.
+                let state = entry["currencystate"].take();
+                if state.is_null() {
+                    return Err(RpcError::Unexpected(format!(
+                        "getcurrencystate: the sample at height {height} carries no currencystate"
+                    )));
+                }
+
+                Ok(CurrencyStateAt {
+                    height: u32::try_from(height).map_err(|_| {
+                        RpcError::Unexpected(format!("getcurrencystate: height {height} is absurd"))
+                    })?,
+                    block_time,
+                    state,
+                })
+            })
+            .collect()
     }
 
     fn list_currencies(&self) -> Result<Vec<CurrencySummary>, RpcError> {
