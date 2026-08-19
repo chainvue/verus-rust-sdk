@@ -260,7 +260,10 @@ pub trait ChainReader {
     ///
     /// `-8` for a currency the chain does not know. A range that finds nothing
     /// is an empty list, which is a different answer and means the currency
-    /// exists and did not publish state in that window.
+    /// exists and did not publish state in that window. A sample missing a
+    /// height, a block time, or a state is refused rather than defaulted —
+    /// defaulted, the last of those is indistinguishable from that empty
+    /// answer.
     fn currency_state_range(
         &self,
         name_or_id: &str,
@@ -945,12 +948,24 @@ impl<T: Transport> ChainReader for RpcClient<T> {
                 let block_time = entry["blocktime"].as_i64().ok_or_else(|| {
                     RpcError::Unexpected("getcurrencystate: a sample with no blocktime".to_string())
                 })?;
+                // Refused rather than defaulted, like the two above it. A
+                // missing state indexes to `null`, and `null` reads downstream
+                // as a currency that published nothing in the window — which is
+                // a real answer, and not this one. A chart would come out empty
+                // instead of the read coming out failed.
+                let state = entry["currencystate"].take();
+                if state.is_null() {
+                    return Err(RpcError::Unexpected(format!(
+                        "getcurrencystate: the sample at height {height} carries no currencystate"
+                    )));
+                }
+
                 Ok(CurrencyStateAt {
                     height: u32::try_from(height).map_err(|_| {
                         RpcError::Unexpected(format!("getcurrencystate: height {height} is absurd"))
                     })?,
                     block_time,
-                    state: entry["currencystate"].take(),
+                    state,
                 })
             })
             .collect()

@@ -1356,3 +1356,32 @@ fn reads_a_price_history_and_keeps_each_sample_at_its_own_height() {
         "the price did not move across the fixture, so this proves nothing",
     );
 }
+
+/// A sample the daemon answers without a state is refused, not filled in.
+///
+/// `entry["currencystate"]` on an object that lacks the key yields `null`, and
+/// a `null` state reads downstream exactly like a currency that published
+/// nothing in the window — a real answer, and not this one. Defaulted, the
+/// failure surfaces as a chart that is quietly empty; refused, it surfaces as
+/// a read that failed and names the height it failed at.
+#[test]
+fn a_sample_with_no_state_is_refused_rather_than_read_as_an_empty_one() {
+    struct Body(&'static str);
+    impl Transport for Body {
+        fn post(&self, _body: &RequestBody) -> Result<String, RpcError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    let stateless = r#"{"result":[
+        {"height":1152973,"blocktime":1784432667,"currencystate":{"supply":1.0}},
+        {"height":1154413,"blocktime":1784519067}]}"#;
+
+    let error = RpcClient::new(Body(stateless))
+        .currency_state_range("Bridge.vETH", 1_152_973, 1_154_413, 1_440)
+        .expect_err("a sample carrying no state cannot be read as one");
+    assert!(
+        format!("{error}").contains("1154413"),
+        "the error must name the sample it failed on: {error}"
+    );
+}
