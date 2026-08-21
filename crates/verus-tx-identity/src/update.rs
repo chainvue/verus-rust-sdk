@@ -6,6 +6,11 @@
 //! does not deliberately change must be carried over unchanged from the chain's
 //! current copy.
 //!
+//! An update may carry auxiliary transparent outputs alongside the identity —
+//! see [`UpdateParams::additional_outputs`]. When present, they occupy the
+//! start of the `vout` array; the identity primary follows, and change (if
+//! any) trails.
+//!
 //! That is why this takes an [`Identity`] rather than a set of edits. The
 //! intended flow is: read the current identity out of its output with
 //! [`verus_tx_protocol::decode_output_script`], change what you mean to change, and hand the
@@ -136,6 +141,28 @@ pub struct UpdateParams<'a> {
     /// [`crate::update`]'s flow counterpart in `verus-flows` always sets it,
     /// because it has already read the tip to compute the expiry.
     pub tip: Option<u32>,
+    /// Extra transparent outputs to emit before the identity primary, in the
+    /// caller-supplied order.
+    ///
+    /// Empty on every historical path. The one caller that needs this is a
+    /// content-multimap encryptor that pairs a `flags:13` cmm entry with one or
+    /// more `EVAL_NOTARY_EVIDENCE` data-deposit outputs the entry points at by
+    /// vout index: the pointer is baked in at encrypt time, so the position
+    /// each output lands at has to be fixed and knowable up front.
+    ///
+    /// The final `vout` array is
+    /// `[additional_outputs.., identity_primary, (change if any)]`. Aux outputs
+    /// occupy indices `0..N`, the identity primary lands at `N`, and change
+    /// (when it appears) at `N + 1`. Fixing aux at the front rather than after
+    /// the identity means the caller's baked-in index is `0` and does not
+    /// depend on how many outputs the builder emits alongside — a later
+    /// addition to that layout cannot silently shift the pointer.
+    ///
+    /// Nothing about the scripts is checked here: caller-supplied bytes are
+    /// emitted verbatim, in the order given. Consensus will reject a
+    /// malformed script at broadcast, which is where any check would need to
+    /// re-run anyway.
+    pub additional_outputs: Vec<TxOut>,
 }
 
 impl<'a> UpdateParams<'a> {
@@ -156,6 +183,7 @@ impl<'a> UpdateParams<'a> {
             fee_per_kb: DEFAULT_FEE_PER_KB,
             allow_authority_change: false,
             tip: None,
+            additional_outputs: Vec::new(),
         }
     }
 
@@ -178,6 +206,16 @@ impl<'a> UpdateParams<'a> {
     /// the one VerusID mistake with no remedy.
     pub fn allowing_authority_change(mut self) -> Self {
         self.allow_authority_change = true;
+        self
+    }
+
+    /// Emit these transparent outputs before the identity primary.
+    ///
+    /// See [`UpdateParams::additional_outputs`] for the vout layout and why
+    /// the caller-controlled position is `0`.
+    #[must_use]
+    pub fn with_additional_outputs(mut self, outputs: Vec<TxOut>) -> Self {
+        self.additional_outputs = outputs;
         self
     }
 }
@@ -246,19 +284,31 @@ pub fn build_identity_update(
         identity.has_tokenized_control(),
     )?;
 
+    // Aux outputs come first, then the identity primary. Fixing the layout
+    // this way lets a caller whose payload commits to a vout index — the
+    // `flags:13` cmm case — bake in `0` and stay right regardless of what
+    // this builder emits alongside.
+    let mut outputs = params.additional_outputs.clone();
+    outputs.push(TxOut {
+        value: 0,
+        script_pubkey,
+    });
+    let fee_output_count = outputs
+        .len()
+        .checked_add(1)
+        .and_then(|n| u64::try_from(n).ok())
+        .ok_or(TxError::ValueOverflow)?;
+
     assemble(
         funding_key,
         identity_keys,
         Assembly {
             leading: core::slice::from_ref(params.identity_output),
             funding: params.utxos,
-            outputs: vec![TxOut {
-                value: 0,
-                script_pubkey,
-            }],
+            outputs,
             burn: Amount::ZERO,
-            // The identity output plus a change slot.
-            fee_output_count: 2,
+            // Every declared output plus a change slot.
+            fee_output_count,
             change_address: &params.change_address,
             change_script: None,
             value_bearing_leading: false,
@@ -440,6 +490,7 @@ fn check_authority_unchanged(current: &Identity, proposed: &Identity) -> Result<
 mod tests {
     use super::*;
     use verus_tx_primitives::Txid;
+    use verus_wire::TxV4;
 
     const TEST_WIF: &str = "UusoQWsobQKUkezgBJa22D9G4t9Avo6k8wD5UUxmmfAEoTN8bawc";
     const VRSCTEST: &str = "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq";
@@ -640,6 +691,59 @@ mod tests {
                 other => panic!("{expected} should have been refused, got {other:?}"),
             }
         }
+    }
+
+    /// Aux outputs land at the start of the vout array, in the order given,
+    /// with the identity primary after them. The `flags:13` cmm encryptor
+    /// commits to those indices at encrypt time — a rearrangement here would
+    /// silently point the ciphertext reference at the wrong output.
+    #[test]
+    fn additional_outputs_precede_the_identity_primary() {
+        let key = key();
+        let current = simple_identity();
+        let held = identity_utxo(&current);
+        let utxos = funding(&key);
+        let aux0 = TxOut {
+            value: 0,
+            script_pubkey: vec![0xaa; 24],
+        };
+        let aux1 = TxOut {
+            value: 0,
+            script_pubkey: vec![0xbb; 32],
+        };
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+            .with_additional_outputs(vec![aux0.clone(), aux1.clone()]);
+        let signed = build_identity_update(&key, &[&key], &params).unwrap();
+        let tx = TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+
+        // The aux outputs occupy indices 0..N verbatim.
+        assert_eq!(tx.outputs[0].script_pubkey, aux0.script_pubkey);
+        assert_eq!(tx.outputs[0].value, 0);
+        assert_eq!(tx.outputs[1].script_pubkey, aux1.script_pubkey);
+        assert_eq!(tx.outputs[1].value, 0);
+
+        // The identity primary follows, carrying zero native value.
+        let id = identity_id(&current.name, Some(current.parent));
+        let expected_identity_script = identity_primary_script(
+            id,
+            current.to_bytes().unwrap(),
+            current.revocation_authority,
+            current.recovery_authority,
+            current.has_tokenized_control(),
+        )
+        .unwrap();
+        assert_eq!(tx.outputs[2].script_pubkey, expected_identity_script);
+        assert_eq!(tx.outputs[2].value, 0);
+
+        // What follows the identity is change: P2PKH, back to the funding
+        // key's address. Its presence confirms the fee estimator sized the
+        // change slot despite the extra outputs — an under-sized estimate
+        // would have merged change into fee at the dust threshold.
+        assert_eq!(tx.outputs.len(), 4);
+        assert_eq!(
+            tx.outputs[3].script_pubkey,
+            key.address().p2pkh_script_pubkey().unwrap()
+        );
     }
 
     /// Content changes are not authority changes and need no opt-in.
