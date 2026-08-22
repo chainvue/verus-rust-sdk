@@ -98,7 +98,18 @@ pub fn assemble(
     // plus the burn. Most callers here emit only valueless CryptoConditions and
     // the outputs term is zero — a referral payout is the first that is not, and
     // omitting it under-funds the transaction by exactly the payout.
-    let declared_value: u64 = plan.outputs.iter().map(|out| out.value).sum();
+    //
+    // #194: this sum used to be a raw `u64` `.sum()`, a few lines from the
+    // `Amount::checked_sum` that does the same job correctly for the leading
+    // inputs. Two caller-supplied output values whose total exceeds `u64::MAX`
+    // wrap `declared_value` down to a plausible number, and the conservation
+    // check at the end cannot see it — `outputs_total` sums the same values and
+    // wraps the same way, so the difference still matches and the transaction
+    // gets signed.
+    let declared_value =
+        Amount::checked_sum(plan.outputs.iter().map(|out| Amount::from_sat(out.value)))
+            .ok_or(TxError::ValueOverflow)?
+            .to_sat();
     let required = declared_value
         .checked_add(plan.burn.to_sat())
         .ok_or(TxError::ValueOverflow)?;
@@ -258,8 +269,21 @@ pub fn assemble(
     // the declared burn, and nothing else. This is the backstop for BOTH
     // branches above — a slip in either fee computation fails here rather than
     // signing a transaction that pays the difference to a miner.
-    let inputs_total: u64 = inputs.iter().map(|u| u.satoshis.to_sat()).sum();
-    let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    //
+    // #194: both sides used to be raw `u64` `.sum()`s, promoted to `i128` only
+    // on the next line — too late. The wrap happens inside the sum, and because
+    // both sides wrap identically modulo 2^64 the difference still matches, so
+    // this check certifies an overflowed transaction instead of refusing it
+    // (in a debug build the same input panics in the iterator's `Sum` impl
+    // rather than returning `ValueOverflow`). Summing through `Amount` puts the
+    // overflow where it belongs: before the i128 difference is formed. The
+    // reported fields stay `u64`, so `ValueNotConserved` is unchanged.
+    let inputs_total = Amount::checked_sum(inputs.iter().map(|u| u.satoshis))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
+    let outputs_total = Amount::checked_sum(tx.outputs.iter().map(|o| Amount::from_sat(o.value)))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
     let actual = i128::from(inputs_total) - i128::from(outputs_total);
     let expected = fee + plan.burn.to_sat();
     if actual != i128::from(expected) {
@@ -472,6 +496,59 @@ mod tests {
                 assert!(required > 50_000, "the outlay plus the estimated fee");
             }
             other => panic!("expected InsufficientFunds, got {other:?}"),
+        }
+    }
+
+    /// #194: two caller-supplied output values whose total exceeds `u64::MAX`
+    /// are refused, not wrapped.
+    ///
+    /// The wrap used to be invisible to every later check: `declared_value`
+    /// came down to a plausible number the funding covers, and the
+    /// conservation check summed the same two values the same way, so
+    /// `inputs − outputs` still matched and the transaction was signed. The
+    /// debug build was no better, only louder — it panicked inside `Sum`
+    /// instead of returning an error, which is the divergence this pins shut.
+    #[test]
+    fn output_values_that_overflow_u64_are_refused() {
+        // Derived from `u64::MAX` rather than pinned: the pair sums to
+        // `u64::MAX + 1 + payout`, so an unchecked sum wraps to `payout`.
+        let payout: u64 = 50_000;
+        let offset: u64 = 1_000_000;
+        let first = u64::MAX - offset;
+        let second = offset + 1 + payout;
+        assert!(
+            first.checked_add(second).is_none(),
+            "the fixture has to actually overflow u64"
+        );
+        assert_eq!(
+            first.wrapping_add(second),
+            payout,
+            "and wrap to a number the funding below covers — which is why \
+             nothing downstream used to catch it"
+        );
+
+        let change = key().address();
+        let script = change.p2pkh_script_pubkey().unwrap();
+        let funding = [utxo(1_00000000, 0, script.clone())];
+        // The historical shape: no leading inputs, P2PKH funding, P2PKH
+        // change. Only `value_bearing_leading` differs from the fixture.
+        let mut plan = value_bearing_plan(&[], &funding, &change, None);
+        plan.value_bearing_leading = false;
+        plan.fee_output_count = 3;
+        plan.outputs = vec![
+            TxOut {
+                value: first,
+                script_pubkey: script.clone(),
+            },
+            TxOut {
+                value: second,
+                script_pubkey: script,
+            },
+        ];
+
+        match assemble(&key(), &[], plan) {
+            Err(TxError::ValueOverflow) => {}
+            other => panic!("expected ValueOverflow, got {other:?}"),
         }
     }
 }
