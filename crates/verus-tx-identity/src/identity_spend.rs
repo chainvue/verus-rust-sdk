@@ -94,7 +94,16 @@ pub fn build_identity_spend(
     }
     if params.identity_utxos.is_empty() {
         return Err(TxError::InsufficientFunds {
-            required: params.recipients.iter().map(|r| r.satoshis.to_sat()).sum(),
+            // #194: this sum used to be a raw `u64` `.sum()`, so recipients
+            // whose total exceeds `u64::MAX` reported a wrapped — and therefore
+            // misleading — `required` (and panicked in a debug build). It stays
+            // best-effort rather than a hard `ValueOverflow`: the failure here
+            // is the empty UTXO set, not the arithmetic, and `u64::MAX` is the
+            // honest "more than everything". Matches #166's `available`
+            // handling in `fee.rs::select_utxos`.
+            required: Amount::checked_sum(params.recipients.iter().map(|r| r.satoshis))
+                .map(Amount::to_sat)
+                .unwrap_or(u64::MAX),
             available: 0,
         });
     }
@@ -609,5 +618,38 @@ mod tests {
             build_identity_spend(&[&key()], &no_funds),
             Err(TxError::InsufficientFunds { .. })
         ));
+    }
+
+    /// #194: recipients whose total exceeds `u64::MAX` must not be reported
+    /// back as a wrapped `required` — and must not panic in a debug build,
+    /// which is what the unchecked sum did here.
+    ///
+    /// The error itself is still `InsufficientFunds`: the failure is the empty
+    /// UTXO set, not the arithmetic. `u64::MAX` is the honest "more than
+    /// everything", the same answer `select_utxos` gives for an overflowing
+    /// `available`.
+    #[test]
+    fn an_overflowing_recipient_total_is_reported_as_more_than_everything() {
+        // Derived from `u64::MAX`, not pinned.
+        let offset: u64 = 1_000_000;
+        let (first, second) = (u64::MAX - offset, offset + 1);
+        assert!(
+            first.checked_add(second).is_none(),
+            "the fixture has to actually overflow u64"
+        );
+        assert_eq!(first.wrapping_add(second), 0, "an unchecked sum reports 0");
+
+        let recipients = [recipient(first), recipient(second)];
+        let params = IdentitySpendParams::new(identity(), &[], &recipients, Expiry::Never);
+        match build_identity_spend(&[&key()], &params) {
+            Err(TxError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                assert_eq!(required, u64::MAX, "saturated, not wrapped");
+                assert_eq!(available, 0, "the identity holds nothing");
+            }
+            other => panic!("expected InsufficientFunds, got {other:?}"),
+        }
     }
 }
