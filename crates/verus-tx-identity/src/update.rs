@@ -83,7 +83,7 @@ use verus_keys::{Address, PrivateKey};
 
 use crate::register::identity_id;
 use verus_tx_primitives::cc::{identity_primary_script, Destination};
-use verus_tx_primitives::fee::DEFAULT_FEE_PER_KB;
+use verus_tx_primitives::fee::{DEFAULT_FEE_PER_KB, SMART_OUTPUT_SIZE};
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::Expiry;
 use verus_tx_primitives::TxError;
@@ -150,18 +150,80 @@ pub struct UpdateParams<'a> {
     /// vout index: the pointer is baked in at encrypt time, so the position
     /// each output lands at has to be fixed and knowable up front.
     ///
+    /// # Vout layout
+    ///
     /// The final `vout` array is
     /// `[additional_outputs.., identity_primary, (change if any)]`. Aux outputs
     /// occupy indices `0..N`, the identity primary lands at `N`, and change
-    /// (when it appears) at `N + 1`. Fixing aux at the front rather than after
-    /// the identity means the caller's baked-in index is `0` and does not
-    /// depend on how many outputs the builder emits alongside — a later
-    /// addition to that layout cannot silently shift the pointer.
+    /// (when it appears) at `N + 1`.
     ///
-    /// Nothing about the scripts is checked here: caller-supplied bytes are
-    /// emitted verbatim, in the order given. Consensus will reject a
-    /// malformed script at broadcast, which is where any check would need to
-    /// re-run anyway.
+    /// Aux at the front rather than after the identity has two consequences.
+    /// The ergonomic one is that the caller's baked-in index is `0` and does
+    /// not depend on how many outputs the builder emits alongside — a later
+    /// addition to that layout cannot silently shift the pointer. The
+    /// stronger one is a consensus alignment: on a tokenized-control
+    /// identity, `ValidateIdentityRevoke` and `ValidateIdentityRecover`
+    /// (VerusCoin `src/pbaas/identity.cpp`, `master@d1df9b7`, lines 3119 and
+    /// 3265) reserve the slot at `idIndex + 1` for the control token. Aux
+    /// after the identity would have collided with that slot on those two
+    /// spend paths.
+    ///
+    /// # The cross-field contract
+    ///
+    /// The invariant that matters — *the vout index baked into the cmm entry
+    /// points at the evidence output that belongs to it* — spans two fields
+    /// of this struct: [`Self::identity`]'s `content_multimap`, which the
+    /// caller mutates, and [`Self::additional_outputs`]. Nothing here
+    /// correlates them, and consensus does not check the index either
+    /// (`CUTXORef` with a null txid means "this transaction"; see
+    /// `IsOnSameTransaction` in VerusCoin `src/primitives/transaction.h`,
+    /// resolved as `tx.vout[output.n]` at read time). A mismatch is a valid,
+    /// mined transaction whose data is silently unretrievable. The contract
+    /// is: this builder guarantees the order (aux first, in the order given);
+    /// the caller guarantees the index (indices `0..additional_outputs.len()`
+    /// baked into the cmm entry are the ones the corresponding aux outputs
+    /// land at).
+    ///
+    /// # Requirements the daemon places on the scripts
+    ///
+    /// This crate does not model `EVAL_NOTARY_EVIDENCE`, and nothing here
+    /// inspects the bytes — caller-supplied `script_pubkey` values are
+    /// emitted verbatim, in the order given. Consensus rejects a malformed
+    /// script at broadcast (or, worse, mines a transaction whose payload is
+    /// unreadable), which is where any check here would need to re-run
+    /// anyway. What the daemon requires, transcribed from
+    /// `master@d1df9b7`:
+    ///
+    /// * The evidence type must be `TYPE_IMPORT_PROOF`, not
+    ///   `TYPE_NOTARY_EVIDENCE`. `PreCheckNotaryEvidence` in
+    ///   `src/pbaas/notarization.cpp:11113` rejects the latter on any
+    ///   transaction that does not reference a real notarization output. The
+    ///   daemon's own `updateidentity` (`src/rpc/pbaasrpc.cpp`) uses
+    ///   `TYPE_IMPORT_PROOF` for data deposits.
+    /// * Each output must be the canonical 1-of-1 to the eval's well-known
+    ///   pubkey (`IsEvalPKOut`), and `::AsVector(evidence) == p.vData[0]`
+    ///   must hold exactly.
+    /// * A payload split into chunks must occupy **contiguous** vouts with
+    ///   correct internal `md.index` values. `PreCheckNotaryEvidence`
+    ///   recomputes `multiStart = outNum - md.index` and requires the vout
+    ///   at `multiStart` to be a chunk whose `index == 0`.
+    /// * No aux output may be an `EVAL_IDENTITY_PRIMARY`. A second one for
+    ///   the same ID invalidates the transaction in the `CIdentity(tx, ...)`
+    ///   constructor (`src/pbaas/identity.cpp:42`); one for a different ID
+    ///   fails `PrecheckIdentityPrimary`.
+    ///
+    /// # Fee accounting
+    ///
+    /// `build_identity_update` pads its `fee_output_count` with each aux
+    /// script's excess bytes over `SMART_OUTPUT_SIZE`. Scripts at or under
+    /// that threshold contribute zero, which keeps every historical golden
+    /// byte-identical. The pad covers the offline estimator's undercount
+    /// only. The daemon's `GetMinRelayFeeByOutputs` (`reserves.cpp:7896`)
+    /// adds further charges — per vout beyond three, per 128 bytes of
+    /// content multimap, and for evidence storage bytes on a transaction
+    /// flagged `IS_EVIDENCE_STORAGE | IS_HIGH_FEE` (`reserves.cpp:3469`) —
+    /// which are not modelled here. Underpayment against that policy is
+    /// soft: the free-transaction rate limiter, not a reject.
     pub additional_outputs: Vec<TxOut>,
 }
 
@@ -293,11 +355,33 @@ pub fn build_identity_update(
         value: 0,
         script_pubkey,
     });
-    let fee_output_count = outputs
+
+    // `estimate_fee` prices every output as `SMART_OUTPUT_SIZE` (200 bytes)
+    // and never inspects `script_pubkey.len()`, so an aux output the caller
+    // supplied — the payload this field exists to carry — is systematically
+    // underpriced above that size. A 10 KB notary-evidence deposit priced
+    // as 200 bytes sits in the mempool under the free-tx rate limiter and
+    // never mines. Pad the count with the aux scripts' excess bytes,
+    // expressed in the unit the estimator already uses, so a caller-side
+    // fee change stays inside this crate and does not touch the shared
+    // heuristic in `fee.rs` — its byte-parity with the TypeScript SDK is
+    // the differential-vector correctness gate. The identity primary and
+    // change already fit in one unit; scripts at or under 200 bytes
+    // contribute zero, so every historical path stays byte-identical.
+    let mut fee_output_count: u64 = outputs
         .len()
         .checked_add(1)
         .and_then(|n| u64::try_from(n).ok())
         .ok_or(TxError::ValueOverflow)?;
+    for aux in &params.additional_outputs {
+        let len = u64::try_from(aux.script_pubkey.len()).map_err(|_| TxError::ValueOverflow)?;
+        let pad = len
+            .saturating_sub(SMART_OUTPUT_SIZE)
+            .div_ceil(SMART_OUTPUT_SIZE);
+        fee_output_count = fee_output_count
+            .checked_add(pad)
+            .ok_or(TxError::ValueOverflow)?;
+    }
 
     assemble(
         funding_key,
@@ -489,6 +573,7 @@ fn check_authority_unchanged(current: &Identity, proposed: &Identity) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use verus_tx_primitives::fee::DUST_THRESHOLD;
     use verus_tx_primitives::Txid;
     use verus_wire::TxV4;
 
@@ -743,6 +828,182 @@ mod tests {
         assert_eq!(
             tx.outputs[3].script_pubkey,
             key.address().p2pkh_script_pubkey().unwrap()
+        );
+    }
+
+    /// A large aux script pays a fee proportional to its bytes, not to the
+    /// flat `SMART_OUTPUT_SIZE` the estimator prices every output at.
+    /// Without the caller-side padding in `build_identity_update`, a 4 KB
+    /// evidence deposit would price the same as a 32-byte push and the
+    /// transaction would sit in the mempool.
+    #[test]
+    fn a_large_aux_script_is_priced_by_its_bytes() {
+        let key = key();
+        let current = simple_identity();
+        let held = identity_utxo(&current);
+        let utxos = funding(&key);
+
+        let small = TxOut {
+            value: 0,
+            script_pubkey: vec![0xaa; 32],
+        };
+        let large = TxOut {
+            value: 0,
+            script_pubkey: vec![0xbb; 4096],
+        };
+
+        let small_signed = build_identity_update(
+            &key,
+            &[&key],
+            &UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+                .with_additional_outputs(vec![small]),
+        )
+        .unwrap();
+        let large_signed = build_identity_update(
+            &key,
+            &[&key],
+            &UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+                .with_additional_outputs(vec![large]),
+        )
+        .unwrap();
+
+        // Materiality: 4 KB adds ceil((4096 - 200) / 200) = 20 pad units at
+        // 200 bytes each, which at `DEFAULT_FEE_PER_KB = 10_000` is at
+        // least 40_000 additional sat over the small-script build's fee.
+        assert!(
+            large_signed.fee.to_sat() >= small_signed.fee.to_sat() + 40_000,
+            "expected the 4 KB build's fee to be at least 40_000 sat above the 32-byte \
+             build's, got small={} large={}",
+            small_signed.fee.to_sat(),
+            large_signed.fee.to_sat()
+        );
+    }
+
+    /// An aux output that carries native value is funded from the P2PKH
+    /// UTXOs alongside the fee, and the change slot picks up whatever is
+    /// left. `assemble` already sums `plan.outputs[].value` into its
+    /// `required` amount (`assemble.rs:101`); nothing in the prior test
+    /// covered a caller taking that path.
+    #[test]
+    fn an_aux_output_value_is_funded_from_the_utxos() {
+        let key = key();
+        let current = simple_identity();
+        let held = identity_utxo(&current);
+        let utxos = funding(&key);
+        let funding_total: u64 = utxos.iter().map(|u| u.satoshis.to_sat()).sum();
+
+        let aux_value: u64 = 1_000_000;
+        let aux = TxOut {
+            value: aux_value,
+            script_pubkey: vec![0xcc; 32],
+        };
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+            .with_additional_outputs(vec![aux]);
+        let signed = build_identity_update(&key, &[&key], &params).unwrap();
+
+        // Exact conservation: funding_total = aux_value + change + fee.
+        assert_eq!(
+            signed.change.to_sat() + aux_value + signed.fee.to_sat(),
+            funding_total,
+        );
+
+        // And the change output actually carries that amount, at the tail
+        // of the vout array — aux at 0, identity at 1, change at 2.
+        let tx = TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+        assert_eq!(tx.outputs.len(), 3);
+        assert_eq!(tx.outputs[0].value, aux_value);
+        assert_eq!(tx.outputs[2].value, signed.change.to_sat());
+    }
+
+    /// When the leftover after aux value and fee would be dust, `assemble`
+    /// folds it into the fee rather than emitting an unspendable output.
+    /// The existing ordering test asserts the change slot is present as its
+    /// fee-sanity proxy, so the no-change shape is otherwise unexercised.
+    #[test]
+    fn aux_values_that_leave_dust_fold_change_into_fee() {
+        let key = key();
+        let current = simple_identity();
+        let held = identity_utxo(&current);
+        let utxos = funding(&key);
+        let funding_total: u64 = utxos.iter().map(|u| u.satoshis.to_sat()).sum();
+
+        // Compute the fee this build will estimate so aux value can be
+        // sized to leave change at (or under) DUST_THRESHOLD. One aux
+        // (32 B, no padding), one identity, one change slot →
+        // fee_output_count = 3; select_utxos adds +1 → change_outputs = 4;
+        // estimate_fee(1 input, 4 outputs, 10_000, smart) = 10_400.
+        // Leave 500 sat over the fee — below DUST_THRESHOLD, folded in.
+        let target_dust: u64 = 500;
+        assert!(target_dust <= DUST_THRESHOLD);
+        let estimated_fee: u64 = 10_400;
+        let aux_value: u64 = funding_total - estimated_fee - target_dust;
+        let aux = TxOut {
+            value: aux_value,
+            script_pubkey: vec![0xdd; 32],
+        };
+        let params = UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+            .with_additional_outputs(vec![aux]);
+        let signed = build_identity_update(&key, &[&key], &params).unwrap();
+
+        // No change output; only aux and identity primary remain.
+        let tx = TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+        assert_eq!(
+            tx.outputs.len(),
+            2,
+            "the dust change was folded into the fee"
+        );
+        assert_eq!(signed.change.to_sat(), 0);
+        // The fee absorbed the dust: fee = estimate + target_dust.
+        assert_eq!(signed.fee.to_sat(), estimated_fee + target_dust);
+        // Conservation still exact.
+        assert_eq!(aux_value + signed.fee.to_sat(), funding_total);
+    }
+
+    /// The fee grows with the number of aux outputs — the estimator is fed
+    /// a count that includes them. Without this the current ordering test
+    /// would pass a regression that fed the wrong count, because
+    /// `MIN_FEE = 10_000` floors a four-output transaction and the
+    /// change-output presence check would still hold.
+    #[test]
+    fn the_fee_grows_with_the_number_of_additional_outputs() {
+        let key = key();
+        let current = simple_identity();
+        let held = identity_utxo(&current);
+        let utxos = funding(&key);
+
+        let no_aux = build_identity_update(
+            &key,
+            &[&key],
+            &UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never),
+        )
+        .unwrap();
+
+        let five_aux: Vec<TxOut> = (0..5)
+            .map(|i| TxOut {
+                value: 0,
+                script_pubkey: vec![0xee ^ i as u8; 32],
+            })
+            .collect();
+        let with_aux = build_identity_update(
+            &key,
+            &[&key],
+            &UpdateParams::new(&held, &current, &utxos, key.address(), Expiry::Never)
+                .with_additional_outputs(five_aux),
+        )
+        .unwrap();
+
+        // Five extra 200-byte output slots (32-byte scripts, no padding —
+        // the estimator prices them at SMART_OUTPUT_SIZE) add 1000 bytes
+        // of estimated size, worth 10_000 sat at DEFAULT_FEE_PER_KB.
+        // Pin at "materially above" rather than an exact target so a
+        // downstream constant tweak does not turn this into a byte-parity
+        // check on the estimator itself.
+        assert!(
+            with_aux.fee.to_sat() >= no_aux.fee.to_sat() + 8_000,
+            "expected 5 aux outputs to add at least 8_000 sat of fee over the no-aux \
+             build, got no_aux={} with_aux={}",
+            no_aux.fee.to_sat(),
+            with_aux.fee.to_sat()
         );
     }
 
