@@ -372,7 +372,18 @@ pub fn build_token_send(
 
     while remaining_native + i128::from(fee) > 0 {
         let Some(next) = candidates.next() else {
-            let available: u64 = params.utxos.iter().map(|u| u.satoshis.to_sat()).sum();
+            // #199: this sum used to be a raw `u64` `.sum()`, so a UTXO set
+            // whose native total exceeds `u64::MAX` reported a wrapped — and
+            // therefore misleading — `available` (and panicked in a debug
+            // build). It stays best-effort rather than a hard `ValueOverflow`:
+            // the failure here is that the candidates ran out before the fee
+            // was covered, not the arithmetic, and `u64::MAX` is the honest
+            // "more than everything". Matches #194's handling in
+            // `build_identity_spend` and #166's `available` in
+            // `fee.rs::select_utxos`.
+            let available = Amount::checked_sum(params.utxos.iter().map(|u| u.satoshis))
+                .map(Amount::to_sat)
+                .unwrap_or(u64::MAX);
             return Err(TxError::InsufficientFunds {
                 required: fee,
                 available,
@@ -393,12 +404,37 @@ pub fn build_token_send(
         )?;
     }
 
-    let total_native_in: u64 = selected.iter().map(|d| d.utxo.satoshis.to_sat()).sum();
-    let actual_change = total_native_in - fee;
+    // #199: `total_native_in` used to be a raw `u64` `.sum()` and the change a
+    // raw subtraction below it. Selected UTXOs whose native total exceeds
+    // `u64::MAX` wrap the total down to a plausible number, `actual_change` is
+    // derived from the wrapped total, and the conservation check at the end
+    // cannot see it: it compares `total_native_in` against outputs that were
+    // sized from the same wrap, so the difference still matches the fee and the
+    // transaction gets signed. Unlike a wrap that only misreports a number,
+    // this one loses real value — everything the wrap dropped is handed to the
+    // miner. A debug build does not wrap, it panics in the iterator's `Sum`
+    // impl, so neither build returns the `ValueOverflow` the API promises.
+    //
+    // Summing through `Amount` puts the overflow before anything is derived
+    // from it. The subtraction is checked too: it can only underflow
+    // downstream of that wrap, but the guard belongs here rather than resting
+    // on the loop invariant three blocks above.
+    let total_native_in = Amount::checked_sum(selected.iter().map(|d| d.utxo.satoshis))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
+    let actual_change = total_native_in
+        .checked_sub(fee)
+        .ok_or(TxError::ValueOverflow)?;
     let (native_change, fee) = if actual_change > DUST_THRESHOLD {
         (actual_change, fee)
     } else {
-        (0, fee + actual_change)
+        // Dust change is dropped into the fee rather than emitted as an output
+        // nobody can economically spend.
+        (
+            0,
+            fee.checked_add(actual_change)
+                .ok_or(TxError::ValueOverflow)?,
+        )
     };
 
     // Outputs: declared, then token change, then native change.
@@ -438,7 +474,13 @@ pub fn build_token_send(
         ..TxV4::default()
     };
 
-    let outputs_total: u64 = tx.outputs.iter().map(|o| o.value).sum();
+    // #199: summed through `Amount` for the same reason as `total_native_in`
+    // above — a check that exists to catch a wrap must not be able to wrap
+    // itself. At most one output here carries a non-zero value today, so this
+    // is the backstop and not the defect.
+    let outputs_total = Amount::checked_sum(tx.outputs.iter().map(|o| Amount::from_sat(o.value)))
+        .ok_or(TxError::ValueOverflow)?
+        .to_sat();
     let actual = i128::from(total_native_in) - i128::from(outputs_total);
     if actual != i128::from(fee) {
         return Err(TxError::ValueNotConserved {
@@ -492,4 +534,163 @@ pub fn build_token_send(
             .map(|d| (d.utxo.txid, d.utxo.vout))
             .collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use verus_tx_primitives::Txid;
+
+    const CURRENCY: CurrencyId = CurrencyId::from_bytes([0x33; 20]);
+
+    fn key() -> PrivateKey {
+        PrivateKey::from_bytes(&[0x11; 32], true).expect("valid key")
+    }
+
+    /// A reserve output holding `tokens` of [`CURRENCY`] and `satoshis` of
+    /// native value, paying the key this module signs with.
+    fn token_utxo(vout: u32, satoshis: u64, tokens: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([0xcd; 32]),
+            vout,
+            satoshis: Amount::from_sat(satoshis),
+            script_pubkey: reserve_output_script(key().address().hash(), CURRENCY, tokens)
+                .expect("reserve output script"),
+        }
+    }
+
+    fn recipient(amount: u64) -> TokenRecipient {
+        TokenRecipient {
+            address: key().address(),
+            currency: CURRENCY,
+            amount: Amount::from_sat(amount),
+        }
+    }
+
+    /// The sum `total_native_in` used to be, over the same UTXOs the tests
+    /// below hand to `build_token_send` — kept so they can show what it
+    /// produced instead of asserting it from memory.
+    ///
+    /// The wrap is spelled out with `wrapping_add` because the original
+    /// `.sum()` does not wrap in a debug build, it panics; that divergence
+    /// between profiles is half of what #199 is about.
+    fn unchecked_native_total(utxos: &[Utxo]) -> u64 {
+        utxos
+            .iter()
+            .map(|u| u.satoshis.to_sat())
+            .fold(0u64, u64::wrapping_add)
+    }
+
+    /// #199: a selected UTXO set whose native total exceeds `u64::MAX` is
+    /// refused, not wrapped into a transaction that hands the difference to a
+    /// miner.
+    ///
+    /// The wrap used to be invisible to every later check. `total_native_in`
+    /// came down to a plausible number, `actual_change` was derived from it,
+    /// and the conservation check compared that same wrapped total against
+    /// outputs sized from it — so the difference still matched the fee and the
+    /// transaction was signed. Unlike a wrap that only misreports a number,
+    /// this one loses real value: everything the wrap dropped is paid to the
+    /// miner. The debug build was no better, only louder — it panicked inside
+    /// `Sum` instead of returning an error.
+    #[test]
+    fn a_native_input_total_that_overflows_u64_is_refused() {
+        // Derived from `u64::MAX` rather than pinned: the first two sum to
+        // exactly `u64::MAX + 1`, so an unchecked total wraps down to the
+        // third UTXO's value alone.
+        let offset: u64 = 1_000_000;
+        let (first, second) = (u64::MAX - offset, offset + 1);
+        let funded: u64 = 1_00000000;
+        let tokens_each: u64 = 1_000_000;
+
+        let utxos = [
+            token_utxo(0, first, tokens_each),
+            token_utxo(1, second, tokens_each),
+            token_utxo(2, funded, tokens_each),
+        ];
+        assert!(
+            first.checked_add(second).is_none(),
+            "the fixture has to actually overflow u64"
+        );
+        assert_eq!(
+            unchecked_native_total(&utxos),
+            funded,
+            "and wrap to a total the transaction's own funding covers — which \
+             is why nothing downstream used to catch it"
+        );
+
+        // More than any two UTXOs hold, so phase 1 has to take all three and
+        // still emits token change.
+        let recipients = [recipient(tokens_each * 2 + 1)];
+        let params = TokenSendParams::new(&utxos, &recipients, key().address(), Expiry::Never);
+        match build_token_send(&key(), &params) {
+            Err(TxError::ValueOverflow) => {}
+            other => panic!("expected ValueOverflow, got {other:?}"),
+        }
+    }
+
+    /// #199: the same overflow with nothing left over is an overflow, not a
+    /// conservation failure.
+    ///
+    /// Two UTXOs summing to exactly `2^64` wrap `total_native_in` to `0`, and
+    /// the release build then underflowed `total_native_in - fee` into a huge
+    /// change output. That was refused — but as `ValueNotConserved`, blaming
+    /// conservation for an arithmetic overflow and reporting `inputs: 0` for a
+    /// set holding more than `u64::MAX`. Catching the wrap in the sum names
+    /// the actual failure.
+    #[test]
+    fn an_input_total_that_wraps_to_zero_is_reported_as_an_overflow() {
+        let offset: u64 = 1_000_000;
+        let (first, second) = (u64::MAX - offset, offset + 1);
+        let tokens_each: u64 = 1_000_000;
+
+        let utxos = [
+            token_utxo(0, first, tokens_each),
+            token_utxo(1, second, tokens_each),
+        ];
+        assert!(
+            first.checked_add(second).is_none(),
+            "the fixture has to actually overflow u64"
+        );
+        assert_eq!(
+            unchecked_native_total(&utxos),
+            0,
+            "and wrap to nothing, which is what the fee was subtracted from"
+        );
+
+        let recipients = [recipient(tokens_each * 2)];
+        let params = TokenSendParams::new(&utxos, &recipients, key().address(), Expiry::Never);
+        match build_token_send(&key(), &params) {
+            Err(TxError::ValueOverflow) => {}
+            other => panic!("expected ValueOverflow, got {other:?}"),
+        }
+    }
+
+    /// #199: the `InsufficientFunds` report still names what the UTXOs
+    /// actually hold.
+    ///
+    /// That sum was rewritten to saturate rather than wrap, but it cannot
+    /// overflow through this API: the branch is only taken once every UTXO has
+    /// been selected, and the loop guard above it means the native total is
+    /// below the fee to get there. So this pins the ordinary report instead —
+    /// the saturating rewrite must not have changed it.
+    #[test]
+    fn running_out_of_funding_still_reports_what_the_utxos_hold() {
+        let dust: u64 = 1;
+        let tokens: u64 = 1_000_000;
+
+        let utxos = [token_utxo(0, dust, tokens)];
+        let recipients = [recipient(tokens)];
+        let params = TokenSendParams::new(&utxos, &recipients, key().address(), Expiry::Never);
+        match build_token_send(&key(), &params) {
+            Err(TxError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                assert_eq!(available, dust, "the exact total, not saturated");
+                assert!(required > available, "otherwise it would not have failed");
+            }
+            other => panic!("expected InsufficientFunds, got {other:?}"),
+        }
+    }
 }
