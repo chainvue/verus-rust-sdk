@@ -238,7 +238,7 @@ impl Key {
     /// always produce the same bytes — a wallet can re-derive and compare
     /// rather than having to store what it sent.
     pub fn send(&self, request: SendRequestValue) -> Result<SignedTransactionValue, WasmError> {
-        let request: SendRequest = dto::from_js(request.into(), &SendRequest::SHAPE)?;
+        let request: SendRequest = dto::from_js(request.into())?;
         Ok(crate::to_js(&build_send(self.private(), &request)?)?.unchecked_into())
     }
 
@@ -252,7 +252,7 @@ impl Key {
         &self,
         request: TokenSendRequestValue,
     ) -> Result<SignedTransactionValue, WasmError> {
-        let request: TokenSendRequest = dto::from_js(request.into(), &TokenSendRequest::SHAPE)?;
+        let request: TokenSendRequest = dto::from_js(request.into())?;
         Ok(crate::to_js(&build_token(self.private(), &request)?)?.unchecked_into())
     }
 }

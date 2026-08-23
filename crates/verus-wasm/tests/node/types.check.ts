@@ -14,6 +14,12 @@
 // The last group is the point. A test that only writes *correct* code passes
 // just as happily against a `.d.ts` full of `any`.
 //
+// What this file does NOT promise is coverage. It uses the API the way an
+// application would, which means it uses the parts an application reaches for;
+// a request type nobody happens to call is simply absent. That completeness is
+// `requests.exercised.ts`'s job, which derives its keys from the `Requests`
+// index rather than from what anyone remembered to write.
+//
 // Not compiled into anything: `tsc --noEmit` is the whole test.
 
 import {

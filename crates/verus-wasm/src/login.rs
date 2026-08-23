@@ -260,7 +260,7 @@ pub(crate) fn check_signature(request: &VerifyRequest) -> WasmResult<VerifyResul
 /// ```
 #[wasm_bindgen(js_name = verifyMessage)]
 pub fn verify_message(request: VerifyRequestValue) -> Result<VerifyResultValue, WasmError> {
-    let request: VerifyRequest = dto::from_js(request.into(), &VerifyRequest::SHAPE)?;
+    let request: VerifyRequest = dto::from_js(request.into())?;
     Ok(crate::to_js(&check_signature(&request)?)?.unchecked_into())
 }
 
@@ -299,7 +299,7 @@ impl Key {
     /// ```
     #[wasm_bindgen(js_name = signMessage)]
     pub fn sign_message(&self, request: SignRequestValue) -> Result<String, WasmError> {
-        let request: SignRequest = dto::from_js(request.into(), &SignRequest::SHAPE)?;
+        let request: SignRequest = dto::from_js(request.into())?;
         build_signature(self.private(), &request)
     }
 }

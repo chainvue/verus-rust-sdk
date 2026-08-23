@@ -42,6 +42,123 @@ impl Shape {
     }
 }
 
+mod sealed {
+    /// Closes the [`super::Request`] impl set: only the `request_list!`
+    /// expansion in this module can name a type here, so "implemented the
+    /// trait but forgot the list" is not a state that exists.
+    pub trait Sealed {}
+}
+
+/// A request object that crosses the JavaScript boundary.
+///
+/// Implementing this is what registers a DTO with the drift guards in
+/// [`crate::types`], and [`from_js`] will not read a type that does not
+/// implement it. `INTERFACE` names the `export interface` in `types.d.ts` that
+/// publishes it, `SHAPE` is the key list `from_js` rebuilds the caller's object
+/// against, and `sample` is the value the guards serialize.
+///
+/// There are no hand-written impls. They are generated from the single list in
+/// `request_list!` below, so a DTO cannot be half-registered — the same reason
+/// `methods!` in `verus-rpc` derives its enum, its names and its `ALL` from one
+/// list rather than from three that can drift apart.
+pub trait Request: sealed::Sealed + DeserializeOwned + Serialize + Default + Sized {
+    /// The name of the `export interface` in `types.d.ts` that publishes this
+    /// type to JavaScript.
+    const INTERFACE: &'static str;
+
+    /// The keys [`from_js`] will copy, and the shape of any object-valued ones.
+    const SHAPE: &'static Shape;
+
+    /// The value the drift guards serialize to learn this type's field set.
+    ///
+    /// [`Default`] is right unless a field is `skip_serializing_if` or
+    /// otherwise absent when unset: that field is exactly the one a drift check
+    /// would never see. Such a type gets a `{ field: Some(…) }` block in
+    /// `request_list!`, which overrides this.
+    fn sample() -> Self {
+        Self::default()
+    }
+}
+
+/// Every request DTO this crate publishes, once.
+///
+/// This list *is* the registration. It generates the [`Request`] impls below —
+/// which [`from_js`] requires, so a request type missing from here cannot be
+/// read from JavaScript at all — and, in `crate::types`'s tests, the registry
+/// that the field guard and the shape guard iterate. There is no second list to
+/// forget, which is what five rounds of adversarial review kept exploiting in
+/// the text-scanning guard this replaced (#191).
+///
+/// A `{ … }` block after an entry gives that type a non-default sample, for the
+/// optional fields a `Default` value would leave out of the serialization and
+/// so out of the check.
+macro_rules! request_list {
+    ($consume:ident) => {
+        $consume! {
+            crate::send::SendRequest => "SendRequest",
+            crate::send::TokenSendRequest => "TokenSendRequest",
+            crate::login::SignRequest => "SignRequest",
+            crate::login::VerifyRequest => "VerifyRequest",
+            crate::flows::PlanSendRequest => "PlanSendRequest",
+            crate::flows::HistoryRequest => "HistoryRequest"
+                { start_height: Some(0), end_height: Some(0) },
+            crate::flows::LoginRequest => "LoginRequest",
+            crate::flows::VerifyLoginRequest => "VerifyLoginRequest"
+                { max_age_blocks: Some(0), max_future_blocks: Some(0) },
+            crate::flows::SpendableRequest => "SpendableRequest",
+            crate::flows::ContentRequest => "ContentRequest",
+            crate::flows::PlanSendTokenRequest => "PlanSendTokenRequest",
+            crate::flows::PlanSendFromIdentityRequest => "PlanSendFromIdentityRequest",
+            crate::flows::PlanSendTokenFromIdentityRequest => "PlanSendTokenFromIdentityRequest",
+            crate::flows::PlanConvertFromIdentityRequest => "PlanConvertFromIdentityRequest"
+                { via: Some(String::new()) },
+            crate::flows::PlanPublishRequest => "PlanPublishRequest",
+            crate::flows::OffersRequest => "OffersRequest"
+                { with_offer_bytes: true },
+            crate::flows::OfferTermsRequest => "OfferTermsRequest",
+            crate::flows::TakeOfferRequest => "TakeOfferRequest",
+            crate::flows::PlanConvertRequest => "PlanConvertRequest"
+                { via: Some(String::new()), min_expected: Some(String::new()) },
+            crate::flows::PlanBurnRequest => "PlanBurnRequest",
+            crate::flows::PlanMintRequest => "PlanMintRequest",
+            crate::flows::PlanRegistrationRequest => "PlanRegistrationRequest"
+                {
+                    min_sigs: Some(0),
+                    referral: Some(String::new()),
+                    pin_fee: Some(String::new()),
+                    salt: Some(String::new()),
+                },
+            crate::flows::PendingRequest => "PendingRequest",
+            crate::flows::PlanLaunchRequest => "PlanLaunchRequest"
+                { pin_launch_fee: Some(String::new()) },
+        }
+    };
+}
+// `impl_requests!` below reaches the macro textually; this re-export is what
+// lets `crate::types`'s drift guards consume the very same list, which is the
+// only other place it is needed today.
+#[cfg(test)]
+pub(crate) use request_list;
+
+macro_rules! impl_requests {
+    ($( $ty:ty => $name:literal $({ $($field:ident : $value:expr),* $(,)? })? ),+ $(,)?) => {$(
+        impl sealed::Sealed for $ty {}
+        impl Request for $ty {
+            const INTERFACE: &'static str = $name;
+            const SHAPE: &'static Shape = &<$ty>::SHAPE;
+            $(
+                fn sample() -> Self {
+                    Self {
+                        $($field: $value,)*
+                        ..Self::default()
+                    }
+                }
+            )?
+        }
+    )+};
+}
+request_list!(impl_requests);
+
 /// Read a request object, refusing anything the type does not declare.
 ///
 /// # Why `deny_unknown_fields` is not enough, and why checking keys was not either
@@ -79,8 +196,13 @@ impl Shape {
 /// inside a UTXO or a recipient is refused too — that one was not merely
 /// cosmetic either: `recipients: [{address, satoshis, currency}]` passed to a
 /// **native** send silently dropped `currency` and moved native coins.
-pub fn from_js<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<T> {
-    let checked = sanitize(value, shape, "")?;
+///
+/// The shape is the type's own [`Request::SHAPE`], not an argument: a caller
+/// cannot hand one type's keys to another's, and a request type absent from
+/// `request_list!` — and therefore covered by no drift guard — fails to compile
+/// here rather than shipping unguarded.
+pub fn from_js<T: Request>(value: JsValue) -> WasmResult<T> {
+    let checked = sanitize(value, T::SHAPE, "")?;
     serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
 }
 
@@ -89,6 +211,10 @@ pub fn from_js<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult
 /// Refuses a non-array outright rather than letting serde report it, because
 /// `sanitize` passes a lone object straight through to the object branch and a
 /// caller who meant to pass one UTXO instead of a list deserves to be told so.
+///
+/// Still takes its shape as an argument, unlike [`from_js`]: its one caller
+/// passes [`JsUtxo`], which is a nested element type rather than a request, so
+/// it is not — and must not be — in `request_list!`.
 pub fn from_js_list<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<Vec<T>> {
     if !js_sys::Array::is_array(&value) {
         return Err(WasmError::new(
