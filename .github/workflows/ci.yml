@@ -111,12 +111,24 @@ jobs:
       # and its `@ts-expect-error` lines fail the build if a rule the API
       # promises (money is a string, unknown fields are refused, the height
       # bound is required) stops being expressed in the types.
+      #
+      # `requests.exercised.ts` is guard C of the drift guards: it declares one
+      # fully populated value per published request interface, so a request type
+      # nothing else uses is still type-checked against the shipped `.d.ts`.
+      #
+      # `declarations.pinned.ts` is generated: it is everything the Rust drift
+      # guards believe they read out of `types.d.ts`, written down so that tsc —
+      # which reads that file for real, comments and all — has to agree. Without
+      # it the guards are only as right as a hand-written parser, which is how
+      # every one of the five bypasses this design replaced was built.
+      #
+      # The command below names none of them, and that is the point:
+      # `tests/node/tsconfig.json` includes every `.ts` file in that directory,
+      # so this step cannot fall behind the set of checks and there is no second
+      # list to keep in step — the mistake #191 exists to stop repeating.
+      # CONTRIBUTING.md gives contributors this same one command.
       - name: TypeScript declarations
-        working-directory: crates/verus-wasm
-        run: >
-          npx -y -p typescript@5 tsc --noEmit --strict
-          --target esnext --lib esnext --module esnext --moduleResolution bundler
-          tests/node/types.check.ts
+        run: npx -y -p typescript@5 tsc -p crates/verus-wasm/tests/node
 
   audit:
     runs-on: ubuntu-latest

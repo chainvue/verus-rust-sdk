@@ -762,7 +762,7 @@ pub fn plan_history(
     request: HistoryRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<HistoryStepValue> {
-    let request: HistoryRequest = dto::from_js(request.into(), &HistoryRequest::SHAPE)?;
+    let request: HistoryRequest = dto::from_js(request.into())?;
     let addresses: Vec<&str> = request.addresses.iter().map(String::as_str).collect();
     let range = match (request.start_height, request.end_height) {
         (Some(start), Some(end)) => Some((start, end)),
@@ -2161,7 +2161,7 @@ pub fn plan_verify_login(
     request: VerifyLoginRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<VerifyLoginStepValue> {
-    let request: VerifyLoginRequest = dto::from_js(request.into(), &VerifyLoginRequest::SHAPE)?;
+    let request: VerifyLoginRequest = dto::from_js(request.into())?;
     let signature = verus_tx::signature::IdentitySignature::from_base64(&request.signature)
         .map_err(WasmError::from)?;
     let challenge = verus_flows::LoginRequest {
@@ -2200,7 +2200,7 @@ pub fn plan_spendable(
     request: SpendableRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<SpendableStepValue> {
-    let request: SpendableRequest = dto::from_js(request.into(), &SpendableRequest::SHAPE)?;
+    let request: SpendableRequest = dto::from_js(request.into())?;
     let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
         verus_flows::spendable(client, &request.address)
     })
@@ -2223,7 +2223,7 @@ pub fn plan_content(
     request: ContentRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<ContentStepValue> {
-    let request: ContentRequest = dto::from_js(request.into(), &ContentRequest::SHAPE)?;
+    let request: ContentRequest = dto::from_js(request.into())?;
     let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
         verus_flows::read_all(client, &request.identity)
     })
@@ -2260,7 +2260,7 @@ pub fn plan_content_history(
     request: ContentRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<ContentStepValue> {
-    let request: ContentRequest = dto::from_js(request.into(), &ContentRequest::SHAPE)?;
+    let request: ContentRequest = dto::from_js(request.into())?;
     let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
         Ok(client.identity_content(&request.identity)?)
     })
@@ -2346,7 +2346,7 @@ pub fn plan_commitment_status(
     request: PendingRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<CommitmentStatusStepValue> {
-    let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+    let request: PendingRequest = dto::from_js(request.into())?;
     let pending: verus_flows::Pending<verus_flows::AwaitingCommitment> =
         pending_at(&request.pending, "awaitingCommitment")?;
 
@@ -2428,7 +2428,7 @@ pub fn plan_offers(
     request: OffersRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<OffersStepValue> {
-    let request: OffersRequest = dto::from_js(request.into(), &OffersRequest::SHAPE)?;
+    let request: OffersRequest = dto::from_js(request.into())?;
     let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
         verus_flows::browse(
             client,
@@ -2485,7 +2485,7 @@ pub fn plan_offer_terms(
     request: OfferTermsRequestValue,
     answers: &mut Answers,
 ) -> WasmResult<OfferTermsStepValue> {
-    let request: OfferTermsRequest = dto::from_js(request.into(), &OfferTermsRequest::SHAPE)?;
+    let request: OfferTermsRequest = dto::from_js(request.into())?;
     let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {
         verus_flows::inspect(client, &request.offer)
     })
@@ -2526,7 +2526,7 @@ impl Key {
         request: PlanSendRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanSendRequest = dto::from_js(request.into(), &PlanSendRequest::SHAPE)?;
+        let request: PlanSendRequest = dto::from_js(request.into())?;
         let amount = dto::sats(&request.satoshis)?;
         let to = request.to;
 
@@ -2561,8 +2561,7 @@ impl Key {
         request: PlanSendTokenRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanSendTokenRequest =
-            dto::from_js(request.into(), &PlanSendTokenRequest::SHAPE)?;
+        let request: PlanSendTokenRequest = dto::from_js(request.into())?;
         let currency = dto::currency("currency", &request.currency)?;
         let amount = dto::sats(&request.amount)?;
         let token_utxos = dto::utxos_named("tokenUtxos", &request.token_utxos)?;
@@ -2616,8 +2615,7 @@ impl Key {
         request: PlanSendFromIdentityRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanSendFromIdentityRequest =
-            dto::from_js(request.into(), &PlanSendFromIdentityRequest::SHAPE)?;
+        let request: PlanSendFromIdentityRequest = dto::from_js(request.into())?;
         let amount = dto::sats(&request.satoshis)?;
         let (identity, to) = (request.identity, request.to);
 
@@ -2664,8 +2662,7 @@ impl Key {
         request: PlanSendTokenFromIdentityRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanSendTokenFromIdentityRequest =
-            dto::from_js(request.into(), &PlanSendTokenFromIdentityRequest::SHAPE)?;
+        let request: PlanSendTokenFromIdentityRequest = dto::from_js(request.into())?;
         let amount = dto::sats(&request.amount)?;
         let currency = dto::currency("currency", &request.currency)?;
         let (identity, to) = (request.identity, request.to);
@@ -2723,8 +2720,7 @@ impl Key {
         request: PlanConvertFromIdentityRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanConvertFromIdentityRequest =
-            dto::from_js(request.into(), &PlanConvertFromIdentityRequest::SHAPE)?;
+        let request: PlanConvertFromIdentityRequest = dto::from_js(request.into())?;
         let kind = conversion_kind_of(&request.kind, &request.into, &request.via)?;
         let amount = dto::sats(&request.amount)?;
         let fee = checked_fee(&request.fee)?;
@@ -2790,7 +2786,7 @@ impl Key {
         request: PlanPublishRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<UpdateStepValue> {
-        let request: PlanPublishRequest = dto::from_js(request.into(), &PlanPublishRequest::SHAPE)?;
+        let request: PlanPublishRequest = dto::from_js(request.into())?;
         let key = dto::identity_id("key", &request.key)?;
         let values = request
             .values
@@ -2847,7 +2843,7 @@ impl Key {
         request: TakeOfferRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TakeOfferStepValue> {
-        let request: TakeOfferRequest = dto::from_js(request.into(), &TakeOfferRequest::SHAPE)?;
+        let request: TakeOfferRequest = dto::from_js(request.into())?;
         let utxos = dto::utxos_named("utxos", &request.utxos)?;
         let recipient = dto::pubkey_hash_address("recipient", &request.recipient)?;
         let change: verus_keys::Address =
@@ -2895,7 +2891,7 @@ impl Key {
         request: PlanConvertRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanConvertRequest = dto::from_js(request.into(), &PlanConvertRequest::SHAPE)?;
+        let request: PlanConvertRequest = dto::from_js(request.into())?;
         let kind = request.conversion_kind()?;
         let amount = dto::sats(&request.amount)?;
         let fee = checked_fee(&request.fee)?;
@@ -2941,7 +2937,7 @@ impl Key {
         request: PlanBurnRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanBurnRequest = dto::from_js(request.into(), &PlanBurnRequest::SHAPE)?;
+        let request: PlanBurnRequest = dto::from_js(request.into())?;
         let amount = dto::sats(&request.amount)?;
         let fee = checked_fee(&request.fee)?;
         let token_funding = dto::utxos_named("tokenFunding", &request.token_funding)?;
@@ -2988,7 +2984,7 @@ impl Key {
         request: PlanMintRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<TransactionStepValue> {
-        let request: PlanMintRequest = dto::from_js(request.into(), &PlanMintRequest::SHAPE)?;
+        let request: PlanMintRequest = dto::from_js(request.into())?;
         let amount = dto::sats(&request.amount)?;
         let fee = checked_fee(&request.fee)?;
         let (currency, recipient) = (request.currency, request.recipient);
@@ -3030,8 +3026,7 @@ impl Key {
         request: PlanRegistrationRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<RegistrationStepValue> {
-        let request: PlanRegistrationRequest =
-            dto::from_js(request.into(), &PlanRegistrationRequest::SHAPE)?;
+        let request: PlanRegistrationRequest = dto::from_js(request.into())?;
         let options = verus_flows::RegistrationOptions {
             primary_addresses: request.primary_addresses.clone(),
             min_sigs: request.min_sigs,
@@ -3120,7 +3115,7 @@ impl Key {
         request: PendingRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<RegistrationStepValue> {
-        let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+        let request: PendingRequest = dto::from_js(request.into())?;
         let pending: verus_flows::Pending<verus_flows::AwaitingCommitment> =
             pending_at(&request.pending, "awaitingCommitment")?;
 
@@ -3161,7 +3156,7 @@ impl Key {
         request: PendingRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<RegisteredStepValue> {
-        let request: PendingRequest = dto::from_js(request.into(), &PendingRequest::SHAPE)?;
+        let request: PendingRequest = dto::from_js(request.into())?;
         let pending: verus_flows::Pending<verus_flows::ReadyToRegister> =
             pending_at(&request.pending, "readyToRegister")?;
 
@@ -3215,7 +3210,7 @@ impl Key {
         request: PlanLaunchRequestValue,
         answers: &mut Answers,
     ) -> WasmResult<LaunchStepValue> {
-        let request: PlanLaunchRequest = dto::from_js(request.into(), &PlanLaunchRequest::SHAPE)?;
+        let request: PlanLaunchRequest = dto::from_js(request.into())?;
         let pin = match &request.pin_launch_fee {
             Some(text) => Some(dto::sats(text)?),
             None => None,
@@ -3264,7 +3259,7 @@ impl Key {
         answers: &mut Answers,
     ) -> WasmResult<LoginStepValue> {
         let identity = dto::text("identity", identity.as_ref())?;
-        let request: LoginRequest = dto::from_js(request.into(), &LoginRequest::SHAPE)?;
+        let request: LoginRequest = dto::from_js(request.into())?;
         let challenge = request.to_flow();
 
         let step = advance(&mut answers.inner, |client: &RpcClient<Cassette>| {

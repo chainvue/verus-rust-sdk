@@ -1264,3 +1264,65 @@ export interface Launched {
 
 /** @see Key.planLaunch */
 export type LaunchStep = PlanStep<Launched>;
+
+// The block between the markers below is GENERATED, and this file is its
+// output rather than its input.
+//
+// `dto::request_list!` in crates/verus-wasm/src/dto.rs is the one list of
+// request DTOs. It generates the `Request` impls that `from_js` requires — so a
+// request type missing from it cannot be read from JavaScript at all — and, in
+// crates/verus-wasm/src/types.rs, the `REGISTRY` the drift guards iterate.
+// `the_request_index_is_generated_from_the_registry` writes this block from that
+// registry and compares it to what is checked in, byte for byte.
+//
+// So: to add, remove or rename a request, edit `dto::request_list!` and re-run
+// that test with UPDATE_TYPESCRIPT_PINS=1. Editing the block by hand fails it,
+// and no amount of whitespace makes a member of it invisible to the comparison.
+// <generated: request index — do not edit by hand>
+/**
+ * Every request object an exported function accepts, keyed by interface name.
+ *
+ * Nothing constructs this, and no exported function takes it. It exists so that
+ * a request type cannot be published without something being forced to exercise
+ * it: `tests/node/requests.exercised.ts` declares a value of a mapped type over
+ * this index which strips every modifier that would let something go unchecked,
+ * and which tsc then requires to be total and type-checks field by field — so
+ * an interface listed here and nowhere else fails the build.
+ *
+ * Every member is required, and must stay required: `Requests["Foo"]` with a `?`
+ * on it is `Foo | undefined`, whose `keyof` is `never`, so the value that file
+ * declares for `Foo` would be type-checked against `{}` while this index still
+ * lists it. No `?` can appear here by accident, because no hand ever writes this
+ * block: it is generated from the same list that generates the `Request` impls.
+ *
+ * A name here that this file does not declare is a compile error, which is the
+ * other half of the arrangement: the list says which requests exist, and tsc
+ * says whether each of them is really published.
+ */
+export interface Requests {
+    SendRequest: SendRequest;
+    TokenSendRequest: TokenSendRequest;
+    SignRequest: SignRequest;
+    VerifyRequest: VerifyRequest;
+    PlanSendRequest: PlanSendRequest;
+    HistoryRequest: HistoryRequest;
+    LoginRequest: LoginRequest;
+    VerifyLoginRequest: VerifyLoginRequest;
+    SpendableRequest: SpendableRequest;
+    ContentRequest: ContentRequest;
+    PlanSendTokenRequest: PlanSendTokenRequest;
+    PlanSendFromIdentityRequest: PlanSendFromIdentityRequest;
+    PlanSendTokenFromIdentityRequest: PlanSendTokenFromIdentityRequest;
+    PlanConvertFromIdentityRequest: PlanConvertFromIdentityRequest;
+    PlanPublishRequest: PlanPublishRequest;
+    OffersRequest: OffersRequest;
+    OfferTermsRequest: OfferTermsRequest;
+    TakeOfferRequest: TakeOfferRequest;
+    PlanConvertRequest: PlanConvertRequest;
+    PlanBurnRequest: PlanBurnRequest;
+    PlanMintRequest: PlanMintRequest;
+    PlanRegistrationRequest: PlanRegistrationRequest;
+    PendingRequest: PendingRequest;
+    PlanLaunchRequest: PlanLaunchRequest;
+}
+// </generated: request index>
