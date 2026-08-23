@@ -38,6 +38,21 @@ pub const WIF_VERSION: u8 = 0xbc;
 /// same-realm memory read the wasm bindings already disclaim defending
 /// against.
 ///
+/// What these copies *are* was settled by measurement rather than inference,
+/// though not uniformly. Four of the seven are whole 116-byte `SigningKey`
+/// records — 32 bytes of scalar in `U256` limb order, then the derived
+/// `AffinePoint` as two `FieldElement10x26` (`[u32; 10]`, 26-bit limbs) plus an
+/// `infinity` byte and padding — whose coordinates decode to exactly `k·G`,
+/// checked against arithmetic computed outside this stack. A record carrying
+/// the derived public point cannot predate the scalar multiplication, so for
+/// those four a decode-side or hash-buffer origin is ruled out.
+///
+/// The other three are not records, and that argument does not reach them: one
+/// carries the generator's `x` with the `infinity` byte set rather than `k·G`,
+/// one is the same record written again 32 bytes earlier and overlapping it,
+/// and one is a bare scalar copy. Their origin is unattributed. Issue #186 has
+/// the addresses and the method.
+///
 /// The byte-order trap, because it is the detail that costs the most time to
 /// rediscover: `k256` stores the scalar as `crypto_bigint::U256` limbs,
 /// **little-endian on wasm32**. A memory search for the key in canonical
@@ -91,6 +106,15 @@ impl PrivateKey {
     /// compressed form — that the trailing flag is exactly `0x01`. The daemon
     /// only ever emits `0x01`; anything else is malformed, and accepting it
     /// would report a valid key that fails later at signing.
+    ///
+    /// Decoding leaves nothing of its own behind on the success path: no
+    /// canonical-order copy of the scalar survives anywhere in wasm32 linear
+    /// memory after a successful `from_wif`. What it does cost is one extra
+    /// construction copy — measured against `from_bytes` alone (`fromEntropy` +
+    /// `free`, no encoding), seven copies of the scalar become eight, and the
+    /// four full `SigningKey` records among them become five. The extra one is
+    /// the same k256 residue documented on [`PrivateKey`], not decode residue. See issue #186, and [`crate::base58::decode_check`] for what the
+    /// *rejection* paths leave, which is a different matter.
     pub fn from_wif(wif: &str) -> Result<Self, KeyError> {
         let (version, payload) = decode_check(wif)?;
         let payload = Zeroizing::new(payload);

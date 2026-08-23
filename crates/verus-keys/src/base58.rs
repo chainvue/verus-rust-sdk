@@ -51,8 +51,9 @@ use crate::error::KeyError;
 /// them before changing any of this.
 ///
 /// Only the outbound path is covered. [`decode_check`] still verifies through
-/// `bs58`, so `from_wif` has the same shape of exposure coming in; it should
-/// get the same treatment only after the same measurement.
+/// `bs58`, so `from_wif` has the same shape of exposure coming in. That has
+/// since been measured, and it is narrower than it looks: it is confined to the
+/// rejection paths. See [`decode_check`].
 pub fn encode_check(version: u8, payload: &[u8]) -> String {
     // Capacity for the whole frame up front: a realloc mid-build would copy the
     // secret into a fresh allocation and leave the old one unwiped behind it.
@@ -91,6 +92,42 @@ const CHECKSUM_LEN: usize = 4;
 ///
 /// The checksum is verified; a single mistyped character is rejected rather than
 /// decoding to a valid-looking but wrong payload.
+///
+/// # Measured residue: the rejection paths, not the success path
+///
+/// This still verifies through `bs58`, so — unlike [`encode_check`] since #179
+/// — the payload passes through a SHA-256 block buffer this function does not
+/// own. Measured on wasm32, release + `wasm-opt`: after a *rejected* WIF, 64
+/// bytes holding `version ‖ 32-byte scalar ‖ flag` in canonical order survive,
+/// with a cursor byte at offset `+64` equal to the frame length (`0x22` for a
+/// 34-byte frame, `0x23` for 35). That is the shape of
+/// `block_buffer::BlockBuffer<U64>`, i.e. `bs58`'s hasher. It survives every
+/// rejection that gets as far as hashing: a checksum mismatch — the likeliest
+/// one in practice, since that is what a mistyped WIF produces — and then
+/// [`crate::PrivateKey::from_wif`]'s own `WrongWifVersion`, which is what a
+/// pasted Bitcoin WIF hits, `WifCompressionFlag`, and `WifLength`. Nothing
+/// afterwards overwrites it. A malformed base58 character is the exception: it
+/// is rejected before the payload reaches the hasher, and leaves nothing.
+///
+/// The heap buffers *are* clean: neither `bs58`'s decoded `Vec` nor the
+/// `payload.to_vec()` below leaves anything findable, on either path, searched
+/// down to a 16-byte suffix of the scalar. The block buffer is the only
+/// survivor.
+///
+/// On the **success** path there is no canonical-order copy anywhere in linear
+/// memory — but not because anything wipes it. `SigningKey::from_slice`'s
+/// scalar multiplication runs far deeper on the shadow stack and overwrites the
+/// buffer in passing. Measuring here on the success path therefore reads clean
+/// whatever this function does; issue #186 records exactly that null result,
+/// and it is why a proposed fix once measured as removing nothing.
+///
+/// Giving this function the [`encode_check`] treatment — compute both hashes
+/// here, so every buffer that sees the payload is owned — is the obvious
+/// candidate and has **not** been measured. Do not land it without a
+/// before/after taken on the *rejection* paths, plus the planted-leak
+/// sensitivity control. The plant has to be published through a live export: a
+/// `Box::leak` whose pointer is never read is deleted by the optimizer, and the
+/// probe then reads falsely clean.
 pub fn decode_check(encoded: &str) -> Result<(u8, Vec<u8>), KeyError> {
     let data = bs58::decode(encoded)
         .with_check(None)
