@@ -978,10 +978,10 @@ mod tests {
         )
         .unwrap();
 
-        let five_aux: Vec<TxOut> = (0..5)
+        let five_aux: Vec<TxOut> = (0u8..5)
             .map(|i| TxOut {
                 value: 0,
-                script_pubkey: vec![0xee ^ i as u8; 32],
+                script_pubkey: vec![0xee ^ i; 32],
             })
             .collect();
         let with_aux = build_identity_update(
