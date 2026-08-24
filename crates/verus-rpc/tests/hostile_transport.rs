@@ -134,9 +134,25 @@ fn a_missing_field_reads_as_a_shape_problem_not_a_transport_one() {
 /// Money that cannot be read exactly is refused rather than rounded. A value
 /// off by one satoshi fails a conservation check somewhere else, much later,
 /// with no trace of where it came from.
+///
+/// `1e2` used to be on this list, on the reading that an exponent in a fee
+/// meant something upstream had changed. It is not hostile: the daemon prints
+/// any amount under `1e-5` coins that way, `getcurrency` answers
+/// `"idregistrationfees":1e-8` for a real currency, and expanding it is a
+/// decimal-point shift rather than a float round-trip. What stays refused is a
+/// value that cannot be *represented*, in either spelling — which is the
+/// property this test is actually about.
 #[test]
 fn an_unreadable_money_field_is_refused_rather_than_rounded() {
-    for value in ["1e2", "\"abc\"", "null", "true", "-5.0", "{}"] {
+    for value in [
+        "1e-9",
+        "3.0000000000000001e-06",
+        "\"abc\"",
+        "null",
+        "true",
+        "-5.0",
+        "{}",
+    ] {
         let reply = format!(
             r#"{{"result":{{"currencyid":"i","name":"X","idregistrationfees":{value},"idreferrallevels":0,"idimportfees":0.0}}}}"#
         );
@@ -145,6 +161,22 @@ fn an_unreadable_money_field_is_refused_rather_than_rounded() {
             client.currency("X").is_err(),
             "accepted an unreadable fee: {value}"
         );
+    }
+}
+
+/// The other side of the same line: an exponent that names an exact amount is
+/// read, and read to the satoshi the daemon meant.
+#[test]
+fn a_fee_in_exponent_form_is_read_rather_than_refused() {
+    for (value, sats) in [("1e-8", 1u64), ("1e2", 100 * verus_tx::SATS_PER_COIN)] {
+        let reply = format!(
+            r#"{{"result":{{"currencyid":"i","name":"X","idregistrationfees":{value},"idreferrallevels":0,"idimportfees":0.0}}}}"#
+        );
+        let client = RpcClient::new(Canned(Box::leak(reply.into_boxed_str())));
+        let policy = client
+            .currency("X")
+            .unwrap_or_else(|e| panic!("refused a readable fee {value}: {e:?}"));
+        assert_eq!(policy.id_registration_fee.to_sat(), sats, "{value}");
     }
 }
 

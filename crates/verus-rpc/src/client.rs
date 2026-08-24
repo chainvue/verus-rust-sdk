@@ -877,16 +877,17 @@ impl<T: Transport> ChainReader for RpcClient<T> {
         //
         // Fixed the way every other money field in this crate is read: keep
         // the caller's token text as a `RawValue` and validate it exactly
-        // through `json::coins`, which parses via `Amount::from_coins_str` and
-        // refuses negative, exponent, sub-satoshi and out-of-range input.
+        // through `json`, which parses via `Amount::from_coins_str` and
+        // refuses negative, sub-satoshi and out-of-range input.
         //
-        // `currency_coins`, not `coins`: this amount is denominated in `from`,
-        // which is whatever currency the caller is converting OUT of, not the
-        // chain's own. Bounding it at the native ceiling would refuse an
-        // ordinary two-billion-unit amount of a large-supply token that the
-        // daemon would price happily — the same over-refusal the two ceilings
-        // exist to separate, and easy to miss because the reply side
-        // (`estimatedcurrencyout`) needs the identical treatment. The validated amount is re-emitted through
+        // `currency_coins`, not the native reader: this amount is denominated
+        // in `from`, which is whatever currency the caller is converting OUT
+        // of, not the chain's own. Bounding it at the native ceiling would
+        // refuse an ordinary two-billion-unit amount of a large-supply token
+        // that the daemon would price happily — the same over-refusal the two
+        // ceilings exist to separate, and easy to miss because the reply side
+        // (`estimatedcurrencyout`) needs the identical treatment. The
+        // validated amount is re-emitted through
         // `Amount::to_coins_string()` — proven to round-trip exactly by
         // `verus_tx::amount`'s own test — as a `RawValue`, so what reaches the
         // wire is that exact decimal text and never a `serde_json::Number`.
