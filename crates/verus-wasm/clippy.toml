@@ -1,0 +1,32 @@
+# `dto::read` is the only sanctioned way a JavaScript value becomes a Rust DTO:
+# it rebuilds the object against the type's own `Shape` first, and that rebuild
+# is what refuses a key nobody declared — serde's `deny_unknown_fields` does
+# nothing against this deserializer (see `dto::from_js`).
+#
+# A deserializer reached around it publishes a DTO that no drift guard in
+# `crate::types` covers: shipped to JavaScript with nothing checking that its
+# TypeScript interface still matches the struct (#200).
+#
+# This file is deliberately NOT at the workspace root. clippy takes the first
+# clippy.toml it finds walking up from CARGO_MANIFEST_DIR and does not merge —
+# so a root file would be switched off, silently, by anyone adding a crate-local
+# one, without the word "disallowed" appearing in the diff. Here, turning the
+# ban off means editing the file the ban is written in. The price: a clippy.toml
+# added at the workspace root later will not apply to this crate.
+disallowed-methods = [
+  { path = "serde_wasm_bindgen::from_value", reason = "read JS-authored objects through dto::from_js, which rebuilds them against the type's own Shape first" },
+  { path = "serde_json::from_str", reason = "a DTO read from a JS-supplied string is invisible to the drift guards too; the two sanctioned uses carry an #[allow] naming why" },
+  # `from_str` alone is not a ban, it is a spelling. Each of these reads the
+  # same bytes through a different door, and an unlisted sibling is worse than
+  # an `#[allow]`: the allow at least shows up in a diff.
+  { path = "serde_json::from_slice", reason = "same as from_str, one `as_bytes()` away" },
+  { path = "serde_json::from_reader", reason = "same as from_str" },
+  { path = "serde_json::from_value", reason = "same as from_str, once the text is a serde_json::Value" },
+]
+
+# Without these, `T::deserialize(&mut Deserializer::from(v))` is the one-line
+# detour around every line above and the ban is decoration.
+disallowed-types = [
+  { path = "serde_wasm_bindgen::Deserializer", reason = "building the deserializer by hand is the same bypass as from_value: use dto::from_js" },
+  { path = "serde_json::Deserializer", reason = "same" },
+]
