@@ -113,10 +113,21 @@ impl PrivateKey {
     /// construction copy — measured against `from_bytes` alone (`fromEntropy` +
     /// `free`, no encoding), seven copies of the scalar become eight, and the
     /// four full `SigningKey` records among them become five. The extra one is
-    /// the same k256 residue documented on [`PrivateKey`], not decode residue. See issue #186, and [`crate::base58::decode_check`] for what the
-    /// *rejection* paths leave, which is a different matter.
+    /// the same k256 residue documented on [`PrivateKey`], not decode residue.
+    /// See issue #186.
+    ///
+    /// The *rejection* paths are a different matter, and all three checks
+    /// below sit on them: by the time a wrong version byte, a bad compression
+    /// flag or a wrong length is noticed, [`crate::base58::decode_check`] has
+    /// already handed the payload over, so the `Zeroizing` wrap on the line
+    /// after the call is the only thing that wipes it on the way out. See
+    /// [`crate::base58::decode_check`] for the buffers on the other side of
+    /// that call, and issue #203.
     pub fn from_wif(wif: &str) -> Result<Self, KeyError> {
         let (version, payload) = decode_check(wif)?;
+        // Wrapped before the checks, not after: every `return Err` below drops
+        // this, and an unwrapped `Vec` would be dropped unwiped on exactly the
+        // paths that leave a mistyped WIF's scalar in memory.
         let payload = Zeroizing::new(payload);
         if version != WIF_VERSION {
             return Err(KeyError::WrongWifVersion {
