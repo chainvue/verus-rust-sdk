@@ -2134,13 +2134,41 @@ const exercised: {
     ///
     /// That `types.d.ts` declares no `*Request` interface outside this block.
     /// Answering that needs a scan of the file, which is the thing being
-    /// removed. It is not a hole in the coverage: a request DTO is by
-    /// definition something `dto::from_js` deserializes, `from_js` takes
-    /// `T: Request`, and the only `Request` impls that exist come from
-    /// `dto::request_list!`. An interface named `…Request` with nothing in the
-    /// list behind it is TypeScript no exported function can ever receive —
-    /// dead declaration text, and a review question rather than a silent gap in
-    /// what the guards cover.
+    /// removed. It rests instead on the two *sanctioned* ways a
+    /// JavaScript-authored value becomes a Rust DTO, both named in
+    /// `crate::dto`:
+    ///
+    /// * [`crate::dto::from_js`] takes `T: Request`, and the only `Request`
+    ///   impls that exist come from `dto::request_list!`, which is sealed.
+    /// * `dto::utxo_list_from_js` is the one array argument, and its return
+    ///   type is concrete: nothing but `JsUtxo` comes out of it. It used to be
+    ///   a generic `from_js_list<T: DeserializeOwned>` taking a hand-supplied
+    ///   shape, which is how a request DTO could reach JavaScript without
+    ///   appearing in any guard here (#200).
+    ///
+    /// Both reach `serde-wasm-bindgen` through one private function, and
+    /// `clippy.toml` beside this crate's `Cargo.toml` denies that deserializer
+    /// — and `serde_json`'s — everywhere else.
+    ///
+    /// That last part is a weaker promise than the two above, and it is spelled
+    /// out here so nobody reads the stronger one. Three ways it is weaker, each
+    /// of them checked rather than assumed:
+    ///
+    /// * An `#[allow]` for the lint lifts it. There are three in this crate
+    ///   today, each naming its reason. A fourth is a review question, not a
+    ///   compile error — and one placed on a *generic* helper reopens the
+    ///   deserializer for every caller of that helper at once.
+    /// * The lint bans named paths, not a property. Every deserialising entry
+    ///   point it does not name is open, which is why `serde_json`'s four
+    ///   spellings are listed rather than just `from_str`. Reading a value
+    ///   field by field through `js_sys::Reflect` is not reachable by any list.
+    /// * `clippy.toml` sits beside this crate's `Cargo.toml`, so it binds this
+    ///   crate only. A helper in a sibling crate that deserialises on our
+    ///   behalf is unlinted, and this crate depends on five of them.
+    ///
+    /// So the registry is sealed by the compiler and the rest is defence in
+    /// depth. Anyone extending this should not read the paragraph above as
+    /// "there is no other way in".
     #[test]
     fn the_request_index_is_generated_from_the_registry() {
         // An emptied registry would generate an empty index, and an empty index

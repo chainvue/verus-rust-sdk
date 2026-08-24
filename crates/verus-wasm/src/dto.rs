@@ -159,6 +159,26 @@ macro_rules! impl_requests {
 }
 request_list!(impl_requests);
 
+/// The only place in this crate where a JavaScript value becomes Rust — and it
+/// cannot be reached without a [`Shape`].
+///
+/// Both readers below go through here, so "deserialize without rebuilding the
+/// object first" is not a call that can be written even inside this module.
+/// `clippy.toml` next to this crate's `Cargo.toml` bans
+/// `serde_wasm_bindgen::from_value` and its `Deserializer` outright; the
+/// `#[allow]` here is one of three keys in the crate, and each one names its
+/// reason. A fourth is the review question this arrangement exists to force.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the sanctioned deserialization: every caller reaches it through a \
+              `Shape`, which is what refuses a key nobody declared — serde's own \
+              `deny_unknown_fields` is inert against this deserializer, see `from_js`"
+)]
+fn read<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<T> {
+    let checked = sanitize(value, shape, "")?;
+    serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
+}
+
 /// Read a request object, refusing anything the type does not declare.
 ///
 /// # Why `deny_unknown_fields` is not enough, and why checking keys was not either
@@ -202,28 +222,33 @@ request_list!(impl_requests);
 /// `request_list!` — and therefore covered by no drift guard — fails to compile
 /// here rather than shipping unguarded.
 pub fn from_js<T: Request>(value: JsValue) -> WasmResult<T> {
-    let checked = sanitize(value, T::SHAPE, "")?;
-    serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
+    read(value, T::SHAPE)
 }
 
-/// The same, for an argument that is an **array** of `shape` objects.
+/// The one array argument this crate reads: `tokenBalances(utxos)`.
+///
+/// Concrete on purpose. [`from_js`] takes its shape from `Request::SHAPE`, so a
+/// caller cannot hand one type's keys to another's. This used to be the one
+/// place that could, because it took the element type *and* the shape as
+/// arguments: any `DeserializeOwned` type went through it, so a request DTO
+/// could be read from JavaScript without implementing [`Request`] — and
+/// therefore without appearing in a single drift guard (#200).
+///
+/// Naming `JsUtxo` in the signature is what keeps it out of every list. It is a
+/// nested element type, not a request: it is not in `request_list!` and must
+/// not be, and there is no second registry it could hide in either.
 ///
 /// Refuses a non-array outright rather than letting serde report it, because
 /// `sanitize` passes a lone object straight through to the object branch and a
 /// caller who meant to pass one UTXO instead of a list deserves to be told so.
-///
-/// Still takes its shape as an argument, unlike [`from_js`]: its one caller
-/// passes [`JsUtxo`], which is a nested element type rather than a request, so
-/// it is not — and must not be — in `request_list!`.
-pub fn from_js_list<T: DeserializeOwned>(value: JsValue, shape: &Shape) -> WasmResult<Vec<T>> {
+pub(crate) fn utxo_list_from_js(value: JsValue) -> WasmResult<Vec<JsUtxo>> {
     if !js_sys::Array::is_array(&value) {
         return Err(WasmError::new(
             "InvalidArgument",
             "expected an array of outputs",
         ));
     }
-    let checked = sanitize(value, shape, "")?;
-    serde_wasm_bindgen::from_value(checked).map_err(WasmError::from)
+    read(value, &JsUtxo::SHAPE)
 }
 
 /// A fresh, prototype-less copy of `value` carrying only `shape`'s fields.

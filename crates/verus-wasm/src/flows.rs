@@ -2290,6 +2290,12 @@ pub fn plan_content_history(
 /// it wrong is not a cosmetic mistake — running step two against a commitment
 /// that has not confirmed spends the registration fee against an output the
 /// chain will not accept.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a round-trip of this crate's own text, not a JS-authored DTO: `pending` \
+              is handed back unchanged, and `from_str` is what applies serde_json's \
+              recursion limit instead of the wasm stack — see `JsPending::pending`"
+)]
 fn pending_at<S>(stored: &JsPending, want: &str) -> WasmResult<verus_flows::Pending<S>>
 where
     S: serde::de::DeserializeOwned,
@@ -3289,6 +3295,10 @@ mod launch_definition_tests {
     ///
     /// The oracle is `fixtures/daemon/currency_definitions.json`: definitions
     /// the daemon itself produced, with the script bytes it emitted.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a committed fixture read from disk in a host test; nothing from JavaScript"
+    )]
     fn vector(name: &str) -> serde_json::Value {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

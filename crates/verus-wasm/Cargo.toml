@@ -24,6 +24,12 @@ missing_docs = "warn"
 cast_possible_truncation = "deny"
 cast_sign_loss = "deny"
 cast_possible_wrap = "deny"
+# `deny`, not the default `warn`, for the reason the workspace root gives for
+# `missing_docs`: CI's `-D warnings` already makes it fatal, and denying it here
+# makes a local `cargo clippy` agree with CI instead of printing and carrying on.
+# See clippy.toml next to this file for what is banned and why (#200).
+disallowed_methods = "deny"
+disallowed_types = "deny"
 
 [lib]
 # `cdylib` is the wasm artifact; `rlib` keeps the crate testable by plain

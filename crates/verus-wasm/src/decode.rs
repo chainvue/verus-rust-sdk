@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 
 use verus_tx::{decode_output_script, OutputKind};
 
-use crate::dto::{self, JsUtxo};
+use crate::dto;
 use crate::error::{WasmError, WasmResult};
 use crate::types::{DecodedOutputValue, JsText, TokenBalancesValue, UtxoListValue};
 
@@ -413,7 +413,7 @@ pub fn token_balances(
     utxos: UtxoListValue,
     native_currency: crate::types::JsOptionalText,
 ) -> Result<TokenBalancesValue, WasmError> {
-    let list: Vec<JsUtxo> = dto::from_js_list(utxos.into(), &JsUtxo::SHAPE)?;
+    let list = dto::utxo_list_from_js(utxos.into())?;
     let native = dto::optional_text("nativeCurrency", &native_currency)?
         .map(|text| dto::currency("nativeCurrency", &text))
         .transpose()?;
