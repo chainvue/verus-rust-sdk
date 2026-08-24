@@ -143,8 +143,8 @@ const CHECKSUM_LEN: usize = 4;
 /// [`Zeroizing`] on the line after the call, *before* its own version, flag and
 /// length checks, so all three of its early exits drop it wiped — that matters,
 /// because those are three of the four rejection paths this fix is about.
-/// [`crate::Address::from_str`] does not wrap it and does not need to: a
-/// hash160 is public.
+/// [`crate::Address`]'s `FromStr` impl does not wrap it and does not need to:
+/// a hash160 is public.
 ///
 /// Do not weaken any of this on the strength of the reasoning above. It is the
 /// reason to expect the result, not the result; what settles it is a
