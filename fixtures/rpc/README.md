@@ -12,7 +12,7 @@ curl -s -X POST https://api.verustest.net -H 'content-type: application/json' \
   > fixtures/rpc/getcurrency_vrsctest.json
 ```
 
-Three things must survive any regeneration, or the tests they support stop
+Four things must survive any regeneration, or the tests they support stop
 meaning anything:
 
 - **`getcurrency_vrsctest.json` must keep `"idregistrationfees":100.0`
@@ -26,6 +26,12 @@ meaning anything:
   exponent form, passes every testnet fixture and fails on the chain with the
   volume. Both files are trimmed by hand to a few representative entries; the
   full replies are 96 KB and 671 KB.
+- **`getcurrency_exponent_fees.json` must keep `"idimportfees":1e-8` and
+  `"idregistrationfees":1e-8` literally.** That capture is the whole test: the
+  daemon prints any amount under `1e-5` coins in exponent form, whatever field
+  it sits in, and these three launcher-chosen fees were read by a parser that
+  refused exponent form. A regeneration that catches this currency after its
+  owner raised its fees turns the regression test green for the wrong reason.
 - **The `err_*.json` files must keep their exact shape** — in particular that an
   error reply carries **no `result` key at all**, rather than `result: null`.
   That is what breaks the obvious `struct { result: T, error: Option<E> }`.
@@ -34,6 +40,7 @@ meaning anything:
 |---|---|
 | `getinfo.json` | chain name, id, height |
 | `getcurrency_vrsctest.json` | the `100.0` coins literal, referral levels, proofprotocol |
+| `getcurrency_exponent_fees.json` | a currency (`123`, `i4PSUkTzQRdweq2PETgYkjNtknzXih8mL5`) whose `idregistrationfees` **and** `idimportfees` are both `1e-8` — the shape VRSCTEST has none of |
 | `getaddressutxos_funded.json` | outputs with `satoshis`, `height`, `isspendable` |
 | `getaddressutxos_empty.json` | an address with nothing — the empty array |
 | `getaddressutxos_second_address.json` | a second funded address |

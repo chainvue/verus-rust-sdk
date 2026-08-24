@@ -12,10 +12,11 @@
 //! replies being 96 KB and 671 KB. Trimming drops whole listings and never
 //! edits one.
 //!
-//! Three of the bugs this crate is shaped around are invisible unless the bytes
-//! are real: a money field arriving as a JSON float, an error reply omitting
-//! `result` rather than nulling it, and an identity name arriving with its
-//! non-ASCII characters escaped.
+//! Four of the bugs this crate is shaped around are invisible unless the bytes
+//! are real: a money field arriving as a JSON float, the same field arriving in
+//! exponent form when the value is small, an error reply omitting `result`
+//! rather than nulling it, and an identity name arriving with its non-ASCII
+//! characters escaped.
 
 use std::cell::RefCell;
 
@@ -115,6 +116,51 @@ fn reads_the_currency_registration_fee() {
     // deposit, the rest is burned.
     let fee = policy.currency_registration_fee.to_sat();
     assert_eq!(fee - fee / 2, 100_00000000);
+}
+
+/// The reply that made `getcurrency` unreadable for the currencies it applied
+/// to — captured, not written.
+///
+/// `idregistrationfees` and `idimportfees` are both one satoshi here, and the
+/// daemon prints one satoshi as `1e-8`. The readers refused exponent form on
+/// these three fields, so this whole currency — and every balance, launch and
+/// identity flow that looks it up — failed permanently with `LossyNumber`, with
+/// nothing its owner could do about it. Fourteen of 316 testnet currencies were
+/// in that state, `Bridge.vETH` among them, and the currency the issue was
+/// filed for, Kaiju (`iHBwQo7LUmb7QKKqbsd8Kw9BxdQvgTdK9f`), is the same shape:
+/// `"idimportfees":1e-8` beside an `idregistrationfees` of `15.0`.
+///
+/// The fixture is this currency rather than Kaiju because it carries *both*
+/// fields in exponent form in one recorded body, so one capture pins the class.
+#[test]
+fn reads_a_currency_whose_fees_arrive_in_exponent_form() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/rpc/getcurrency_exponent_fees.json"
+    ))
+    .unwrap();
+    for literal in [r#""idimportfees":1e-8"#, r#""idregistrationfees":1e-8"#] {
+        assert!(
+            raw.contains(literal),
+            "the fixture no longer carries {literal}, so this test proves nothing"
+        );
+    }
+
+    let policy = client("getcurrency_exponent_fees")
+        .currency("i4PSUkTzQRdweq2PETgYkjNtknzXih8mL5")
+        .unwrap();
+    assert_eq!(policy.name, "123");
+    assert_eq!(policy.id_registration_fee.to_sat(), 1);
+    assert_eq!(policy.id_import_fee.to_sat(), 1);
+    assert_eq!(policy.id_referral_levels, 0);
+    assert_eq!(policy.proof_protocol, 2);
+
+    // Expanding the exponent is a decimal-point shift, not a float round-trip:
+    // the same value written out must land on the identical satoshi.
+    assert_eq!(
+        policy.id_import_fee,
+        verus_tx::Amount::from_coins_str("0.00000001").unwrap()
+    );
 }
 
 /// A currency whose definition carries no launch fee reads as zero rather than

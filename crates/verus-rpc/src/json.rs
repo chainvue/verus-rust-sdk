@@ -78,53 +78,28 @@ fn bounded(amount: Amount, field: &'static str, ceiling: u64) -> Result<Amount, 
     Ok(amount)
 }
 
-/// An amount of the chain's own currency, reported in **coins** — `100.0`.
-///
-/// Bounded by [`MAX_NATIVE_SATS`]. For an amount of some *other* currency use
-/// [`currency_coins`], whose ceiling is far looser and deliberately so.
-///
-/// **Exponent form is refused here**, and the line between this and
-/// [`currency_coins`] is drawn where the *daemon* draws it, not where it felt
-/// natural to draw it.
-///
-/// The first attempt split on intent — "a registration fee arriving as `1e2`
-/// means something changed upstream, so refuse it" — and that reasoning is
-/// sound for these fields. But it is a property of the **serializer**, not of
-/// the field. The figures left here are chain policy, formatted exactly, and
-/// cannot come out in exponent form. Everything read through
-/// [`currency_coins`] comes off the double formatter, which emits `1e-8` for
-/// one satoshi whenever the value is small enough — a fact rather than a
-/// hypothetical: `estimateconversion` answers `"reservein":1e-8` and
-/// `"netinputamount":1e-8` in the same reply as the figure this crate reads.
-///
-/// Guarding a double-formatted field strictly is therefore not caution, it is
-/// an outage waiting for a small number. Anyone can send an address a
-/// hundred-millionth of any token — dust, costing nothing — and
-/// `getaddressbalance` then answers `1e-8` for it and fails *permanently* for
-/// that wallet. Fail-closed, so not a fund loss, but a balance that never loads
-/// again and that its owner cannot clear.
-pub(crate) fn coins(raw: &RawValue, field: &'static str) -> Result<Amount, RpcError> {
-    coins_bounded(raw, field, MAX_NATIVE_SATS)
-}
-
 /// An amount of an arbitrary currency, reported in **coins**.
 ///
 /// Bounded by [`MAX_CURRENCY_SATS`], because a token's supply is its issuer's
 /// choice and this crate cannot look it up. See that constant.
 ///
-/// **Exponent form is accepted**, because every field that reaches this comes
-/// off the daemon's double formatter — see [`expand_exponent`] for why that is
-/// the line that matters and [`coins`] for the fields on the other side of it.
+/// For an amount of the chain's *own* currency use [`native_coins_lenient`],
+/// whose ceiling is far tighter and deliberately so. The ceiling is now the
+/// only axis these two differ on — see that function for why.
 pub(crate) fn currency_coins(raw: &RawValue, field: &'static str) -> Result<Amount, RpcError> {
     lenient_coins(raw, field, MAX_CURRENCY_SATS)
 }
 
+/// Parse plain decimal text in coins, bounded by `ceiling`.
+///
+/// Only reachable through [`lenient_coins`], which has already had its go at
+/// [`expand_exponent`]. So text still carrying an `e` here is text the expander
+/// *declined* — a malformed exponent, or one past [`MAX_EXPONENT`] — and the
+/// refusal below is the backstop for that, not a policy about spelling.
 fn coins_bounded(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Amount, RpcError> {
     // Some fields are quoted and some are bare, depending on the method.
     let text = unquote(raw.get());
 
-    // Exponent form is refused *here*. See `coins` for which fields that is,
-    // and why the line falls where it does.
     if text.contains(['e', 'E']) {
         return Err(RpcError::LossyNumber {
             field,
@@ -139,13 +114,36 @@ fn coins_bounded(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Am
     bounded(amount, field, ceiling)
 }
 
-/// A **native** amount the daemon prints through its double formatter.
+/// An amount of the chain's own currency, reported in **coins** — `100.0`.
 ///
-/// The two properties are normally opposites here: [`coins`] is native and
-/// strict, [`currency_coins`] is per-currency and lenient. `estimatefee` needs
-/// the remaining corner — it is denominated in the chain's own currency, so the
-/// native ceiling is the right bar, and it arrives as `1e-6`, so refusing
-/// exponent form would make it unreadable. Observed on both public endpoints.
+/// Bounded by [`MAX_NATIVE_SATS`]. For an amount of some *other* currency use
+/// [`currency_coins`], whose ceiling is far looser and deliberately so.
+///
+/// # There is no strict sibling any more
+///
+/// There used to be a `coins` next to this one, identical but for refusing
+/// exponent form, and it guarded `getcurrency`'s three launcher-chosen fees on
+/// the reasoning that "the figures left here are chain policy, formatted
+/// exactly, and cannot come out in exponent form".
+///
+/// That is false, and the module's own doc predicted it would be. The testnet
+/// currency `123` (`i4PSUkTzQRdweq2PETgYkjNtknzXih8mL5`) answers
+/// `"idimportfees":1e-8, "idregistrationfees":1e-8`; VRSCTEST answers
+/// `"idregistrationfees":100.0`. Same field, same daemon, both spellings. The
+/// threshold is magnitude alone: over a whole `listcurrencies` reply, no plain
+/// literal falls below `1e-5` and no exponent literal reaches it, in any field.
+/// A strict reader is therefore not a policy check, it is a floor of 1e-5 coins
+/// over the range the daemon prints plainly — and it made fourteen of 316 testnet currencies
+/// permanently unreadable, `Bridge.vETH` among them.
+///
+/// Nothing is given up by dropping it. [`expand_exponent`] shifts a decimal
+/// point in a string; no float is parsed and nothing is rounded, the ceiling is
+/// applied to the same parsed [`Amount`], and a sub-satoshi `1e-9` is refused
+/// exactly as `0.000000001` is. Only the set of accepted *spellings* widens, and
+/// a spelling was never the thing worth guarding.
+///
+/// The name keeps its `_lenient` suffix because that is what every call site was
+/// changed *to*, and a rename would make the fix invisible in the diff.
 pub(crate) fn native_coins_lenient(
     raw: &RawValue,
     field: &'static str,
@@ -155,11 +153,12 @@ pub(crate) fn native_coins_lenient(
 
 /// Coins in either spelling, bounded by `ceiling`.
 ///
-/// The readers above are a two-by-two of *which ceiling* and *whether exponent
-/// form is allowed*, and three of the four corners are occupied. Writing the
-/// lenient half once keeps the two policies from drifting apart — the strict
-/// half is [`coins_bounded`], which this defers to once the spelling is
-/// settled, so the ceiling is applied to the parsed amount either way.
+/// The readers above once formed a two-by-two of *which ceiling* and *whether
+/// exponent form is allowed*. The second axis is gone — see
+/// [`native_coins_lenient`] for what the daemon did to it — so every money
+/// field now takes this path and differs only in its ceiling. Settling the
+/// spelling here and deferring to [`coins_bounded`] means the ceiling is still
+/// applied to the parsed amount, whichever spelling arrived.
 fn lenient_coins(raw: &RawValue, field: &'static str, ceiling: u64) -> Result<Amount, RpcError> {
     let text = unquote(raw.get());
     match expand_exponent(text) {
@@ -195,14 +194,16 @@ pub(crate) fn satoshis(raw: &RawValue, field: &'static str) -> Result<Amount, Rp
 /// `None` for anything that is not exponent form, or whose exponent is beyond
 /// [`MAX_EXPONENT`].
 ///
-/// # Why this exists, given [`coins_bounded`] refuses exponents
+/// # Why this exists, given [`coins_bounded`] still refuses exponents
 ///
-/// That refusal was written for the fields it guards, and it is right there: an
+/// That refusal is now a backstop for what this function declined to expand,
+/// not a policy. It was once a policy — the reasoning being that an
 /// `idregistrationfees` arriving as `1e2` means something changed and guessing
-/// is not the answer. But it is not a statement about exponents being
-/// *unreadable*. `getoffers`, `estimatefee` and `listcurrencies` emit `1e-8`,
-/// `1e-6` and `3.9e-7` **routinely**, for ordinary values — `1e-8` is one
-/// satoshi — and a reader that refuses them cannot read those methods at all.
+/// is not the answer — and the daemon settled that: `getcurrency` answers
+/// `"idregistrationfees":1e-8` for currency `123` and `100.0` for VRSCTEST.
+/// `getoffers`, `estimatefee` and `listcurrencies` emit `1e-8`, `1e-6` and
+/// `3.9e-7` **routinely**, for ordinary values — `1e-8` is one satoshi — and a
+/// reader that refuses them cannot read those methods at all.
 ///
 /// The distinction that makes this safe is that shifting a decimal point in a
 /// decimal string is a *lossless textual transform*, not a numeric conversion.
@@ -350,7 +351,7 @@ mod tests {
     #[test]
     fn reads_the_registration_fee_the_daemon_reports() {
         assert_eq!(
-            coins(&raw("100.0"), "idregistrationfees").unwrap(),
+            native_coins_lenient(&raw("100.0"), "idregistrationfees").unwrap(),
             Amount::from_sat(100_00000000)
         );
     }
@@ -360,7 +361,7 @@ mod tests {
     /// other funds a transaction wrongly by a factor of 1e8.
     #[test]
     fn coins_and_satoshis_are_not_interchangeable() {
-        let as_coins = coins(&raw("100.0"), "fee").unwrap();
+        let as_coins = native_coins_lenient(&raw("100.0"), "fee").unwrap();
         let as_sats = satoshis(&raw("100"), "fee").unwrap();
         assert_ne!(as_coins, as_sats);
         assert_eq!(as_coins.to_sat(), 100_00000000);
@@ -376,15 +377,79 @@ mod tests {
             ("1234.56789012", 123_456_789_012),
             ("0.3", 30_000_000),
         ] {
-            assert_eq!(coins(&raw(text), "x").unwrap().to_sat(), sats, "{text}");
+            assert_eq!(
+                native_coins_lenient(&raw(text), "x").unwrap().to_sat(),
+                sats,
+                "{text}"
+            );
         }
     }
 
-    /// Expanding an exponent is guessing about money. Refuse.
+    /// A native amount in exponent form reads, and reads to the same satoshi
+    /// count as the same value written out.
+    ///
+    /// This test used to assert the opposite — "expanding an exponent is
+    /// guessing about money, refuse" — for the three `getcurrency` fees. The
+    /// daemon does send them that way, so the refusal was a floor of 1e-5 coins
+    /// on a launcher's own choice rather than a guard against anything.
     #[test]
-    fn exponent_form_is_refused_rather_than_expanded() {
+    fn a_native_fee_in_exponent_form_reads_as_the_same_amount() {
+        assert_eq!(
+            native_coins_lenient(&raw("1e-8"), "idimportfees")
+                .expect("a one-satoshi fee must not break the whole currency")
+                .to_sat(),
+            1
+        );
+        assert_eq!(
+            native_coins_lenient(&raw("1e-8"), "idimportfees").unwrap(),
+            native_coins_lenient(&raw("0.00000001"), "idimportfees").unwrap()
+        );
+    }
+
+    /// The three `getcurrency` fees, in the spellings the live endpoint answers
+    /// with, through the reader each of them is now read by.
+    ///
+    /// `currencyregistrationfee` is here rather than in a fixture on purpose:
+    /// only system currencies emit it, so no recorded reply carries it in
+    /// exponent form. It is set by the same launcher and printed by the same
+    /// formatter as the other two, which is an argument, not an observation —
+    /// so it is asserted where it belongs, against the reader, and not by
+    /// inventing a `getcurrency` body that no daemon sent.
+    #[test]
+    fn every_launcher_chosen_fee_reads_in_either_spelling() {
+        for field in [
+            "idregistrationfees",
+            "idimportfees",
+            "currencyregistrationfee",
+        ] {
+            assert_eq!(
+                native_coins_lenient(&raw("1e-8"), field).unwrap().to_sat(),
+                1,
+                "{field}"
+            );
+            assert_eq!(
+                native_coins_lenient(&raw("1e-6"), field).unwrap().to_sat(),
+                100,
+                "{field}"
+            );
+            assert_eq!(
+                native_coins_lenient(&raw("100.0"), field).unwrap().to_sat(),
+                100 * verus_tx::SATS_PER_COIN,
+                "{field}"
+            );
+        }
+    }
+
+    /// Leniency about spelling is not leniency about precision: a sub-satoshi
+    /// fee is still refused, in either spelling, on a native field.
+    #[test]
+    fn a_lenient_native_reader_still_refuses_a_sub_satoshi_fee() {
         assert!(matches!(
-            coins(&raw("1e-8"), "fee"),
+            native_coins_lenient(&raw("1e-9"), "idimportfees"),
+            Err(RpcError::LossyNumber { .. })
+        ));
+        assert!(matches!(
+            native_coins_lenient(&raw("0.000000001"), "idimportfees"),
             Err(RpcError::LossyNumber { .. })
         ));
     }
@@ -399,13 +464,18 @@ mod tests {
 
     #[test]
     fn quoted_and_bare_both_read() {
-        assert_eq!(coins(&raw(r#""1.5""#), "x").unwrap().to_sat(), 150_000_000);
+        assert_eq!(
+            native_coins_lenient(&raw(r#""1.5""#), "x")
+                .unwrap()
+                .to_sat(),
+            150_000_000
+        );
         assert_eq!(satoshis(&raw(r#""42""#), "x").unwrap().to_sat(), 42);
     }
 
     #[test]
     fn a_negative_amount_is_refused() {
-        assert!(coins(&raw("-1.0"), "x").is_err());
+        assert!(native_coins_lenient(&raw("-1.0"), "x").is_err());
         assert!(satoshis(&raw("-1"), "x").is_err());
     }
 
@@ -427,7 +497,7 @@ mod tests {
     #[test]
     fn an_absurdly_large_coin_figure_is_refused() {
         assert!(matches!(
-            coins(&raw("2000000000.0"), "idregistrationfees"),
+            native_coins_lenient(&raw("2000000000.0"), "idregistrationfees"),
             Err(RpcError::OutOfRange(_))
         ));
     }
@@ -437,7 +507,9 @@ mod tests {
     #[test]
     fn a_large_but_plausible_amount_still_reads() {
         assert_eq!(
-            coins(&raw("500000000.0"), "x").unwrap().to_sat(),
+            native_coins_lenient(&raw("500000000.0"), "x")
+                .unwrap()
+                .to_sat(),
             500_000_000 * verus_tx::SATS_PER_COIN
         );
     }
@@ -456,7 +528,7 @@ mod tests {
             "a large-supply token balance must be readable"
         );
         assert!(
-            coins(&raw(ten_billion), "balance").is_err(),
+            native_coins_lenient(&raw(ten_billion), "balance").is_err(),
             "the same figure as a native balance is not credible"
         );
     }
@@ -568,29 +640,34 @@ mod tests {
 
     /// The line between the two readers, asserted from both sides.
     ///
-    /// It is drawn by **serializer**, not by field sentiment. The policy
-    /// figures `coins` guards are formatted exactly by the daemon and cannot
-    /// arrive in exponent form, so refusing one there still means something
-    /// changed upstream. Every field `currency_coins` reads comes off the
-    /// double formatter, which emits `1e-8` for a single satoshi as a matter of
-    /// course.
+    /// The line is the **ceiling**, and only the ceiling. It once also split on
+    /// spelling — the claim being that the policy figures the native reader
+    /// guards are formatted exactly and cannot arrive in exponent form, so a
+    /// refusal there still meant something had changed upstream. Both sides of
+    /// this assertion now read `1e-8`, because the daemon prints any small
+    /// enough number that way whatever field it sits in.
     ///
-    /// An earlier version of this change had `currency_coins` refusing too.
-    /// That is the griefable case: `currencybalance` is read through it, so
-    /// sending an address one hundred-millionth of any token — dust, free —
-    /// would have made `getaddressbalance` fail permanently for that wallet.
+    /// The griefable case that motivated leniency on the per-currency side is
+    /// unchanged and still asserted: `currencybalance` is read through
+    /// `currency_coins`, so sending an address one hundred-millionth of any
+    /// token — dust, free — would otherwise make `getaddressbalance` fail
+    /// permanently for that wallet.
     #[test]
-    fn the_two_readers_split_on_which_formatter_produced_the_field() {
-        assert!(matches!(
-            coins(&raw("1e-8"), "idregistrationfees"),
-            Err(RpcError::LossyNumber { .. })
-        ));
+    fn the_two_readers_split_on_ceiling_and_nothing_else() {
+        assert_eq!(
+            native_coins_lenient(&raw("1e-8"), "idregistrationfees")
+                .expect("a one-satoshi fee must not break the currency")
+                .to_sat(),
+            1
+        );
         assert_eq!(
             currency_coins(&raw("1e-8"), "currencybalance")
                 .expect("a dust token balance must not break the reply")
                 .to_sat(),
             1
         );
+        // The difference that is left is the ceiling, asserted by
+        // `a_large_token_balance_reads_where_the_same_native_figure_is_refused`.
     }
 
     /// The sign is the entire content of a spend row. Losing it turns money

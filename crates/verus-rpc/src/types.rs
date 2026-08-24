@@ -1260,18 +1260,67 @@ impl RawCurrency<'_> {
             currency_id: self.currencyid,
             name: self.name,
             // Coins, not satoshis — see `json`.
+            //
             // The three identity/currency fees deliberately take the NATIVE
             // ceiling, not the per-currency one, even though a fee under a
             // token parent is denominated in that token. It is a sanity bar on
             // a number that gets burned, and a fee of a billion units is not a
             // fee — the flows refuse anything over 500 coins on the default
             // path anyway. Chosen, not overlooked: `currencybalance` and
-            // `estimatedcurrencyout` below are the per-currency amounts.
-            id_registration_fee: json::coins(self.idregistrationfees, "idregistrationfees")?,
+            // `estimatedcurrencyout` below are the per-currency amounts. That
+            // half of the old comment still holds; the rest of it did not.
+            //
+            // These were read strictly, refusing exponent form, on the
+            // reasoning that "the figures left here are chain policy, formatted
+            // exactly, and cannot come out in exponent form". The daemon
+            // disagrees. `getcurrency i4PSUkTzQRdweq2PETgYkjNtknzXih8mL5` — the
+            // testnet currency named `123` — answers, verbatim:
+            //
+            //     "idimportfees":1e-8, ... "idregistrationfees":1e-8
+            //
+            // and Kaiju (`iHBwQo7LUmb7QKKqbsd8Kw9BxdQvgTdK9f`) answers
+            // `"idimportfees":1e-8` in a reply whose `idregistrationfees` is
+            // `15.0`. It goes the other way too: `gamesession5` answers
+            // `"idregistrationfees":1e-6` with an ordinary plain-form
+            // `idimportfees`, so neither field is merely dragged along by the
+            // other — each breaks on its own magnitude.
+            // The same field name, from the same daemon, prints both
+            // ways: the spelling tracks the *magnitude*, not the field. Across
+            // one full `listcurrencies` reply there is no plain literal below
+            // `1e-5` and no exponent literal at or above it, in any field.
+            //
+            // So strictness here was never a policy check — it was a hard floor
+            // of 1e-5 coins on three numbers a currency's launcher picks freely.
+            // A launcher choosing one satoshi made their currency permanently
+            // unreadable through `ChainReader::currency` for every consumer of
+            // this crate, with no way for the owner to clear it. Fourteen of
+            // 316 testnet currencies were in that state, `Bridge.vETH` among
+            // them, and a wallet listing five tokens lost all five names
+            // because one of them was Kaiju.
+            //
+            // `native_coins_lenient` keeps the identical native ceiling and the
+            // identical exactness — `expand_exponent` shifts a decimal point in
+            // text, no float is parsed, and a sub-satoshi `1e-9` is still
+            // refused exactly as `0.000000001` is. Only the set of accepted
+            // *spellings* widens.
+            id_registration_fee: json::native_coins_lenient(
+                self.idregistrationfees,
+                "idregistrationfees",
+            )?,
             id_referral_levels: self.idreferrallevels,
-            id_import_fee: json::coins(self.idimportfees, "idimportfees")?,
+            id_import_fee: json::native_coins_lenient(self.idimportfees, "idimportfees")?,
+            // `currencyregistrationfee` gets the same reader, and it is the one
+            // of the three with no recorded exponent example: only system
+            // currencies emit it at all (VRSCTEST `200.0`, vETH `5000000.0`).
+            // That is an absence of evidence, not evidence of exactness — it is
+            // written into the same definition, by the same launcher, and
+            // printed by the same formatter with the same 1e-5 threshold. The
+            // argument that was just falsified was exactly this one made
+            // without a counterexample to hand, so it is not made again here.
+            // Its leniency is asserted in `json.rs`'s own tests rather than
+            // against an invented `getcurrency` body.
             currency_registration_fee: match self.currencyregistrationfee {
-                Some(raw) => json::coins(raw, "currencyregistrationfee")?,
+                Some(raw) => json::native_coins_lenient(raw, "currencyregistrationfee")?,
                 None => Amount::ZERO,
             },
             proof_protocol: self.proofprotocol,
