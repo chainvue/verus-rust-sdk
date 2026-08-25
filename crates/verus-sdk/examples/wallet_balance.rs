@@ -13,6 +13,16 @@
 
 use verus_sdk::network::{currency_names, native_currency, spendable, HttpTransport, RpcClient};
 
+/// A currency's own i-address — the part of a token's identity that cannot
+/// lie, and the only thing worth printing when the name is missing.
+fn i_address(currency: &verus_sdk::verus_tx::CurrencyId) -> String {
+    verus_sdk::verus_keys::Address::new(
+        verus_sdk::verus_keys::AddressKind::Identity,
+        currency.to_bytes(),
+    )
+    .to_string()
+}
+
 fn endpoint() -> String {
     std::env::var("VERUS_ENDPOINT").unwrap_or_else(|_| "https://api.verustest.net".into())
 }
@@ -67,23 +77,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(held) => {
             // Names cost one request each, so they are asked for once, here,
-            // and only because there is something to display. A node that
-            // cannot be reached is an error; one that simply does not know a
-            // currency leaves it unnamed.
-            let names = currency_names(&node, held.keys().copied()).unwrap_or_default();
+            // and only because there is something to display. A currency the
+            // node simply does not have is left unnamed; anything else that
+            // went wrong comes back beside the currency it went wrong for, so
+            // one bad lookup costs one name rather than all of them. The `?`
+            // is unreachable here — the outer error is only the driver's
+            // sentinel, and this example drives nothing.
+            let (names, unreadable) = currency_names(&node, held.keys().copied())?;
             println!("  tokens:");
             for (currency, amount) in &held {
-                let id = verus_sdk::verus_keys::Address::new(
-                    verus_sdk::verus_keys::AddressKind::Identity,
-                    currency.to_bytes(),
-                )
-                .to_string();
                 match names.get(currency) {
                     // A name comes from the node and is shown to a person, so
                     // it is printed beside the id that cannot lie rather than
                     // instead of it.
-                    Some(name) => println!("    {amount:>16}  {name}@  ({id})"),
-                    None => println!("    {amount:>16}  {id}"),
+                    Some(name) => println!("    {amount:>16}  {name}@  ({})", i_address(currency)),
+                    None => println!("    {amount:>16}  {}", i_address(currency)),
+                }
+            }
+            // After the names, not instead of them: show what you have, then
+            // say what you could not read. Silence here is what made a
+            // single unreadable currency look like a wallet of nameless
+            // tokens.
+            if !unreadable.is_empty() {
+                println!("  {} name(s) could not be read:", unreadable.len());
+                for (currency, error) in &unreadable {
+                    println!("    {}  {error}", i_address(currency));
                 }
             }
         }

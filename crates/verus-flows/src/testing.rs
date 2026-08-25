@@ -38,6 +38,12 @@ pub struct ScriptedReader {
     /// reads an identity at two different heights cannot be tested at all.
     identity_history: RefCell<Vec<(String, u32, IdentityRecord)>>,
     policy: RefCell<Option<CurrencyPolicy>>,
+    /// Per-currency answers for `getcurrency`, keyed by the `name_or_id`
+    /// asked about. Without these the double holds exactly one currency and
+    /// answers with it whatever it is asked, so "one lookup fails and the
+    /// others still come back" — the whole contract of
+    /// [`crate::currency_names`] — cannot be scripted at all.
+    currency_answers: RefCell<Vec<(String, Result<CurrencyPolicy, RpcError>)>>,
     definition: RefCell<Option<verus_rpc::CurrencySummary>>,
     confirmations: RefCell<Vec<(String, u32)>>,
     /// Heights handed out by successive `block_count` calls, consumed in order.
@@ -82,6 +88,7 @@ impl ScriptedReader {
             requests: RefCell::new(0),
             broadcasts: RefCell::new(Vec::new()),
             broadcast_failure: RefCell::new(None),
+            currency_answers: RefCell::new(Vec::new()),
             estimate: RefCell::new(None),
             deltas: RefCell::new(Vec::new()),
             offers: RefCell::new(Vec::new()),
@@ -286,9 +293,34 @@ impl ScriptedReader {
         self
     }
 
-    /// The registration policy `currency` returns.
+    /// The registration policy `currency` returns for *every* currency.
     pub fn with_policy(self, policy: CurrencyPolicy) -> Self {
         *self.policy.borrow_mut() = Some(policy);
+        self
+    }
+
+    /// The policy `currency` returns for one specific `name_or_id`, which takes
+    /// precedence over [`ScriptedReader::with_policy`].
+    ///
+    /// Scripting per currency is what makes a *mixed* answer testable: some
+    /// currencies readable, some not, in one call.
+    pub fn with_policy_for(self, name_or_id: &str, policy: CurrencyPolicy) -> Self {
+        self.currency_answers
+            .borrow_mut()
+            .push((name_or_id.to_string(), Ok(policy)));
+        self
+    }
+
+    /// The error `currency` returns for one specific `name_or_id`.
+    ///
+    /// The interesting failures are the ones that say nothing about the
+    /// currency asked about — a fee field that cannot be read exactly, a rate
+    /// limit, an unreachable node — and none of them was reachable through
+    /// this double before.
+    pub fn with_currency_failure(self, name_or_id: &str, error: RpcError) -> Self {
+        self.currency_answers
+            .borrow_mut()
+            .push((name_or_id.to_string(), Err(error)));
         self
     }
 
@@ -623,9 +655,26 @@ impl ChainReader for ScriptedReader {
 
     fn currency(&self, name_or_id: &str) -> Result<CurrencyPolicy, RpcError> {
         self.count();
+        if let Some((_, answer)) = self
+            .currency_answers
+            .borrow()
+            .iter()
+            .find(|(id, _)| id == name_or_id)
+        {
+            return match answer {
+                Ok(policy) => Ok(policy.clone()),
+                Err(error) => Err(cloned(error)),
+            };
+        }
+        // `-8`, not `-5`: this is the code and the message a real daemon sends
+        // for a currency it does not have — checked against
+        // `https://api.verustest.net`. The double used to answer `-5`, which
+        // is the *identity* code, and so agreed with a production path that
+        // tolerated the wrong number. A test double that repeats the mistake
+        // it is meant to catch is worse than none.
         self.policy.borrow().clone().ok_or(RpcError::Node {
-            code: -5,
-            message: format!("currency {name_or_id} not found"),
+            code: -8,
+            message: format!("Invalid currency or currency not found: {name_or_id}"),
         })
     }
 
@@ -953,25 +1002,43 @@ fn txid_of(hex: &str) -> String {
     digest.iter().rev().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A copy of an error a test scripted.
+///
+/// [`RpcError`] is deliberately not [`Clone`] — a real one happens once, where
+/// it fails. A double has to hand the same scripted error back on every call,
+/// so it copies. The variants a test asserts *on* are carried through as
+/// themselves rather than flattened, because `Unexpected` would make such a
+/// test pass for the wrong reason; the enum is `#[non_exhaustive]`, so anything
+/// newer keeps only its `Display`.
+fn cloned(error: &RpcError) -> RpcError {
+    match error {
+        RpcError::Transport(m) => RpcError::Transport(m.clone()),
+        RpcError::Node { code, message } => RpcError::Node {
+            code: *code,
+            message: message.clone(),
+        },
+        RpcError::Malformed(m) => RpcError::Malformed(m.clone()),
+        RpcError::Unexpected(m) => RpcError::Unexpected(m.clone()),
+        RpcError::MethodUnavailable { method } => RpcError::MethodUnavailable { method },
+        // A fee field one currency reports in a shape that cannot be read
+        // exactly. It says nothing about any *other* currency, which is the
+        // whole reason `currency_names` reports it per currency rather than
+        // giving up on the map.
+        RpcError::LossyNumber { field, value } => RpcError::LossyNumber {
+            field,
+            value: value.clone(),
+        },
+        RpcError::AnswerNeeded => RpcError::AnswerNeeded,
+        RpcError::WriteThroughCassette => RpcError::WriteThroughCassette,
+        other => RpcError::Unexpected(other.to_string()),
+    }
+}
+
 impl Broadcaster for ScriptedReader {
     fn send_raw_transaction(&self, hex: &str) -> Result<String, RpcError> {
         self.count();
         if let Some(error) = self.broadcast_failure.borrow().as_ref() {
-            return Err(match error {
-                RpcError::Transport(m) => RpcError::Transport(m.clone()),
-                RpcError::Node { code, message } => RpcError::Node {
-                    code: *code,
-                    message: message.clone(),
-                },
-                // Carried through as themselves rather than flattened: how
-                // `broadcast` classifies each one is exactly what a test using
-                // this double would be asserting, and `Unexpected` would make
-                // every such test pass for the wrong reason.
-                RpcError::AnswerNeeded => RpcError::AnswerNeeded,
-                RpcError::WriteThroughCassette => RpcError::WriteThroughCassette,
-                RpcError::MethodUnavailable { method } => RpcError::MethodUnavailable { method },
-                other => RpcError::Unexpected(other.to_string()),
-            });
+            return Err(cloned(error));
         }
         self.broadcasts.borrow_mut().push(hex.to_string());
         Ok(txid_of(hex))

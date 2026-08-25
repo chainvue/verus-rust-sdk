@@ -99,7 +99,7 @@ pub mod shielded;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use balances::{currency_names, native_currency};
+pub use balances::{currency_names, native_currency, CurrencyNames};
 pub use broadcast::{broadcast, Unsent};
 pub use convert::{
     burn, convert, estimate, mint, plan_conversion, prepare_burn, prepare_conversion,
