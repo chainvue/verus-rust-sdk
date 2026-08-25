@@ -259,10 +259,11 @@ pub mod network {
         prepare_send_token, prepare_take, prepare_unsigned_send, publish, read, read_all,
         read_history, send, send_from_identity, send_token, sign_login, spendable, take,
         token_balances, verify_login, AwaitingCommitment, CommitmentStatus, ContentMultimap,
-        ConversionPlan, Demand, FlowError, Funding, Held, HistoryEntry, IdentityChange, Launched,
-        Listing, LoggedIn, LoginPolicy, LoginRequest, Namespace, OfferTerms, Pending, Published,
-        ReadyToRegister, Recovered, Registered, RegistrationOptions, Revoked, Sent, Taken, Taking,
-        TokenBalances, Unsent, Updated, WaitPolicy,
+        ConversionPlan, CurrencyNames, Demand, FlowError, Funding, Held, HistoryEntry,
+        IdentityChange, Launched, Listing, LoggedIn, LoginPolicy, LoginRequest, Namespace,
+        OfferTerms, Pending, Published, ReadyToRegister, Recovered, Registered,
+        RegistrationOptions, Revoked, Sent, Taken, Taking, TokenBalances, Unsent, Updated,
+        WaitPolicy,
     };
     pub use verus_rpc::{
         AddressBalance, AddressDelta, AddressUtxo, Broadcaster, Cassette, ChainInfo, ChainReader,

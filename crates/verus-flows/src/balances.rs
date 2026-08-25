@@ -104,7 +104,17 @@ impl Funding {
     }
 }
 
-/// Friendly names for currency ids.
+/// What [`currency_names`] found: the names it could read, and one reason for
+/// each currency it could not.
+///
+/// A name for the pair, not a wrapper around it: this is the tuple, and
+/// `let (names, _) = …` still compiles and still throws the failures away.
+/// The alias exists so the signature stays readable and so this doc comment
+/// has somewhere to live. What keeps a caller honest is the second half being
+/// named in the return type at all, not the alias.
+pub type CurrencyNames = (BTreeMap<CurrencyId, String>, Vec<(CurrencyId, FlowError)>);
+
+/// Friendly names for currency ids, and a reason for each one that is missing.
 ///
 /// Deliberately **not** folded into [`Funding::token_balances`]: this is one
 /// request per currency, and a balance should not secretly cost a round trip
@@ -112,15 +122,40 @@ impl Funding {
 /// display, and cache what it returns — a currency's name is fixed when it is
 /// registered and cannot change, so the cache never needs invalidating.
 ///
-/// A currency the **node** says it does not know is left out rather than
-/// failing the lookup: a missing name is a display problem, and it must not
-/// stop a wallet reporting a balance it already knows.
+/// # Why a second list rather than a failed lookup
 ///
-/// A node that could not be *reached*, though, is an error. The two used to be
-/// treated alike, and that is worse than it sounds given the advice to cache:
-/// one network blip would have written "this currency has no name" into a
-/// cache that is never invalidated, and an unreachable node would have been
-/// indistinguishable from an address holding nothing but unknown currencies.
+/// A name is a per-currency answer, so a per-currency failure has to cost one
+/// name and not the map. This used to abort on the first one it could not
+/// read, which meant a wallet holding five tokens lost all five names because
+/// of a fee field on one of them.
+///
+/// Aborting was not paranoia, though, and the rule behind it still holds: an
+/// internal error, a bad parameter or a rate limit is **not** a statement about
+/// the currency, and reading one as "unnamed" leaves a token showing as a bare
+/// `i` address with nothing to say why. The second list keeps that rule and
+/// serves it better than the abort did — the caller now learns *which* currency
+/// it is missing and *what went wrong*, so it can show the names it has, say
+/// why the rest are absent, and know not to write "this currency has no name"
+/// into a cache that is never invalidated. One network blip no longer looks
+/// like an address holding nothing but nameless currencies.
+///
+/// So exactly one answer is still left out in silence: the node saying it does
+/// not know the currency. That one *is* a statement about the currency, and
+/// there is nothing to report beyond the id the caller already has.
+///
+/// A node that answers about a **different** currency than the one asked for is
+/// the opposite — a statement about the node — and goes in the error list.
+/// Dropping it silently would let a confused or hostile node suppress a name
+/// with nobody able to see that it had.
+///
+/// # The outer `Result`
+///
+/// It carries one thing and one thing only:
+/// [`RpcError::AnswerNeeded`](verus_rpc::RpcError::AnswerNeeded), the sentinel
+/// [`crate::drive`] uses to mean "stop, I still need an answer". That is not a
+/// failure of this lookup, and no other error can come back this way. Folding
+/// it into the per-currency list instead would tell a driver the work had
+/// finished, and the caller would get an empty map for ever.
 ///
 /// # Trust
 ///
@@ -132,7 +167,7 @@ impl Funding {
 pub fn currency_names(
     reader: &impl ChainReader,
     currencies: impl IntoIterator<Item = CurrencyId>,
-) -> Result<BTreeMap<CurrencyId, String>, FlowError> {
+) -> Result<CurrencyNames, FlowError> {
     // Every lookup is issued before any is inspected. The currencies are known
     // from the argument and none depends on another, so a `?`-shaped loop
     // would ask for them one at a time — and against the driver in
@@ -151,28 +186,52 @@ pub fn currency_names(
         .collect();
 
     let mut names = BTreeMap::new();
+    let mut unreadable = Vec::new();
     for (currency, address, answer) in asked {
         match answer {
-            Ok(policy) => {
-                // Free consistency check: a node that answers about a
-                // different currency than the one asked for is confused or
-                // hostile, and either way its answer is not a name for this
-                // token.
-                if policy.currency_id == address {
-                    names.insert(currency, policy.name);
-                }
+            Ok(policy) if policy.currency_id == address => {
+                names.insert(currency, policy.name);
             }
-            // The node answered, and its answer was "no such currency" — which
-            // is `-5`, and only `-5`. An internal error, a bad parameter or a
-            // rate limit is not a statement about the currency; reading one as
-            // "unnamed" leaves a token showing as a bare `i` address with
-            // nothing to say why. The same rule `crate::error::absent_is_none`
-            // applies to identities.
-            Err(verus_rpc::RpcError::Node { code: -5, .. }) => {}
-            Err(error) => return Err(error.into()),
+            // Free consistency check: a node that answers about a different
+            // currency than the one asked for is confused or hostile, and
+            // either way its answer is not a name for this token. Reported
+            // rather than dropped, because a name withheld by a hostile node
+            // must not be indistinguishable from a name that was never
+            // registered. Spelled the way `history` spells the same shape of
+            // disagreement: the node pointed somewhere other than where it was
+            // asked to look.
+            Ok(policy) => unreadable.push((
+                currency,
+                FlowError::Rpc(verus_rpc::RpcError::Unexpected(format!(
+                    "asked getcurrency about {address} but the answer describes {} — refusing \
+                     to use it as that currency's name",
+                    policy.currency_id
+                ))),
+            )),
+            // The node answered, and its answer was "no such currency".
+            // `getcurrency` spells that `-8` ("Invalid currency or currency
+            // not found"); `-5` is the identity code, tolerated alongside it
+            // because `crate::error::absent_is_none` reads it the same way for
+            // identities and a node reusing it here would mean the same thing.
+            // Everything else the node could say is a statement about the
+            // node, and lands in `unreadable` with its reason attached.
+            //
+            // Matched on the code alone. `-8` is generic in the bitcoind
+            // lineage this inherits from, so in principle it could arrive
+            // meaning something else — but `getcurrency` answers a malformed
+            // argument with `-1` and a help string (`fixtures/rpc/err_badparam.json`),
+            // and the argument here is an i-address this function builds
+            // itself, so there is no caller input that could provoke one.
+            Err(verus_rpc::RpcError::Node { code: -8 | -5, .. }) => {}
+            // Not an outcome for this currency at all: the driver's "ask me
+            // again once you have fetched what I recorded". Every lookup was
+            // already issued above, so the record is complete and stopping
+            // here costs nothing.
+            Err(error @ verus_rpc::RpcError::AnswerNeeded) => return Err(error.into()),
+            Err(error) => unreadable.push((currency, error.into())),
         }
     }
-    Ok(names)
+    Ok((names, unreadable))
 }
 
 #[cfg(test)]
@@ -186,6 +245,14 @@ mod tests {
 
     /// `ScriptedReader::with_reserve_utxo` builds this currency.
     const TOKEN: CurrencyId = CurrencyId::from_bytes([0x22; 20]);
+
+    /// A second currency, so a *mixed* answer can be asserted.
+    const OTHER: CurrencyId = CurrencyId::from_bytes([0x33; 20]);
+
+    /// The i-address `currency_names` looks a currency up by.
+    fn i_address(currency: CurrencyId) -> String {
+        verus_keys::Address::new(verus_keys::AddressKind::Identity, currency.to_bytes()).to_string()
+    }
 
     /// **The method must read the outputs that hold tokens.** Reading the
     /// wrong set — `immature` rather than `other` — returns an empty map for
@@ -302,29 +369,142 @@ mod tests {
     /// name, not the id echoed back.
     #[test]
     fn a_name_is_resolved_for_the_currency_that_was_asked_about() {
-        let id = verus_keys::Address::new(verus_keys::AddressKind::Identity, TOKEN.to_bytes())
-            .to_string();
+        let id = i_address(TOKEN);
         let node = ScriptedReader::new(1_000).with_policy(verus_rpc::CurrencyPolicy {
             currency_id: id.clone(),
             name: "sometoken".into(),
             ..policy()
         });
-        let names = currency_names(&node, [TOKEN]).unwrap();
+        let (names, unreadable) = currency_names(&node, [TOKEN]).unwrap();
         assert_eq!(names.get(&TOKEN).map(String::as_str), Some("sometoken"));
         assert_ne!(names[&TOKEN], id, "the id is not a name");
+        assert!(unreadable.is_empty(), "nothing failed: {unreadable:?}");
+    }
+
+    /// **The amplifier this shape exists to remove.** One currency that cannot
+    /// be read costs exactly one name; every other name still comes back. The
+    /// old signature returned `Err` here, so a wallet holding two tokens got
+    /// zero names because of a fee field on one of them — and holding five, it
+    /// lost five.
+    #[test]
+    fn an_unreadable_currency_costs_its_own_name_and_no_other() {
+        let readable = i_address(TOKEN);
+        let node = ScriptedReader::new(1_000)
+            .with_policy_for(
+                &readable,
+                verus_rpc::CurrencyPolicy {
+                    currency_id: readable.clone(),
+                    name: "sometoken".into(),
+                    ..policy()
+                },
+            )
+            // The real trigger: a currency whose fee fields the daemon reports
+            // in a shape that cannot be read exactly.
+            .with_currency_failure(
+                &i_address(OTHER),
+                verus_rpc::RpcError::LossyNumber {
+                    field: "idregistrationfees",
+                    value: "1e-8".into(),
+                },
+            );
+
+        let (names, unreadable) = currency_names(&node, [TOKEN, OTHER]).unwrap();
+
+        assert_eq!(
+            names.get(&TOKEN).map(String::as_str),
+            Some("sometoken"),
+            "the readable currency must keep its name"
+        );
+        assert!(
+            !names.contains_key(&OTHER),
+            "and the unreadable one must not acquire one"
+        );
+        assert_eq!(
+            unreadable.len(),
+            1,
+            "exactly one lookup failed: {unreadable:?}"
+        );
+        assert_eq!(unreadable[0].0, OTHER, "and it must say which one");
+        assert!(
+            matches!(
+                unreadable[0].1,
+                FlowError::Rpc(verus_rpc::RpcError::LossyNumber { .. })
+            ),
+            "the reason must survive intact, or the caller cannot say why the \
+             name is missing: {:?}",
+            unreadable[0].1
+        );
+    }
+
+    /// A currency the node says it does not have is left out **in silence** —
+    /// no entry in the error list. That answer is a statement about the
+    /// currency, and there is nothing to report beyond the id the caller
+    /// already holds. `-8` is what `getcurrency` actually sends.
+    #[test]
+    fn a_currency_the_node_does_not_know_is_left_out_without_a_reason() {
+        for code in [-8, -5] {
+            let node = ScriptedReader::new(1_000).with_currency_failure(
+                &i_address(TOKEN),
+                verus_rpc::RpcError::Node {
+                    code,
+                    message: "Invalid currency or currency not found".into(),
+                },
+            );
+            let (names, unreadable) = currency_names(&node, [TOKEN]).unwrap();
+            assert!(names.is_empty(), "{code} names nothing");
+            assert!(
+                unreadable.is_empty(),
+                "{code} is an answer about the currency, not a failure: {unreadable:?}"
+            );
+        }
+    }
+
+    /// The driver's sentinel is **not** a per-currency outcome. It has to come
+    /// back through the outer `Result`, or [`crate::drive::advance`] sees an
+    /// `Ok` with an empty map, marks the operation finished, and never fetches
+    /// the answers it recorded — a caller left with no names for ever.
+    #[test]
+    fn an_answer_still_needed_is_not_reported_as_a_currencys_failure() {
+        let node = ScriptedReader::new(1_000)
+            .with_currency_failure(&i_address(TOKEN), verus_rpc::RpcError::AnswerNeeded);
+
+        assert!(
+            matches!(
+                currency_names(&node, [TOKEN]),
+                Err(FlowError::Rpc(verus_rpc::RpcError::AnswerNeeded))
+            ),
+            "the sentinel must escape rather than be collected"
+        );
     }
 
     /// A node that answers about a different currency than the one asked for
     /// is confused or hostile; either way its answer is not this token's name.
+    /// It is reported rather than dropped, or such a node could suppress a
+    /// name and look exactly like a currency that never had one.
     #[test]
-    fn an_answer_about_a_different_currency_is_not_used_as_a_name() {
+    fn an_answer_about_a_different_currency_is_reported_not_used_as_a_name() {
         let node = ScriptedReader::new(1_000).with_policy(verus_rpc::CurrencyPolicy {
             currency_id: verus_keys::Address::new(verus_keys::AddressKind::Identity, [0x99; 20])
                 .to_string(),
             name: "somethingelse".into(),
             ..policy()
         });
-        assert!(currency_names(&node, [TOKEN]).unwrap().is_empty());
+
+        let (names, unreadable) = currency_names(&node, [TOKEN]).unwrap();
+
+        assert!(names.is_empty(), "the wrong currency's name is not a name");
+        assert_eq!(
+            unreadable.len(),
+            1,
+            "and the caller must be told: {unreadable:?}"
+        );
+        assert_eq!(unreadable[0].0, TOKEN);
+        let said = unreadable[0].1.to_string();
+        assert!(
+            said.contains(&i_address(TOKEN))
+                && said.contains(&i_address(CurrencyId::from_bytes([0x99; 20]))),
+            "the message names what was asked and what came back: {said}"
+        );
     }
 
     fn policy() -> verus_rpc::CurrencyPolicy {
