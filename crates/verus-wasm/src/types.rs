@@ -49,6 +49,9 @@ extern "C" {
     /// TypeScript `DecodedOutput`.
     #[wasm_bindgen(typescript_type = "DecodedOutput")]
     pub type DecodedOutputValue;
+    /// TypeScript `DecodedTransaction`.
+    #[wasm_bindgen(typescript_type = "DecodedTransaction")]
+    pub type DecodedTransactionValue;
     /// TypeScript `MnemonicCheck`.
     #[wasm_bindgen(typescript_type = "MnemonicCheck")]
     pub type MnemonicCheckValue;
