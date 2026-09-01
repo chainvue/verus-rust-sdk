@@ -300,7 +300,10 @@ pub(crate) fn build_token(
                 )
             };
             Ok(TokenRecipient {
-                address: dto::pubkey_hash_address("address", &recipient.address).map_err(label)?,
+                // An `R…` or an `i…`. Tokens held by a VerusID are an ordinary
+                // shape; the builder refuses a script hash, which is the only
+                // destination kind no template writes.
+                address: dto::address(&recipient.address).map_err(label)?,
                 currency: dto::currency("currency", &recipient.currency).map_err(label)?,
                 amount: dto::sats(&recipient.amount).map_err(label)?,
             })
