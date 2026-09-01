@@ -34,6 +34,9 @@ extern "C" {
     /// TypeScript `TokenSendRequest`.
     #[wasm_bindgen(typescript_type = "TokenSendRequest")]
     pub type TokenSendRequestValue;
+    /// TypeScript `ConvertRequest`.
+    #[wasm_bindgen(typescript_type = "ConvertRequest")]
+    pub type ConvertRequestValue;
     /// TypeScript `SignedTransaction`.
     #[wasm_bindgen(typescript_type = "SignedTransaction")]
     pub type SignedTransactionValue;
@@ -934,6 +937,29 @@ const exercised: {
     utxos: [utxo],
     recipients: [{ address: "RQr2…", currency: "iJhCez…", amount: "100000000" }],
     changeAddress: "RQr2…",
+    expiryHeight: 1200020,
+    feePerKb: "10000",
+  }"#,
+        ),
+        (
+            "ConvertRequest",
+            // `reserveToReserve`, because the obligation strips optionality:
+            // every field must be present and non-null, and `via` is only
+            // coherent on the kind that routes.
+            r#"{
+    utxos: [utxo],
+    tokenFunding: [utxo],
+    from: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+    amount: "100000000",
+    kind: "reserveToReserve",
+    into: "i9nwxtKuVYX4MSbeULLiK2ttVi6rUEhh4X",
+    via: "iQihXUcQt8G9TSh58YoM5NRwC1nAyoazFR",
+    recipient: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+    refund: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
+    chainCurrency: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+    feeCurrency: "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq",
+    fee: "20000",
+    changeAddress: "RQr2cUkF46n7y8WRzDkd1iV9gHusSSQuzX",
     expiryHeight: 1200020,
     feePerKb: "10000",
   }"#,
