@@ -346,8 +346,8 @@ type _DecodedReserveDeposit = [
 ];
 
 type _DecodedReserveTransfer = [
-  Agrees<Exact<keyof DecodedReserveTransfer, "address" | "destinationCurrency" | "feeCurrency" | "fees" | "flags" | "kind" | "recipient" | "tokens">>,
-  Agrees<Exact<OptionalKeys<DecodedReserveTransfer>, never>>,
+  Agrees<Exact<keyof DecodedReserveTransfer, "address" | "destinationCurrency" | "feeCurrency" | "fees" | "flags" | "kind" | "recipient" | "refund" | "secondReserve" | "tokens">>,
+  Agrees<Exact<OptionalKeys<DecodedReserveTransfer>, "refund" | "secondReserve">>,
   Agrees<Exact<Required<DecodedReserveTransfer>["address"], string>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["destinationCurrency"], string>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["feeCurrency"], string>>,
@@ -355,6 +355,8 @@ type _DecodedReserveTransfer = [
   Agrees<Exact<Required<DecodedReserveTransfer>["flags"], number>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["kind"], "reserveTransfer">>,
   Agrees<Exact<Required<DecodedReserveTransfer>["recipient"], string>>,
+  Agrees<Exact<Required<DecodedReserveTransfer>["refund"], string | null>>,
+  Agrees<Exact<Required<DecodedReserveTransfer>["secondReserve"], string | null>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["tokens"], TokenAmount[]>>,
 ];
 
