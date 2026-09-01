@@ -67,6 +67,87 @@ export interface TokenSendRequest {
     feePerKb?: string | null;
 }
 
+/**
+ * What to convert, into what, and out of which coins.
+ *
+ * A conversion is a request at an UNKNOWN PRICE. The transaction says what goes
+ * in and where the result should land; it says nothing about what comes out.
+ * The chain performs the conversion when it imports the output, a block later
+ * at best, at whatever the reserve ratios are then — and the protocol has no
+ * slippage bound. A wallet showing a user a number must show it as an estimate.
+ */
+export interface ConvertRequest {
+    /**
+     * P2PKH outputs funding the native side: the amount plus the fee when the
+     * source is the chain's own currency, the fee alone when it is a token —
+     * plus the miner fee either way.
+     */
+    utxos: Utxo[];
+    /**
+     * Outputs carrying the source currency, when it is a token. Empty when
+     * converting the chain's own currency. Every one is spent whole and the
+     * surplus returns as change, so a token input left out is a token burned.
+     */
+    tokenFunding?: Utxo[] | null;
+    /** The currency being spent, as an `i…` address. */
+    from: string;
+    /** How much of it, in its smallest unit, as a decimal string. */
+    amount: string;
+    /**
+     * Which kind of conversion.
+     *
+     * Minting and burning are deliberately absent: a burn cannot be undone and
+     * a mint needs a controlling identity's authority, so neither is one
+     * mistyped string away. Use `planBurn` and `planMint`.
+     */
+    kind: "intoFractional" | "intoReserve" | "reserveToReserve" | "preconvert";
+    /** The currency being bought — the fractional, the reserve, or the target. */
+    into: string;
+    /**
+     * The fractional to route through. ONLY for `"reserveToReserve"`, and
+     * refused for every other kind rather than ignored.
+     */
+    via?: string | null;
+    /** Where the converted value should land. */
+    recipient: string;
+    /**
+     * Where a refund goes if the conversion does not happen. Defaults to the
+     * signing key's own address.
+     *
+     * Separate from `recipient` because the two differ when you convert on
+     * somebody else's behalf, and naming the recipient twice then sends them
+     * your money back as well as your conversion. For a preconvert this is the
+     * ordinary path, not a corner case: a launch that misses its minimum
+     * refunds every contribution.
+     */
+    refund?: string | null;
+    /**
+     * The chain's own currency, as an `i…` address.
+     *
+     * Required. It decides whether the conversion is funded from `utxos` or
+     * from `tokenFunding`, and getting it wrong builds a transaction whose
+     * value does not conserve.
+     */
+    chainCurrency: string;
+    /** The currency the conversion fee is paid in. Defaults to `chainCurrency`. */
+    feeCurrency?: string | null;
+    /**
+     * The conversion fee, in `feeCurrency`'s smallest unit, as a decimal string.
+     *
+     * CHAIN POLICY, NOT A CONSTANT. Read it from `estimateconversion` rather
+     * than hard-coding one: the daemon charged 0.0002001 for a conversion and
+     * 0.0002 for a burn on VRSCTEST, and neither figure is guaranteed to hold
+     * on another chain or after a parameter change.
+     */
+    fee: string;
+    /** Where change returns. Must be an `R…` address. */
+    changeAddress: string;
+    /** The height past which this transaction can no longer be mined. `0` is refused. */
+    expiryHeight?: number | null;
+    /** Miner fee rate in satoshis per kilobyte, as a decimal string. */
+    feePerKb?: string | null;
+}
+
 /** One outpoint: which output of which transaction. */
 export interface Outpoint {
     /** The transaction, in display order. */
@@ -1362,6 +1443,7 @@ export type LaunchStep = PlanStep<Launched>;
 export interface Requests {
     SendRequest: SendRequest;
     TokenSendRequest: TokenSendRequest;
+    ConvertRequest: ConvertRequest;
     SignRequest: SignRequest;
     VerifyRequest: VerifyRequest;
     PlanSendRequest: PlanSendRequest;

@@ -117,7 +117,12 @@ impl JsTokenRecipient {
 }
 
 /// The fee rate, or the SDK's default when none was given.
-fn fee_per_kb(supplied: &Option<String>) -> WasmResult<u64> {
+pub(crate) fn fee_per_kb(supplied: &Option<String>) -> WasmResult<u64> {
+    fee_per_kb_from(supplied)
+}
+
+/// The shared body, so the request path and `estimateFee` cap identically.
+fn fee_per_kb_from(supplied: &Option<String>) -> WasmResult<u64> {
     match supplied {
         None => Ok(verus_tx::fee::DEFAULT_FEE_PER_KB),
         Some(text) => {
@@ -147,7 +152,98 @@ fn fee_per_kb(supplied: &Option<String>) -> WasmResult<u64> {
 ///
 /// Not a consensus rule — a sanity bound, so that caller-controlled arithmetic
 /// crossing the boundary cannot overflow and land on the minimum fee.
-const MAX_FEE_PER_KB: u64 = verus_tx::SATS_PER_COIN;
+pub(crate) const MAX_FEE_PER_KB: u64 = verus_tx::SATS_PER_COIN;
+
+/// What a transparent transaction of this shape will cost in miner fee.
+///
+/// # Why a wallet needs this before it builds anything
+///
+/// [`Key::send`] reports the fee it charged, which is the honest number — but
+/// it reports it *after* signing, and by then a key has been derived and an
+/// amount has been committed to. A wallet has questions it must answer earlier:
+/// whether a balance can cover an amount at all, what a "send everything" leaves
+/// once the transaction has been paid for, and which coins to select. Each is a
+/// prediction, and each is wrong in a way that costs the user if it disagrees
+/// with what the builder will actually charge.
+///
+/// So this is the same function the builder itself uses, exposed rather than
+/// re-implemented. A wallet that estimates with its own copy of the arithmetic
+/// has two fee models, and the day they disagree is the day it shows one number
+/// and signs another.
+///
+/// ```js
+/// // Can this balance cover 1.5 coins, once the fee is paid?
+/// const fee = estimateFee(1, 2, null, false);
+/// if (balance < parseCoins("1.5") + BigInt(fee)) refuse();
+/// ```
+///
+/// `numOutputs` should include the change output, whether or not one is
+/// emitted: selection budgets for it either way, so an estimate that leaves it
+/// out is an estimate the builder can exceed.
+///
+/// `hasSmartOutputs` sizes outputs as CryptoCondition scripts rather than
+/// P2PKH. It follows the **currency**, not the address type: a native send to a
+/// VerusID is still sized as P2PKH, and a token send is not, whatever it pays.
+///
+/// `feePerKb` is a decimal string, or `null` for the SDK's own rate.
+///
+/// # This is an estimate of a rate-based model
+///
+/// It is `ceil(size × feePerKb / 1000)`, floored at the minimum fee, over a
+/// size estimated from input and output counts. That is what this SDK charges.
+/// It is **not** what the daemon's relay minimum computes, which is priced by
+/// output count and has no size term at all — the two agree on ordinary shapes
+/// because the floor hides the difference, and diverge on shapes with many
+/// outputs.
+#[wasm_bindgen(js_name = estimateFee)]
+pub fn estimate_fee(
+    num_inputs: u32,
+    num_outputs: u32,
+    fee_per_kb: crate::types::JsOptionalText,
+    has_smart_outputs: bool,
+) -> Result<String, WasmError> {
+    estimate_fee_core(
+        num_inputs,
+        num_outputs,
+        dto::optional_text("feePerKb", &fee_per_kb)?,
+        has_smart_outputs,
+    )
+}
+
+/// Host-testable core of [`estimate_fee`].
+pub(crate) fn estimate_fee_core(
+    num_inputs: u32,
+    num_outputs: u32,
+    fee_per_kb: Option<String>,
+    has_smart_outputs: bool,
+) -> WasmResult<String> {
+    let rate = fee_per_kb_from(&fee_per_kb)?;
+    let fee = verus_tx::estimate_fee(
+        u64::from(num_inputs),
+        u64::from(num_outputs),
+        rate,
+        has_smart_outputs,
+    )?;
+    Ok(fee.to_string())
+}
+
+/// The SDK's own fee rate, as a decimal string, so a caller can assert against
+/// it rather than hard-coding a copy that later drifts.
+#[wasm_bindgen(js_name = defaultFeePerKb)]
+pub fn default_fee_per_kb() -> String {
+    verus_tx::fee::DEFAULT_FEE_PER_KB.to_string()
+}
+
+/// The value below which an output is dust and is folded into the fee instead
+/// of being written.
+///
+/// A wallet that predicts its own change needs this: change at or below it does
+/// not become an output, so a balance check that expects one is wrong by
+/// exactly this much.
+#[wasm_bindgen(js_name = dustThreshold)]
+pub fn dust_threshold() -> String {
+    verus_tx::fee::DUST_THRESHOLD.to_string()
+}
 
 /// Build and sign a native send. Host-testable core of [`send`].
 pub(crate) fn build_send(
@@ -339,6 +435,56 @@ mod tests {
         assert_eq!(150_000_000 + fee + change, 1_000_000_000);
         assert_eq!(signed.inputs_used.len(), 1);
         assert_eq!(signed.inputs_used[0].vout, 0);
+    }
+
+    /// The whole point of exposing the estimator: it has to agree with what the
+    /// builder charges for the shape it describes. A wallet that predicts with
+    /// one model and signs with another shows a user one number and spends
+    /// another.
+    #[test]
+    fn the_estimate_is_what_the_builder_actually_charges() {
+        let signed = build_send(&key(), &request()).unwrap();
+        // One input, and the payment plus change.
+        let predicted = estimate_fee_core(1, 2, None, false).unwrap();
+        assert_eq!(signed.fee, predicted);
+    }
+
+    /// An omitted rate must be the SDK's own, and the accessor must report the
+    /// same one — a caller asserting against a hard-coded copy is how the two
+    /// drift.
+    #[test]
+    fn the_reported_default_rate_is_the_rate_that_is_used() {
+        assert_eq!(default_fee_per_kb(), "10000");
+        assert_eq!(fee_per_kb(&None).unwrap().to_string(), default_fee_per_kb());
+        assert_eq!(
+            estimate_fee_core(1, 2, None, false).unwrap(),
+            estimate_fee_core(1, 2, Some(default_fee_per_kb()), false).unwrap()
+        );
+    }
+
+    /// A CryptoCondition output is sized larger, so a token shape must not
+    /// estimate the same as a plain one once the floor is cleared.
+    #[test]
+    fn a_smart_output_is_not_sized_as_a_plain_one() {
+        let plain = estimate_fee_core(2, 3, None, false).unwrap();
+        let smart = estimate_fee_core(2, 3, None, true).unwrap();
+        assert_ne!(plain, smart);
+        assert!(smart.parse::<u64>().unwrap() > plain.parse::<u64>().unwrap());
+    }
+
+    /// The floor is what hides the model on ordinary shapes, and a caller
+    /// relying on the estimate needs it to be the floor the builder uses.
+    #[test]
+    fn a_small_transaction_pays_the_minimum_not_less() {
+        assert_eq!(estimate_fee_core(1, 1, None, false).unwrap(), "10000");
+    }
+
+    /// A rate above the ceiling is refused rather than wrapping to the minimum.
+    #[test]
+    fn an_absurd_rate_is_refused_by_the_estimator_too() {
+        let error = estimate_fee_core(1, 2, Some("100000001".into()), false)
+            .expect_err("one coin per kilobyte is the ceiling");
+        assert_eq!(error.code(), "FeeRateTooLarge", "{error}");
     }
 
     #[test]

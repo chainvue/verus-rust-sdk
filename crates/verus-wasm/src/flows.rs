@@ -1052,9 +1052,10 @@ impl PlanConvertRequest {
 
 /// Resolve a conversion kind from the three flat fields that carry it.
 ///
-/// Shared by `planConvert` and `planConvertFromIdentity` so the two cannot
-/// drift on which strings are accepted or which combinations are refused.
-fn conversion_kind_of(
+/// Shared by `planConvert`, `planConvertFromIdentity` and the direct
+/// [`Key::convert`](crate::convert) builder, so they cannot drift on which
+/// strings are accepted or which combinations are refused.
+pub(crate) fn conversion_kind_of(
     kind: &str,
     into_text: &str,
     via: &Option<String>,
