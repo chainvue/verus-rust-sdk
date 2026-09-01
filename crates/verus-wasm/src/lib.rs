@@ -87,6 +87,7 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+pub mod convert;
 pub mod decode;
 pub mod dto;
 pub mod error;

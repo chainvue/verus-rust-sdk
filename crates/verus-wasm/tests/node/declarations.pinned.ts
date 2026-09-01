@@ -39,16 +39,20 @@ import type {
   ContentRequest,
   ContentStep,
   ContentValue,
+  ConvertRequest,
   CurrencyDefinition,
   DecodedIdentityCommitment,
   DecodedIdentityPayment,
   DecodedIdentityPrimary,
+  DecodedInput,
   DecodedOutput,
   DecodedPubKey,
   DecodedPubKeyHash,
   DecodedReserveDeposit,
   DecodedReserveOutput,
   DecodedReserveTransfer,
+  DecodedTransaction,
+  DecodedTxOut,
   DecodedUnknown,
   DecodedUnsupportedCryptoCondition,
   Demand,
@@ -171,6 +175,26 @@ type _TokenSendRequest = [
   Agrees<Exact<Required<TokenSendRequest>["utxos"], Utxo[]>>,
 ];
 
+type _ConvertRequest = [
+  Agrees<Exact<keyof ConvertRequest, "amount" | "chainCurrency" | "changeAddress" | "expiryHeight" | "fee" | "feeCurrency" | "feePerKb" | "from" | "into" | "kind" | "recipient" | "refund" | "tokenFunding" | "utxos" | "via">>,
+  Agrees<Exact<OptionalKeys<ConvertRequest>, "expiryHeight" | "feeCurrency" | "feePerKb" | "refund" | "tokenFunding" | "via">>,
+  Agrees<Exact<Required<ConvertRequest>["amount"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["chainCurrency"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["changeAddress"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["expiryHeight"], number | null>>,
+  Agrees<Exact<Required<ConvertRequest>["fee"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["feeCurrency"], string | null>>,
+  Agrees<Exact<Required<ConvertRequest>["feePerKb"], string | null>>,
+  Agrees<Exact<Required<ConvertRequest>["from"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["into"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["kind"], "intoFractional" | "intoReserve" | "reserveToReserve" | "preconvert">>,
+  Agrees<Exact<Required<ConvertRequest>["recipient"], string>>,
+  Agrees<Exact<Required<ConvertRequest>["refund"], string | null>>,
+  Agrees<Exact<Required<ConvertRequest>["tokenFunding"], Utxo[] | null>>,
+  Agrees<Exact<Required<ConvertRequest>["utxos"], Utxo[]>>,
+  Agrees<Exact<Required<ConvertRequest>["via"], string | null>>,
+];
+
 type _Outpoint = [
   Agrees<Exact<keyof Outpoint, "txid" | "vout">>,
   Agrees<Exact<OptionalKeys<Outpoint>, never>>,
@@ -236,6 +260,34 @@ type _MnemonicCheck = [
   Agrees<Exact<Required<MnemonicCheck>["words"], number>>,
 ];
 
+type _DecodedTransaction = [
+  Agrees<Exact<keyof DecodedTransaction, "expiryHeight" | "inputs" | "lockTime" | "outputs" | "shielded" | "txid" | "valueBalance">>,
+  Agrees<Exact<OptionalKeys<DecodedTransaction>, never>>,
+  Agrees<Exact<Required<DecodedTransaction>["expiryHeight"], number>>,
+  Agrees<Exact<Required<DecodedTransaction>["inputs"], DecodedInput[]>>,
+  Agrees<Exact<Required<DecodedTransaction>["lockTime"], number>>,
+  Agrees<Exact<Required<DecodedTransaction>["outputs"], DecodedTxOut[]>>,
+  Agrees<Exact<Required<DecodedTransaction>["shielded"], boolean>>,
+  Agrees<Exact<Required<DecodedTransaction>["txid"], string>>,
+  Agrees<Exact<Required<DecodedTransaction>["valueBalance"], string>>,
+];
+
+type _DecodedInput = [
+  Agrees<Exact<keyof DecodedInput, "sequence" | "txid" | "vout">>,
+  Agrees<Exact<OptionalKeys<DecodedInput>, never>>,
+  Agrees<Exact<Required<DecodedInput>["sequence"], number>>,
+  Agrees<Exact<Required<DecodedInput>["txid"], string>>,
+  Agrees<Exact<Required<DecodedInput>["vout"], number>>,
+];
+
+type _DecodedTxOut = [
+  Agrees<Exact<keyof DecodedTxOut, "output" | "satoshis" | "scriptPubKey">>,
+  Agrees<Exact<OptionalKeys<DecodedTxOut>, never>>,
+  Agrees<Exact<Required<DecodedTxOut>["output"], DecodedOutput>>,
+  Agrees<Exact<Required<DecodedTxOut>["satoshis"], string>>,
+  Agrees<Exact<Required<DecodedTxOut>["scriptPubKey"], string>>,
+];
+
 type _DecodedPubKeyHash = [
   Agrees<Exact<keyof DecodedPubKeyHash, "address" | "kind">>,
   Agrees<Exact<OptionalKeys<DecodedPubKeyHash>, never>>,
@@ -294,8 +346,8 @@ type _DecodedReserveDeposit = [
 ];
 
 type _DecodedReserveTransfer = [
-  Agrees<Exact<keyof DecodedReserveTransfer, "address" | "destinationCurrency" | "feeCurrency" | "fees" | "flags" | "kind" | "recipient" | "tokens">>,
-  Agrees<Exact<OptionalKeys<DecodedReserveTransfer>, never>>,
+  Agrees<Exact<keyof DecodedReserveTransfer, "address" | "destinationCurrency" | "feeCurrency" | "fees" | "flags" | "kind" | "recipient" | "refund" | "secondReserve" | "tokens">>,
+  Agrees<Exact<OptionalKeys<DecodedReserveTransfer>, "refund" | "secondReserve">>,
   Agrees<Exact<Required<DecodedReserveTransfer>["address"], string>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["destinationCurrency"], string>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["feeCurrency"], string>>,
@@ -303,6 +355,8 @@ type _DecodedReserveTransfer = [
   Agrees<Exact<Required<DecodedReserveTransfer>["flags"], number>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["kind"], "reserveTransfer">>,
   Agrees<Exact<Required<DecodedReserveTransfer>["recipient"], string>>,
+  Agrees<Exact<Required<DecodedReserveTransfer>["refund"], string | null>>,
+  Agrees<Exact<Required<DecodedReserveTransfer>["secondReserve"], string | null>>,
   Agrees<Exact<Required<DecodedReserveTransfer>["tokens"], TokenAmount[]>>,
 ];
 
@@ -729,9 +783,10 @@ type _Launched = [
 ];
 
 type _Requests = [
-  Agrees<Exact<keyof Requests, "ContentRequest" | "HistoryRequest" | "LoginRequest" | "OfferTermsRequest" | "OffersRequest" | "PendingRequest" | "PlanBurnRequest" | "PlanConvertFromIdentityRequest" | "PlanConvertRequest" | "PlanLaunchRequest" | "PlanMintRequest" | "PlanPublishRequest" | "PlanRegistrationRequest" | "PlanSendFromIdentityRequest" | "PlanSendRequest" | "PlanSendTokenFromIdentityRequest" | "PlanSendTokenRequest" | "SendRequest" | "SignRequest" | "SpendableRequest" | "TakeOfferRequest" | "TokenSendRequest" | "VerifyLoginRequest" | "VerifyRequest">>,
+  Agrees<Exact<keyof Requests, "ContentRequest" | "ConvertRequest" | "HistoryRequest" | "LoginRequest" | "OfferTermsRequest" | "OffersRequest" | "PendingRequest" | "PlanBurnRequest" | "PlanConvertFromIdentityRequest" | "PlanConvertRequest" | "PlanLaunchRequest" | "PlanMintRequest" | "PlanPublishRequest" | "PlanRegistrationRequest" | "PlanSendFromIdentityRequest" | "PlanSendRequest" | "PlanSendTokenFromIdentityRequest" | "PlanSendTokenRequest" | "SendRequest" | "SignRequest" | "SpendableRequest" | "TakeOfferRequest" | "TokenSendRequest" | "VerifyLoginRequest" | "VerifyRequest">>,
   Agrees<Exact<OptionalKeys<Requests>, never>>,
   Agrees<Exact<Required<Requests>["ContentRequest"], ContentRequest>>,
+  Agrees<Exact<Required<Requests>["ConvertRequest"], ConvertRequest>>,
   Agrees<Exact<Required<Requests>["HistoryRequest"], HistoryRequest>>,
   Agrees<Exact<Required<Requests>["LoginRequest"], LoginRequest>>,
   Agrees<Exact<Required<Requests>["OfferTermsRequest"], OfferTermsRequest>>,
