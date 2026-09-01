@@ -93,9 +93,13 @@ and reassembled a coherent inner ciphertext across the two contiguous
 will actually take.
 
 Both txs mined in the first block after broadcast (65 s and 45 s), the fee
-padding held: 52,400 sat on 5,235 bytes at 4 KB, 118,400 sat on 11,632 bytes
-at 10 KB — within 0.1 %–1.8 % of `DEFAULT_FEE_PER_KB = 10,000` sat/KB, so
-the `SMART_OUTPUT_SIZE`-based padding tracks real script bytes closely.
+padding held: 52,400 sat on 5,235 total tx bytes at 4 KB, 118,400 sat on
+11,632 total tx bytes at 10 KB — within 0.1 %–1.8 % of `DEFAULT_FEE_PER_KB
+= 10,000` sat/KB, so the `SMART_OUTPUT_SIZE`-based padding tracks real
+script bytes closely. Those totals are full serialized tx size (hex-length
+/ 2), which is what `DEFAULT_FEE_PER_KB` is gated against; the aux
+`scriptPubKey` sums `build_identity_update` pads over are smaller — 4,353 B
+at 4 KB, 5,887 + 4,850 = 10,737 B at 10 KB.
 
 Two rejection probes settle the daemon-side constraints named in that
 field's doc comment, and cost nothing:
