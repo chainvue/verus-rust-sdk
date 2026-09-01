@@ -121,6 +121,24 @@ pub enum DecodedOutput {
         /// Not `address`, which is the same for every transfer on the chain —
         /// the real recipient travels inside the payload.
         recipient: String,
+        /// Where the value comes back to if the conversion does not happen.
+        ///
+        /// `None` for a burn and a mint, which carry a plain destination
+        /// because neither has anything to refund. A wallet checking what it
+        /// signed has to be able to see this: a preconversion into a launch
+        /// that misses its minimum refunds EVERY contribution, so the refund
+        /// address is an ordinary outcome rather than a rare one, and one that
+        /// was changed is value going somewhere nobody asked for.
+        refund: Option<String>,
+        /// The reserve currency actually being bought, when the transfer routes
+        /// through a basket.
+        ///
+        /// Present only for a reserve-to-reserve conversion, where
+        /// `destinationCurrency` is the basket routed THROUGH and this is the
+        /// far side. Without it those two conversions are indistinguishable
+        /// from the outside — same source, same via, different destination —
+        /// and a wallet cannot verify where its money ends up.
+        second_reserve: Option<String>,
     },
     /// An eval code this SDK does not decode. Do not spend it.
     UnsupportedCryptoCondition {
@@ -233,6 +251,16 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             fees: transfer.fees.to_string(),
             destination_currency: dto::identity_address(transfer.destination_currency.to_bytes()),
             recipient: destination_address(&transfer.destination.recipient),
+            // The FIRST auxiliary is the refund; the templates this SDK builds
+            // write exactly one, and a burn or a mint writes none.
+            refund: transfer
+                .destination
+                .auxiliary
+                .first()
+                .map(destination_address),
+            second_reserve: transfer
+                .second_reserve
+                .map(|currency| dto::identity_address(currency.to_bytes())),
         },
         OutputKind::UnsupportedCryptoCondition {
             eval_code,

@@ -475,6 +475,26 @@ export interface DecodedReserveTransfer {
      * real recipient travels in the payload.
      */
     recipient: string;
+    /**
+     * Where the value comes back to if the conversion does not happen.
+     *
+     * Absent for a burn and a mint, which carry a plain destination because
+     * neither has anything to refund. A wallet checking what it signed has to
+     * see this: a preconversion into a launch that misses its minimum refunds
+     * EVERY contribution, so a changed refund address is value going somewhere
+     * nobody asked for.
+     */
+    refund?: string | null;
+    /**
+     * The reserve currency actually being bought, when the transfer routes
+     * through a basket.
+     *
+     * Present only for a reserve-to-reserve conversion, where
+     * `destinationCurrency` is the basket routed THROUGH and this is the far
+     * side. Without it two conversions with the same source and the same via
+     * but different destinations look identical from the outside.
+     */
+    secondReserve?: string | null;
 }
 
 /** An eval code this SDK does not decode. Do not select it as funding. */

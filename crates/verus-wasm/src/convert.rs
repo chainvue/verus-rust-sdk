@@ -334,6 +334,70 @@ mod tests {
         assert_eq!(transfer.2, "20000", "the fee that was asked for");
     }
 
+    /// A routed conversion must report BOTH currencies, or a wallet cannot tell
+    /// where its money ends up.
+    ///
+    /// `destinationCurrency` is the basket routed THROUGH; the far side lives
+    /// in `secondReserve`. Two conversions with the same source and the same
+    /// via but different targets are otherwise indistinguishable from outside.
+    #[test]
+    fn a_routed_conversion_reports_the_basket_and_the_target_separately() {
+        let mut request = request();
+        request.kind = "reserveToReserve".into();
+        request.via = Some(BRIDGE.into());
+        request.into = VETH.into();
+
+        let signed = build_convert(&key(), &request).unwrap();
+        let decoded = crate::decode::decode_tx(&signed.hex).unwrap();
+        let transfer = decoded
+            .outputs
+            .iter()
+            .find_map(|out| match &out.output {
+                crate::decode::DecodedOutput::ReserveTransfer {
+                    destination_currency,
+                    second_reserve,
+                    ..
+                } => Some((destination_currency.clone(), second_reserve.clone())),
+                _ => None,
+            })
+            .expect("a conversion carries a reserve transfer");
+
+        assert_eq!(transfer.0, BRIDGE, "the basket routed through");
+        assert_eq!(
+            transfer.1.as_deref(),
+            Some(VETH),
+            "the reserve being bought"
+        );
+    }
+
+    /// The refund address has to be readable back, or the one field that
+    /// decides where a failed preconversion returns to cannot be checked.
+    #[test]
+    fn the_refund_address_is_readable_back_from_the_bytes() {
+        let mut request = request();
+        request.recipient = STRANGER.into();
+
+        let signed = build_convert(&key(), &request).unwrap();
+        let decoded = crate::decode::decode_tx(&signed.hex).unwrap();
+        let transfer = decoded
+            .outputs
+            .iter()
+            .find_map(|out| match &out.output {
+                crate::decode::DecodedOutput::ReserveTransfer {
+                    recipient, refund, ..
+                } => Some((recipient.clone(), refund.clone())),
+                _ => None,
+            })
+            .expect("a conversion carries a reserve transfer");
+
+        assert_eq!(transfer.0, STRANGER, "the value goes to the recipient");
+        assert_eq!(
+            transfer.1.as_deref(),
+            Some(key().address().to_string().as_str()),
+            "and a refund comes back to the signer, not to them",
+        );
+    }
+
     /// A native conversion's output must carry amount PLUS fee. Getting this
     /// backwards builds a transaction whose value does not conserve — or one
     /// that quietly hands the difference to a miner.

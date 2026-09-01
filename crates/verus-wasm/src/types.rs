@@ -1850,6 +1850,11 @@ const exercised: {
                 fees: String::new(),
                 destination_currency: String::new(),
                 recipient: String::new(),
+                // `Some`, not `None`: the drift guard learns a variant's fields
+                // from what it serializes, and an absent optional is a field it
+                // would never see.
+                refund: Some(String::new()),
+                second_reserve: Some(String::new()),
             },
             DecodedOutput::UnsupportedCryptoCondition {
                 eval_code: 0,
