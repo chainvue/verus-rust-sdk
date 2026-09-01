@@ -23,7 +23,14 @@ export interface Recipient {
 
 /** One token payment. */
 export interface TokenRecipient {
-    /** The `R…` address being paid. */
+    /**
+     * The address being paid — an `R…` key or an `i…` VerusID.
+     *
+     * Tokens held by a VerusID are an ordinary shape, spendable by that
+     * identity's authority. Note the asymmetry: this SDK can PAY one and
+     * cannot SPEND one, because every signing path here produces a
+     * P2PKH-shaped fulfillment.
+     */
     address: string;
     /** Which token, named by its `i…` currency address. */
     currency: string;
