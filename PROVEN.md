@@ -53,6 +53,8 @@ arrived was valid.
 | **Recovery authority moved off self**, signed only by the identity's own primary keys → `vdxf1171008.VRSCTEST@` | `e3994443922e3a2e01e42b5a830ac48314d3fae60d4cb8c3859db2a4b8f9058a` | 1177036 |
 | **Timelock set** — `DelayAfterUnlock(2)`, flag and delay together | `19d1f39798c36f40855ec45cfd0336eb8a94d0219ceef6b89c1963dae6570f5d` | 1177369 |
 | **…countdown started** at `delay + expiry`, by `flows::prepare_identity_unlock` | `3b01d18435320eb7797667c9caaf2ee009fa0569a1a5497da69ef081bb12394f` | 1177370 |
+| **`updateidentity` with `additional_outputs`** — `flags:13` cmm entry pointing at a self-referenced 4 KB `EVAL_NOTARY_EVIDENCE` aux at vout 0, identity primary at vout 1 → `broom.VRSCTEST@` | `4496d1f901bdc087d55f8625c132c132114122844aaa1af1ad2c8b7ee412e2e2` | 1205548 |
+| **…and the multi-chunk path** — 10 KB payload split across two contiguous `MULTIPART` aux outputs (vouts 0-1), identity at vout 2; daemon reader reassembled | `f6d39d6b7b743f5825c4d7e80545843130fb7d1416ba7c3d03b63e7dee4bc1dc` | 1205581 |
 
 The two `vdxf::publish` rows are where the erase invariant is settled, and the
 second is the one that matters. An identity update
@@ -77,6 +79,38 @@ run then tried to move it back with the same keys and consensus refused, so it
 is **not** freely editable either. Both halves come from one test,
 `live_authority`, and the second costs nothing because a rejected transaction is
 never mined.
+
+The two **`additional_outputs`** rows settle the aux vout layout established
+by `UpdateParams::additional_outputs` (#193). The 4 KB row is the byte-oracle:
+the deterministic plaintext (`bytes[i] = i & 0xff`, SHA-256
+`c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193`) was
+decrypted from the aux output using the outer ivk published in the cmm entry
+(`f7d64c815477fd404ee98192ea7d2bd84c7c4c4fe307f7ccbe3027ed95dd530a`) and
+byte-matched exactly. The 10 KB row exercises the chunking half — the
+daemon's `decryptdata` walked stage 1, resolved the self-ref `CVDXFDataRef`,
+and reassembled a coherent inner ciphertext across the two contiguous
+`MULTIPART` aux outputs, proving the reader path that any `>5.8 KB` payload
+will actually take.
+
+Both txs mined in the first block after broadcast (65 s and 45 s), the fee
+padding held: 52,400 sat on 5,235 total tx bytes at 4 KB, 118,400 sat on
+11,632 total tx bytes at 10 KB — within 0.1 %–1.8 % of `DEFAULT_FEE_PER_KB
+= 10,000` sat/KB, so the `SMART_OUTPUT_SIZE`-based padding tracks real
+script bytes closely. Those totals are full serialized tx size (hex-length
+/ 2), which is what `DEFAULT_FEE_PER_KB` is gated against; the aux
+`scriptPubKey` sums `build_identity_update` pads over are smaller — 4,353 B
+at 4 KB, 5,887 + 4,850 = 10,737 B at 10 KB.
+
+Two rejection probes settle the daemon-side constraints named in that
+field's doc comment, and cost nothing:
+
+* Aux `EVAL_NOTARY_EVIDENCE` with `TYPE_NOTARY_EVIDENCE` (1) instead of
+  `TYPE_IMPORT_PROOF` (3) → `-25 bad-txns-failed-precheck`. Matches the
+  `PreCheckNotaryEvidence` (`src/pbaas/notarization.cpp:11113`) citation.
+* Second `EVAL_IDENTITY_PRIMARY` aux for the same identity → `-26
+  mandatory-script-verify-flag-failed`. Rejected during script verification
+  rather than at the earlier `CIdentity(tx, ...)` precheck the doc named,
+  but rejected all the same.
 
 ## The timelock floor, and the four values that settle it
 
