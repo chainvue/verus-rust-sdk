@@ -281,25 +281,6 @@ export interface MnemonicCheck {
 }
 
 /**
- * What an output turned out to be. Switch on `kind`.
- *
- * A discriminated union, so a field belongs to the shape that has it and to no
- * other: `output.fees` is a compile error until `kind` has been narrowed to
- * `reserveTransfer`, and once narrowed it is a `string` rather than a
- * `string | undefined` you have to assert your way past.
- *
- * ```ts
- * switch (output.kind) {
- *   case "pubKeyHash": return pay(output.address);
- *   case "reserveOutput": return credit(output.address, output.tokens);
- *   default: return leaveAlone();   // including anything added later
- * }
- * ```
- *
- * A caller with no branch for `unsupportedCryptoCondition` is a caller that
- * will one day spend an output it could not read.
- */
-/**
  * A transaction, read back from its own bytes.
  *
  * What `decodeTransaction` returns. The `txid` is computed from the bytes
@@ -359,6 +340,25 @@ export interface DecodedTxOut {
     output: DecodedOutput;
 }
 
+/**
+ * What an output turned out to be. Switch on `kind`.
+ *
+ * A discriminated union, so a field belongs to the shape that has it and to no
+ * other: `output.fees` is a compile error until `kind` has been narrowed to
+ * `reserveTransfer`, and once narrowed it is a `string` rather than a
+ * `string | undefined` you have to assert your way past.
+ *
+ * ```ts
+ * switch (output.kind) {
+ *   case "pubKeyHash": return pay(output.address);
+ *   case "reserveOutput": return credit(output.address, output.tokens);
+ *   default: return leaveAlone();   // including anything added later
+ * }
+ * ```
+ *
+ * A caller with no branch for `unsupportedCryptoCondition` is a caller that
+ * will one day spend an output it could not read.
+ */
 export type DecodedOutput =
     | DecodedPubKeyHash
     | DecodedPubKey
