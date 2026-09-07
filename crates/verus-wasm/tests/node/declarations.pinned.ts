@@ -43,12 +43,15 @@ import type {
   DecodedIdentityCommitment,
   DecodedIdentityPayment,
   DecodedIdentityPrimary,
+  DecodedInput,
   DecodedOutput,
   DecodedPubKey,
   DecodedPubKeyHash,
   DecodedReserveDeposit,
   DecodedReserveOutput,
   DecodedReserveTransfer,
+  DecodedTransaction,
+  DecodedTxOut,
   DecodedUnknown,
   DecodedUnsupportedCryptoCondition,
   Demand,
@@ -234,6 +237,34 @@ type _MnemonicCheck = [
   Agrees<Exact<Required<MnemonicCheck>["reason"], "wordCount" | "unknownWord" | "checksum">>,
   Agrees<Exact<Required<MnemonicCheck>["valid"], boolean>>,
   Agrees<Exact<Required<MnemonicCheck>["words"], number>>,
+];
+
+type _DecodedTransaction = [
+  Agrees<Exact<keyof DecodedTransaction, "expiryHeight" | "inputs" | "lockTime" | "outputs" | "shielded" | "txid" | "valueBalance">>,
+  Agrees<Exact<OptionalKeys<DecodedTransaction>, never>>,
+  Agrees<Exact<Required<DecodedTransaction>["expiryHeight"], number>>,
+  Agrees<Exact<Required<DecodedTransaction>["inputs"], DecodedInput[]>>,
+  Agrees<Exact<Required<DecodedTransaction>["lockTime"], number>>,
+  Agrees<Exact<Required<DecodedTransaction>["outputs"], DecodedTxOut[]>>,
+  Agrees<Exact<Required<DecodedTransaction>["shielded"], boolean>>,
+  Agrees<Exact<Required<DecodedTransaction>["txid"], string>>,
+  Agrees<Exact<Required<DecodedTransaction>["valueBalance"], string>>,
+];
+
+type _DecodedInput = [
+  Agrees<Exact<keyof DecodedInput, "sequence" | "txid" | "vout">>,
+  Agrees<Exact<OptionalKeys<DecodedInput>, never>>,
+  Agrees<Exact<Required<DecodedInput>["sequence"], number>>,
+  Agrees<Exact<Required<DecodedInput>["txid"], string>>,
+  Agrees<Exact<Required<DecodedInput>["vout"], number>>,
+];
+
+type _DecodedTxOut = [
+  Agrees<Exact<keyof DecodedTxOut, "output" | "satoshis" | "scriptPubKey">>,
+  Agrees<Exact<OptionalKeys<DecodedTxOut>, never>>,
+  Agrees<Exact<Required<DecodedTxOut>["output"], DecodedOutput>>,
+  Agrees<Exact<Required<DecodedTxOut>["satoshis"], string>>,
+  Agrees<Exact<Required<DecodedTxOut>["scriptPubKey"], string>>,
 ];
 
 type _DecodedPubKeyHash = [

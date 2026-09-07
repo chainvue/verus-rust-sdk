@@ -211,6 +211,66 @@ export interface MnemonicCheck {
  * A caller with no branch for `unsupportedCryptoCondition` is a caller that
  * will one day spend an output it could not read.
  */
+/**
+ * A transaction, read back from its own bytes.
+ *
+ * What `decodeTransaction` returns. The `txid` is computed from the bytes
+ * given, so comparing it against the one a builder reported is a real check
+ * and not a restatement.
+ */
+export interface DecodedTransaction {
+    /** The txid of THESE bytes, in the display order a daemon prints. */
+    txid: string;
+    /**
+     * `nExpiryHeight` — the height after which the chain will not mine this
+     * transaction. `0` means it never expires, which for a wallet-built
+     * transaction is almost always a mistake worth refusing.
+     */
+    expiryHeight: number;
+    /** `nLockTime`, as written. */
+    lockTime: number;
+    /**
+     * Whether any shielded component is present.
+     *
+     * Summing transparent outputs accounts for the whole transaction only when
+     * this is `false`.
+     */
+    shielded: boolean;
+    /**
+     * `valueBalance` in satoshis, as a decimal string. Signed: negative when
+     * value enters the shielded pool.
+     */
+    valueBalance: string;
+    /** What is spent. */
+    inputs: DecodedInput[];
+    /** What is paid. */
+    outputs: DecodedTxOut[];
+}
+
+/** One transparent input. */
+export interface DecodedInput {
+    /** The outpoint's transaction, in display order. */
+    txid: string;
+    /** Which output of it is spent. */
+    vout: number;
+    /** `nSequence`, as written. */
+    sequence: number;
+}
+
+/** One transparent output. */
+export interface DecodedTxOut {
+    /** Native value in satoshis, as a decimal string. */
+    satoshis: string;
+    /** The scriptPubKey, as hex. */
+    scriptPubKey: string;
+    /**
+     * What that script is. A reserve output's token payload lives here, not in
+     * `satoshis` — the two are separate value and adding them is double
+     * counting.
+     */
+    output: DecodedOutput;
+}
+
 export type DecodedOutput =
     | DecodedPubKeyHash
     | DecodedPubKey
