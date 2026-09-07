@@ -541,7 +541,7 @@ const FLAG_MASK: u8 = 16 | 32 | FLAG_DEST_AUX | FLAG_DEST_GATEWAY;
 ///
 /// A script hash is still refused: no template here writes one, and guessing
 /// an untested encoding for money is not worth the convenience.
-fn destination_for(address: &Address) -> Result<Destination, TxError> {
+pub(crate) fn destination_for(address: &Address) -> Result<Destination, TxError> {
     match address.kind() {
         AddressKind::PubKeyHash => Ok(Destination::PubKeyHash(address.hash())),
         AddressKind::Identity => Ok(Destination::Identity(address.hash())),

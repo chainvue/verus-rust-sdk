@@ -23,7 +23,14 @@ export interface Recipient {
 
 /** One token payment. */
 export interface TokenRecipient {
-    /** The `R…` address being paid. */
+    /**
+     * The address being paid — an `R…` key or an `i…` VerusID.
+     *
+     * Tokens held by a VerusID are an ordinary shape, spendable by that
+     * identity's authority. Note the asymmetry: this SDK can PAY one and
+     * cannot SPEND one, because every signing path here produces a
+     * P2PKH-shaped fulfillment.
+     */
     address: string;
     /** Which token, named by its `i…` currency address. */
     currency: string;
@@ -64,6 +71,87 @@ export interface TokenSendRequest {
     /** The height past which this transaction can no longer be mined. `0` is refused. */
     expiryHeight?: number | null;
     /** Fee rate in satoshis per kilobyte, as a decimal string. Capped at one coin per kilobyte. */
+    feePerKb?: string | null;
+}
+
+/**
+ * What to convert, into what, and out of which coins.
+ *
+ * A conversion is a request at an UNKNOWN PRICE. The transaction says what goes
+ * in and where the result should land; it says nothing about what comes out.
+ * The chain performs the conversion when it imports the output, a block later
+ * at best, at whatever the reserve ratios are then — and the protocol has no
+ * slippage bound. A wallet showing a user a number must show it as an estimate.
+ */
+export interface ConvertRequest {
+    /**
+     * P2PKH outputs funding the native side: the amount plus the fee when the
+     * source is the chain's own currency, the fee alone when it is a token —
+     * plus the miner fee either way.
+     */
+    utxos: Utxo[];
+    /**
+     * Outputs carrying the source currency, when it is a token. Empty when
+     * converting the chain's own currency. Every one is spent whole and the
+     * surplus returns as change, so a token input left out is a token burned.
+     */
+    tokenFunding?: Utxo[] | null;
+    /** The currency being spent, as an `i…` address. */
+    from: string;
+    /** How much of it, in its smallest unit, as a decimal string. */
+    amount: string;
+    /**
+     * Which kind of conversion.
+     *
+     * Minting and burning are deliberately absent: a burn cannot be undone and
+     * a mint needs a controlling identity's authority, so neither is one
+     * mistyped string away. Use `planBurn` and `planMint`.
+     */
+    kind: "intoFractional" | "intoReserve" | "reserveToReserve" | "preconvert";
+    /** The currency being bought — the fractional, the reserve, or the target. */
+    into: string;
+    /**
+     * The fractional to route through. ONLY for `"reserveToReserve"`, and
+     * refused for every other kind rather than ignored.
+     */
+    via?: string | null;
+    /** Where the converted value should land. */
+    recipient: string;
+    /**
+     * Where a refund goes if the conversion does not happen. Defaults to the
+     * signing key's own address.
+     *
+     * Separate from `recipient` because the two differ when you convert on
+     * somebody else's behalf, and naming the recipient twice then sends them
+     * your money back as well as your conversion. For a preconvert this is the
+     * ordinary path, not a corner case: a launch that misses its minimum
+     * refunds every contribution.
+     */
+    refund?: string | null;
+    /**
+     * The chain's own currency, as an `i…` address.
+     *
+     * Required. It decides whether the conversion is funded from `utxos` or
+     * from `tokenFunding`, and getting it wrong builds a transaction whose
+     * value does not conserve.
+     */
+    chainCurrency: string;
+    /** The currency the conversion fee is paid in. Defaults to `chainCurrency`. */
+    feeCurrency?: string | null;
+    /**
+     * The conversion fee, in `feeCurrency`'s smallest unit, as a decimal string.
+     *
+     * CHAIN POLICY, NOT A CONSTANT. Read it from `estimateconversion` rather
+     * than hard-coding one: the daemon charged 0.0002001 for a conversion and
+     * 0.0002 for a burn on VRSCTEST, and neither figure is guaranteed to hold
+     * on another chain or after a parameter change.
+     */
+    fee: string;
+    /** Where change returns. Must be an `R…` address. */
+    changeAddress: string;
+    /** The height past which this transaction can no longer be mined. `0` is refused. */
+    expiryHeight?: number | null;
+    /** Miner fee rate in satoshis per kilobyte, as a decimal string. */
     feePerKb?: string | null;
 }
 
@@ -193,25 +281,6 @@ export interface MnemonicCheck {
 }
 
 /**
- * What an output turned out to be. Switch on `kind`.
- *
- * A discriminated union, so a field belongs to the shape that has it and to no
- * other: `output.fees` is a compile error until `kind` has been narrowed to
- * `reserveTransfer`, and once narrowed it is a `string` rather than a
- * `string | undefined` you have to assert your way past.
- *
- * ```ts
- * switch (output.kind) {
- *   case "pubKeyHash": return pay(output.address);
- *   case "reserveOutput": return credit(output.address, output.tokens);
- *   default: return leaveAlone();   // including anything added later
- * }
- * ```
- *
- * A caller with no branch for `unsupportedCryptoCondition` is a caller that
- * will one day spend an output it could not read.
- */
-/**
  * A transaction, read back from its own bytes.
  *
  * What `decodeTransaction` returns. The `txid` is computed from the bytes
@@ -271,6 +340,25 @@ export interface DecodedTxOut {
     output: DecodedOutput;
 }
 
+/**
+ * What an output turned out to be. Switch on `kind`.
+ *
+ * A discriminated union, so a field belongs to the shape that has it and to no
+ * other: `output.fees` is a compile error until `kind` has been narrowed to
+ * `reserveTransfer`, and once narrowed it is a `string` rather than a
+ * `string | undefined` you have to assert your way past.
+ *
+ * ```ts
+ * switch (output.kind) {
+ *   case "pubKeyHash": return pay(output.address);
+ *   case "reserveOutput": return credit(output.address, output.tokens);
+ *   default: return leaveAlone();   // including anything added later
+ * }
+ * ```
+ *
+ * A caller with no branch for `unsupportedCryptoCondition` is a caller that
+ * will one day spend an output it could not read.
+ */
 export type DecodedOutput =
     | DecodedPubKeyHash
     | DecodedPubKey
@@ -387,6 +475,26 @@ export interface DecodedReserveTransfer {
      * real recipient travels in the payload.
      */
     recipient: string;
+    /**
+     * Where the value comes back to if the conversion does not happen.
+     *
+     * Absent for a burn and a mint, which carry a plain destination because
+     * neither has anything to refund. A wallet checking what it signed has to
+     * see this: a preconversion into a launch that misses its minimum refunds
+     * EVERY contribution, so a changed refund address is value going somewhere
+     * nobody asked for.
+     */
+    refund?: string | null;
+    /**
+     * The reserve currency actually being bought, when the transfer routes
+     * through a basket.
+     *
+     * Present only for a reserve-to-reserve conversion, where
+     * `destinationCurrency` is the basket routed THROUGH and this is the far
+     * side. Without it two conversions with the same source and the same via
+     * but different destinations look identical from the outside.
+     */
+    secondReserve?: string | null;
 }
 
 /** An eval code this SDK does not decode. Do not select it as funding. */
@@ -1362,6 +1470,7 @@ export type LaunchStep = PlanStep<Launched>;
 export interface Requests {
     SendRequest: SendRequest;
     TokenSendRequest: TokenSendRequest;
+    ConvertRequest: ConvertRequest;
     SignRequest: SignRequest;
     VerifyRequest: VerifyRequest;
     PlanSendRequest: PlanSendRequest;

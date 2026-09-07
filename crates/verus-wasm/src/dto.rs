@@ -97,6 +97,12 @@ macro_rules! request_list {
         $consume! {
             crate::send::SendRequest => "SendRequest",
             crate::send::TokenSendRequest => "TokenSendRequest",
+            crate::convert::ConvertRequest => "ConvertRequest"
+                {
+                    via: Some(String::new()),
+                    refund: Some(String::new()),
+                    fee_currency: Some(String::new()),
+                },
             crate::login::SignRequest => "SignRequest",
             crate::login::VerifyRequest => "VerifyRequest",
             crate::flows::PlanSendRequest => "PlanSendRequest",

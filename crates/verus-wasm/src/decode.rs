@@ -121,6 +121,24 @@ pub enum DecodedOutput {
         /// Not `address`, which is the same for every transfer on the chain —
         /// the real recipient travels inside the payload.
         recipient: String,
+        /// Where the value comes back to if the conversion does not happen.
+        ///
+        /// `None` for a burn and a mint, which carry a plain destination
+        /// because neither has anything to refund. A wallet checking what it
+        /// signed has to be able to see this: a preconversion into a launch
+        /// that misses its minimum refunds EVERY contribution, so the refund
+        /// address is an ordinary outcome rather than a rare one, and one that
+        /// was changed is value going somewhere nobody asked for.
+        refund: Option<String>,
+        /// The reserve currency actually being bought, when the transfer routes
+        /// through a basket.
+        ///
+        /// Present only for a reserve-to-reserve conversion, where
+        /// `destinationCurrency` is the basket routed THROUGH and this is the
+        /// far side. Without it those two conversions are indistinguishable
+        /// from the outside — same source, same via, different destination —
+        /// and a wallet cannot verify where its money ends up.
+        second_reserve: Option<String>,
     },
     /// An eval code this SDK does not decode. Do not spend it.
     UnsupportedCryptoCondition {
@@ -233,6 +251,16 @@ pub(crate) fn decode(script_hex: &str) -> WasmResult<DecodedOutput> {
             fees: transfer.fees.to_string(),
             destination_currency: dto::identity_address(transfer.destination_currency.to_bytes()),
             recipient: destination_address(&transfer.destination.recipient),
+            // The FIRST auxiliary is the refund; the templates this SDK builds
+            // write exactly one, and a burn or a mint writes none.
+            refund: transfer
+                .destination
+                .auxiliary
+                .first()
+                .map(destination_address),
+            second_reserve: transfer
+                .second_reserve
+                .map(|currency| dto::identity_address(currency.to_bytes())),
         },
         OutputKind::UnsupportedCryptoCondition {
             eval_code,
@@ -306,6 +334,15 @@ pub struct DecodedTxOut {
     /// chain's supply already exceeds what a float64 holds exactly.
     pub satoshis: String,
     /// The scriptPubKey, as hex.
+    ///
+    /// Renamed explicitly rather than left to `rename_all`, which spells it
+    /// `scriptPubkey` — one capital away from the name every daemon, every
+    /// wallet and this crate's own `Utxo` use. `dto::JsUtxo` carries the same
+    /// rename for the same reason. On a response there is no
+    /// `deny_unknown_fields` to turn the mismatch into an error, so it
+    /// surfaces as `undefined` at a call site whose types said otherwise,
+    /// which is how it was found.
+    #[serde(rename = "scriptPubKey")]
     pub script_pubkey: String,
     /// What that script turned out to be — the same union
     /// [`decode_output`] returns, so a token amount is readable without a
@@ -648,6 +685,52 @@ mod tests {
     /// Trailing bytes are refused rather than ignored. A decoder that stops
     /// early lets two different byte strings decode to the same transaction,
     /// which is a way to be paid for something other than what was signed.
+    /// The field names a caller actually receives, pinned against the names
+    /// `types.d.ts` declares.
+    ///
+    /// The registry-driven drift guards in `types` cover REQUEST DTOs — the
+    /// ones `dto::from_js` reads — because that is the list they iterate. A
+    /// response DTO is declared in `types.d.ts` by hand and serialized by
+    /// `serde`, and nothing was comparing the two. `scriptPubKey` shipped as
+    /// `scriptPubkey` behind a declaration that said otherwise, and the only
+    /// symptom was `undefined` at a call site whose types promised a string.
+    #[test]
+    fn a_decoded_transaction_serializes_the_names_its_interface_declares() {
+        let signed = built();
+        let json = serde_json::to_value(decode_tx(&signed.hex).unwrap()).unwrap();
+
+        let object = json.as_object().expect("an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "expiryHeight",
+                "inputs",
+                "lockTime",
+                "outputs",
+                "shielded",
+                "txid",
+                "valueBalance",
+            ]
+        );
+
+        let mut input: Vec<&str> = object["inputs"][0]
+            .as_object()
+            .expect("an input")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        input.sort_unstable();
+        assert_eq!(input, ["sequence", "txid", "vout"]);
+
+        let out = object["outputs"][0].as_object().expect("an output");
+        let mut names: Vec<&str> = out.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        // `scriptPubKey`, with the capital K a daemon writes.
+        assert_eq!(names, ["output", "satoshis", "scriptPubKey"]);
+    }
+
     #[test]
     fn trailing_bytes_are_refused_not_ignored() {
         let signed = built();

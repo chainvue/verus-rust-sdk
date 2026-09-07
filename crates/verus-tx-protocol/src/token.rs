@@ -21,7 +21,9 @@ use verus_wire::hash::txid_display;
 use verus_wire::{TxIn, TxOut, TxV4};
 
 use crate::decode::{decode_output_script, OutputKind};
-use verus_tx_primitives::cc::{fulfillment_script_sig, reserve_output_script};
+use verus_tx_primitives::cc::{
+    fulfillment_script_sig, reserve_output_script, reserve_output_script_to,
+};
 use verus_tx_primitives::fee::{estimate_fee, DEFAULT_FEE_PER_KB, DUST_THRESHOLD};
 use verus_tx_primitives::Amount;
 use verus_tx_primitives::CurrencyId;
@@ -302,9 +304,20 @@ pub fn build_token_send(
 
     let mut balances = Balances::default();
     for recipient in params.recipients {
-        if recipient.address.kind() != AddressKind::PubKeyHash {
-            return Err(TxError::UnsupportedRecipient);
-        }
+        // An `i…` recipient is an ordinary token payment, not an exotic one:
+        // tokens held by a VerusID are a normal shape, spendable by that
+        // identity's authority. `destination_for` refuses a script hash, which
+        // no template here writes.
+        //
+        // This is NOT the same question as whether such an output can FUND a
+        // transaction — see `reject_unspendable_reserve`, which refuses exactly
+        // the identity-held output this may now create, because every signing
+        // path in this crate produces a P2PKH-shaped fulfillment. Paying one is
+        // supported; spending one is not.
+        // Called for its refusal, here rather than at the output loop below, so
+        // a bad recipient is reported before any balance accounting runs and
+        // the error names the recipient rather than a shortfall.
+        crate::convert::destination_for(&recipient.address)?;
         if recipient.amount.is_zero() {
             return Err(TxError::ZeroValueOutput { index: 0 });
         }
@@ -443,8 +456,8 @@ pub fn build_token_send(
     for recipient in params.recipients {
         outputs.push(TxOut {
             value: 0, // the value is the token inside the payload
-            script_pubkey: reserve_output_script(
-                recipient.address.hash(),
+            script_pubkey: reserve_output_script_to(
+                crate::convert::destination_for(&recipient.address)?,
                 recipient.currency,
                 recipient.amount.to_sat(),
             )?,
@@ -539,6 +552,7 @@ pub fn build_token_send(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use verus_tx_primitives::cc::Destination;
     use verus_tx_primitives::Txid;
 
     const CURRENCY: CurrencyId = CurrencyId::from_bytes([0x33; 20]);
@@ -556,6 +570,16 @@ mod tests {
             satoshis: Amount::from_sat(satoshis),
             script_pubkey: reserve_output_script(key().address().hash(), CURRENCY, tokens)
                 .expect("reserve output script"),
+        }
+    }
+
+    /// A plain P2PKH output of the signing key's, to pay the miner fee from.
+    fn native_utxo(vout: u32, satoshis: u64) -> Utxo {
+        Utxo {
+            txid: Txid::from_internal([0xab; 32]),
+            vout,
+            satoshis: Amount::from_sat(satoshis),
+            script_pubkey: key().address().p2pkh_script_pubkey().expect("p2pkh script"),
         }
     }
 
@@ -579,6 +603,96 @@ mod tests {
             .iter()
             .map(|u| u.satoshis.to_sat())
             .fold(0u64, u64::wrapping_add)
+    }
+
+    /// A VerusID is an ordinary token recipient.
+    ///
+    /// Tokens held by an identity are a normal on-chain shape — the same one
+    /// `cc::reserve_output_script_to` already writes for a sub-identity's
+    /// registration fee — and a wallet paying `name@` is the common case, not
+    /// an exotic one. It was refused here for no reason the code stated.
+    #[test]
+    fn a_verusid_is_an_ordinary_token_recipient() {
+        let identity = [0x77; 20];
+        let signed = build_token_send(
+            &key(),
+            &TokenSendParams::new(
+                &[token_utxo(0, 100_000_000, 500), native_utxo(1, 100_000_000)],
+                &[TokenRecipient {
+                    address: Address::new(AddressKind::Identity, identity),
+                    currency: CURRENCY,
+                    amount: Amount::from_sat(200),
+                }],
+                key().address(),
+                Expiry::from_height(1_170_000),
+            ),
+        )
+        .expect("paying an identity a token is supported");
+
+        // The output has to name the IDENTITY, not a key hash. Writing an
+        // identity's hash as a key hash produces an output nobody can spend,
+        // which is the failure this test exists to rule out.
+        let expected =
+            reserve_output_script_to(Destination::Identity(identity), CURRENCY, 200).unwrap();
+        let tx = verus_wire::TxV4::deserialize(&hex::decode(&signed.hex).unwrap()).unwrap();
+        assert!(
+            tx.outputs.iter().any(|o| o.script_pubkey == expected),
+            "no output pays the identity",
+        );
+    }
+
+    /// Paying an identity and SPENDING what an identity holds are different
+    /// questions, and only the first is supported.
+    ///
+    /// Every signing path in this crate produces a P2PKH-shaped fulfillment, so
+    /// an identity-held output cannot be funding — `reject_unspendable_reserve`
+    /// says so. Relaxing the recipient rule must not relax that one, and this
+    /// is the test that would notice if it ever did.
+    #[test]
+    fn an_identity_held_output_is_still_refused_as_funding() {
+        let identity = [0x77; 20];
+        let held = Utxo {
+            txid: Txid::from_internal([0xef; 32]),
+            vout: 0,
+            satoshis: Amount::from_sat(0),
+            script_pubkey: reserve_output_script_to(Destination::Identity(identity), CURRENCY, 500)
+                .unwrap(),
+        };
+        let error = build_token_send(
+            &key(),
+            &TokenSendParams::new(
+                &[held, native_utxo(1, 100_000_000)],
+                &[recipient(200)],
+                key().address(),
+                Expiry::from_height(1_170_000),
+            ),
+        )
+        .expect_err("an identity-held output cannot fund a P2PKH-signed spend");
+        assert!(
+            matches!(error, TxError::IdentityHeldFunding { .. }),
+            "{error:?}",
+        );
+    }
+
+    /// A script hash stays refused. No template here writes one, and guessing
+    /// an untested encoding for money is not worth the convenience.
+    #[test]
+    fn a_script_hash_recipient_is_still_refused() {
+        let error = build_token_send(
+            &key(),
+            &TokenSendParams::new(
+                &[token_utxo(0, 100_000_000, 500), native_utxo(1, 100_000_000)],
+                &[TokenRecipient {
+                    address: Address::new(AddressKind::ScriptHash, [0x99; 20]),
+                    currency: CURRENCY,
+                    amount: Amount::from_sat(200),
+                }],
+                key().address(),
+                Expiry::from_height(1_170_000),
+            ),
+        )
+        .expect_err("a script hash is not a supported recipient");
+        assert!(matches!(error, TxError::UnsupportedRecipient), "{error:?}");
     }
 
     /// #199: a selected UTXO set whose native total exceeds `u64::MAX` is
