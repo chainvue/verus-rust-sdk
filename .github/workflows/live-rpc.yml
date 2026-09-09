@@ -38,12 +38,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      # Checks three things a frozen fixture cannot:
+      # Checks four things a frozen fixture cannot:
       #   - every typed read still parses from today's daemon;
+      #   - every currency the chain lists reads back through the typed path,
+      #     not just the hand-picked one. #201 shipped a currency the crate
+      #     could not read and every test here stayed green, because VRSCTEST's
+      #     own fees are the one shape that cannot show the bug;
       #   - the daemon still computes our transaction ids;
       #   - the endpoint's method allowlist has not moved. That last one is
       #     load-bearing — whether `getblock` is served decides whether shielded
       #     flows can be built on public infrastructure at all.
+      #
+      # The currency sweep is one request per currency — 316 on VRSCTEST at the
+      # time of writing, 40s measured end to end, of which 16s is the pause the
+      # test puts between requests out of courtesy to an endpoint that is not
+      # ours. The 20-minute budget below is left alone: it already holds an
+      # order of magnitude more than the sweep costs, and raising it in advance
+      # of needing it would only make a hung job take longer to say so.
       - name: Live read-only checks
         env:
           VERUS_LIVE_RPC: '1'

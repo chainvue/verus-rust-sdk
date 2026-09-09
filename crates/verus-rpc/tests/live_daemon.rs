@@ -28,7 +28,8 @@
 //! transport is under test alongside the bytes.
 
 use serde_json::Value;
-use verus_rpc::{ChainReader, HttpTransport, RpcClient};
+use std::time::{Duration, Instant};
+use verus_rpc::{ChainReader, CurrencySummary, HttpTransport, RpcClient};
 
 const ENDPOINT: &str = "https://api.verustest.net";
 
@@ -1187,6 +1188,185 @@ fn one_currency_costs_one_request_and_agrees_with_the_whole_chain() {
     eprintln!(
         "PROVEN: getcurrency and listcurrencies agree; the chain lists {} currencies to answer \
          the same question",
+        all.len()
+    );
+}
+
+/// The smallest pause between two requests of the sweep below.
+///
+/// The sweep is one currency per request and the transport is blocking, so at
+/// most one request is ever in flight — no concurrency is added here, and none
+/// should be. This is on top of that: a floor under the gap between requests,
+/// so the sweep cannot turn into a burst if the endpoint gets fast or a future
+/// transport starts pooling. It caps the sweep at 20 requests a second against
+/// infrastructure that is not ours, and costs about 16 seconds over the whole
+/// chain — nothing against a weekly job's budget.
+const SWEEP_PACE: Duration = Duration::from_millis(50);
+
+/// How many unreadable currencies the panic message names before it stops.
+///
+/// Every failure is printed as it is found, so the cap loses nothing: it keeps
+/// the count and the first names readable when a daemon change breaks a whole
+/// class of currency at once, instead of burying them under three hundred
+/// lines. The number that matters is the count, and that is always exact.
+const REPORTED_FAILURES: usize = 20;
+
+/// Below this, in satoshis, the daemon prints an amount in exponent form.
+///
+/// `1e-5` coins. Measured over one whole `listcurrencies` reply during #201:
+/// no plain decimal literal below it, no exponent literal at or above it, in
+/// any field. Used here only to *report* how much of the sweep exercised the
+/// spelling that #201 was about — nothing is asserted about chain contents.
+const EXPONENT_FORM_BELOW_SATS: u64 = 1_000;
+
+/// One currency read back through the typed path, as a reason rather than a
+/// panic.
+///
+/// Returning `Result` rather than asserting is the whole point: the caller
+/// collects these, and an `assert!` here would end the sweep at the first bad
+/// currency and report one where there are fourteen.
+///
+/// The `Ok` payload is how many of the currency's three launcher-chosen fees
+/// came off the wire in exponent form, which the sweep totals for its report.
+fn read_one_currency(
+    client: &RpcClient<HttpTransport>,
+    row: &CurrencySummary,
+) -> Result<usize, String> {
+    let named = format!("{} ({})", row.fully_qualified_name, row.currency_id);
+
+    let policy = client
+        .currency(&row.currency_id)
+        .map_err(|e| format!("{named}: getcurrency did not read back: {e}"))?;
+
+    // The daemon answering about a different currency than the one asked for
+    // is a statement about the daemon, not the currency, and it is invisible
+    // to a test that only checks the read succeeded.
+    if policy.currency_id != row.currency_id {
+        return Err(format!(
+            "{named}: getcurrency answered about {} instead",
+            policy.currency_id
+        ));
+    }
+
+    // The agreement `one_currency_costs_one_request_and_agrees_with_the_whole_chain`
+    // checks for VRSCTEST, checked here for every currency at no extra request:
+    // both reads parse the same object out of the same daemon, so a field the
+    // two paths disagree about means one of the two parsers has drifted.
+    if policy.name != row.name {
+        return Err(format!(
+            "{named}: getcurrency calls it {:?}, listcurrencies calls it {:?}",
+            policy.name, row.name
+        ));
+    }
+
+    // Reaching here means all three launcher-chosen fees parsed. Report how
+    // many of them were small enough that the daemon printed them in exponent
+    // form, because that is the shape #201 could not read.
+    Ok([
+        policy.id_registration_fee,
+        policy.id_import_fee,
+        policy.currency_registration_fee,
+    ]
+    .into_iter()
+    .filter(|fee| (1..EXPONENT_FORM_BELOW_SATS).contains(&fee.to_sat()))
+    .count())
+}
+
+/// Every currency the chain lists, read back one at a time.
+///
+/// # Why the whole chain and not one currency
+///
+/// This test used to read `VRSCTEST` and nothing else, which is the one
+/// currency on the chain structurally incapable of showing the bug the test
+/// exists to catch. Its launcher-chosen fees are `100.0` and `200.0` — plain
+/// form, comfortably above the `1e-5` threshold where the daemon's formatter
+/// switches to exponent notation. #201 shipped a currency this crate could not
+/// read, fourteen of 316 testnet currencies were unreadable through
+/// `ChainReader::currency`, `Bridge.vETH` among them, and this test passed
+/// throughout.
+///
+/// A hand-picked list of the three known-bad shapes would have caught #201 and
+/// would be cheaper. It would also be a fixture: it pins the shapes already
+/// known about, and the sweep is what finds the shape nobody has seen. That is
+/// the same reasoning the module header gives for running against a live
+/// endpoint at all, so the sweep is what runs here.
+///
+/// # Why the failures are collected
+///
+/// The sweep reports **every** currency it could not read, with a count. A
+/// `?` or an `assert!` inside the loop would stop at the first one and report
+/// one bad currency where there are fourteen — which turns "a daemon upgrade
+/// broke a whole class of currency" into "some currency is broken", and hides
+/// the size of the problem behind the first name in the list. `currency_names`
+/// learned this in #212 for the same reason: a per-currency answer must cost
+/// one currency, not the batch.
+///
+/// # Cost
+///
+/// One request per currency, roughly 316 of them, plus the pause in
+/// [`SWEEP_PACE`]. Measured against `api.verustest.net`, that is a few minutes
+/// — well inside `live-rpc.yml`'s 20-minute budget, and it only runs on that
+/// weekly schedule.
+#[test]
+fn every_currency_the_chain_lists_still_reads_through_the_typed_path() {
+    if !live() {
+        eprintln!("skipping: set VERUS_LIVE_RPC=1 to run against {ENDPOINT}");
+        return;
+    }
+    let client = client();
+
+    let all = client.list_currencies().expect("listcurrencies");
+    // Not a pin on the chain's size — currencies are only ever added. It is a
+    // guard against the sweep quietly becoming a no-op: an endpoint answering
+    // with a truncated or empty list would otherwise pass this test loudly,
+    // reporting zero failures over zero currencies.
+    assert!(
+        all.len() > 100,
+        "listcurrencies answered with {} entries; a sweep over that is not a sweep",
+        all.len()
+    );
+
+    let started = Instant::now();
+    let mut failures: Vec<String> = Vec::new();
+    let mut exponent_form_fees = 0_usize;
+
+    for (index, row) in all.iter().enumerate() {
+        // Between requests, not before the first: the `listcurrencies` above
+        // has already paid the gap.
+        if index > 0 {
+            std::thread::sleep(SWEEP_PACE);
+        }
+        match read_one_currency(&client, row) {
+            Ok(exponent_form) => exponent_form_fees += exponent_form,
+            Err(reason) => {
+                eprintln!("  unreadable: {reason}");
+                failures.push(reason);
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    eprintln!(
+        "swept {} currencies in {:.1}s: {} unreadable, {} fee field(s) below 1e-5 coins and so \
+         printed in exponent form",
+        all.len(),
+        elapsed.as_secs_f64(),
+        failures.len(),
+        exponent_form_fees
+    );
+
+    let mut lines: Vec<String> = failures.iter().take(REPORTED_FAILURES).cloned().collect();
+    if failures.len() > REPORTED_FAILURES {
+        lines.push(format!(
+            "… and {} more, each printed above",
+            failures.len() - REPORTED_FAILURES
+        ));
+    }
+    let named = lines.join("\n  ");
+    assert!(
+        failures.is_empty(),
+        "{} of {} currencies did not read back through ChainReader::currency:\n  {named}",
+        failures.len(),
         all.len()
     );
 }
