@@ -23,20 +23,21 @@ use verus_flows::FlowError;
 use verus_rpc::{RequestBody, RpcError, Transport};
 use verus_tx::Identity;
 
+/// A body captured from the live network, by fixture name.
+fn fixture(name: &str) -> String {
+    let path = format!(
+        "{}/../../fixtures/rpc/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
 /// A recorded reply for every request these tests can make.
 ///
 /// Keyed by method name rather than by whole body: a fixture is captured for a
 /// method, and pinning the exact arguments is the job of the assertions below,
 /// not of the lookup.
 fn replies() -> HashMap<&'static str, String> {
-    fn fixture(name: &str) -> String {
-        let path = format!(
-            "{}/../../fixtures/rpc/{name}.json",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
-    }
-
     HashMap::from([
         ("getinfo", fixture("getinfo")),
         ("getaddressdeltas", fixture("getaddressdeltas")),
@@ -575,6 +576,62 @@ fn preparing_a_mint_resolves_in_a_single_round() {
             "getinfo"
         ],
         "all six reads must go out together"
+    );
+}
+
+/// The recorded not-found reply lands in the **silent omission**, against the
+/// real flow rather than against a double.
+///
+/// `verus-rpc` alone cannot show this. It can say the body parses to
+/// `RpcError::Node { code: -8 }` — `recorded_replies.rs` does — but which of
+/// `currency_names`' two outcomes that code selects is decided in this crate,
+/// and until now was asserted only against `ScriptedReader`, whose answer this
+/// crate also writes. The number was wrong once for exactly that reason:
+/// measured against the double, the omission path always looked like it worked.
+///
+/// So the bytes come off the wire and the outcome is read off the flow: no
+/// name, and **no entry in the failure list** — the id the caller already holds
+/// is the whole of what there is to say about a currency the chain does not
+/// have.
+#[test]
+fn a_currency_the_node_does_not_know_is_omitted_in_silence() {
+    // The currency the fixture was captured for: `err_currency_notfound.json`
+    // is the daemon's answer to `getcurrency` for this id's i-address, which is
+    // the argument `currency_names` builds for it.
+    let unknown = verus_tx::CurrencyId::from_bytes([0x22; 20]);
+    const UNKNOWN_I_ADDRESS: &str = "i6b1JDydFRfHbQJnJP9pPojV1rWosk6A73";
+
+    let mut replies = replies();
+    replies.insert("getcurrency", fixture("err_currency_notfound"));
+
+    let ((names, unreadable), rounds) = drive_with(replies, |client| {
+        verus_flows::balances::currency_names(client, [unknown])
+    });
+
+    assert!(
+        names.is_empty(),
+        "the node does not have this currency, so there is no name: {names:?}"
+    );
+    assert!(
+        unreadable.is_empty(),
+        "`-8` is an answer about the currency, not a failure of the lookup — \
+         reporting it would put a reason next to every token a chain never had: \
+         {unreadable:?}"
+    );
+
+    // And the recorded reply is the answer to the question this flow asks. A
+    // lookup that started addressing currencies some other way would still see
+    // the same body from a method-keyed fixture, and this assertion is what
+    // notices.
+    assert_eq!(rounds.len(), 1, "one round: {rounds:#?}");
+    let asked = rounds[0]
+        .iter()
+        .find(|b| method_of(b) == "getcurrency")
+        .expect("the currency request");
+    assert!(
+        asked.contains(UNKNOWN_I_ADDRESS),
+        "asked for something other than the i-address the reply was captured \
+         for: {asked}"
     );
 }
 

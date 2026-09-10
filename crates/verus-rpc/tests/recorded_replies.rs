@@ -342,6 +342,40 @@ fn an_unknown_identity_is_a_node_error_with_its_code_intact() {
     );
 }
 
+/// `getcurrency` spells "no such currency" `-8`, not the `-5` `getidentity`
+/// uses for an unknown identity.
+///
+/// That number is load-bearing: `verus_flows::balances::currency_names` leaves
+/// a currency out of its map *in silence* on this code, and reports every other
+/// node error with a reason attached. The code was wrong once already — the
+/// tolerance was written as `-5`, so the commonest case took the abort branch
+/// instead — and it was wrong in prose and in a hand-written double at the same
+/// time, because nothing here was measured against the wire.
+///
+/// The capture is the answer to the question the flow actually asks: an
+/// i-address for a currency id that is not registered on VRSCTEST. A nonsense
+/// name (`notacurrencyatall`) produces the same body.
+#[test]
+fn an_unknown_currency_is_a_node_error_with_its_own_code() {
+    let body = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/rpc/err_currency_notfound.json"
+    ));
+    assert!(
+        !body.contains("\"result\""),
+        "an error reply carries no `result` key at all; this one now does, and \
+         the shape it was recorded for is gone: {body}"
+    );
+
+    match client("err_currency_notfound").currency("i6b1JDydFRfHbQJnJP9pPojV1rWosk6A73") {
+        Err(RpcError::Node { code, message }) => {
+            assert_eq!(code, -8);
+            assert_eq!(message, "Invalid currency or currency not found");
+        }
+        other => panic!("expected -8, got {other:?}"),
+    }
+}
+
 /// The reply to a broadcast the node would not decode. Surfacing the daemon's
 /// own message verbatim matters: `-22` and `-26` need completely different
 /// responses from a wallet.

@@ -12,7 +12,7 @@ curl -s -X POST https://api.verustest.net -H 'content-type: application/json' \
   > fixtures/rpc/getcurrency_vrsctest.json
 ```
 
-Four things must survive any regeneration, or the tests they support stop
+Five things must survive any regeneration, or the tests they support stop
 meaning anything:
 
 - **`getcurrency_vrsctest.json` must keep `"idregistrationfees":100.0`
@@ -35,6 +35,17 @@ meaning anything:
 - **The `err_*.json` files must keep their exact shape** — in particular that an
   error reply carries **no `result` key at all**, rather than `result: null`.
   That is what breaks the obvious `struct { result: T, error: Option<E> }`.
+- **`err_currency_notfound.json` must keep `"code":-8`.** `getcurrency` spells
+  "no such currency" with a different number than `getidentity` spells "no such
+  identity", and `verus_flows::balances::currency_names` leaves a currency out
+  of its map *in silence* on that one code while reporting every other node
+  error with a reason. The tolerance was written as `-5` once, so the commonest
+  case took the abort branch instead. Captured for
+  `i6b1JDydFRfHbQJnJP9pPojV1rWosk6A73`, which is the i-address
+  `currency_names` builds for the currency id the driven test uses; a nonsense
+  name (`notacurrencyatall`) produces the same body. Regenerate against an
+  i-address nobody has registered in the meantime — one that has since become a
+  real currency answers with a definition and takes the pinning with it.
 
 | File | What it pins |
 |---|---|
@@ -46,6 +57,7 @@ meaning anything:
 | `getaddressutxos_second_address.json` | a second funded address |
 | `getidentity_rustsdk.json` | an identity and the outpoint holding it |
 | `err_notfound.json` | `-5`, unknown identity |
+| `err_currency_notfound.json` | `-8`, unknown currency — the code `currency_names` omits a currency in silence on |
 | `err_badparam.json` | `-1`, with a long help-text message |
 | `err_baddecode.json` | `-22`, `sendrawtransaction` refusing bad hex |
 | `err_methodmissing.json` | `-32601` — "refused", which is not the same as "absent"; see below |
