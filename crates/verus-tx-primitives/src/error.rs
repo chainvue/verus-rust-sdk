@@ -187,6 +187,17 @@ pub enum TxError {
     #[error("invalid VDXF name: {0}")]
     InvalidVdxfName(String),
 
+    /// A VDXF object — or the base64url text carrying one — that could not be
+    /// read.
+    ///
+    /// Distinct from [`TxError::InvalidVdxfName`], which is about *deriving* a
+    /// key from a string the caller wrote: this one is about bytes that arrived
+    /// from somewhere else. A deeplink or a QR code is input an attacker
+    /// chooses, so every length in the frame is checked against what remains
+    /// and nothing is allocated on a declared count.
+    #[error("malformed VDXF object: {0}")]
+    MalformedVdxfObject(String),
+
     /// A decimal amount that is not one, or has more precision than a satoshi.
     #[error("{0:?} is not a valid amount of coins")]
     InvalidAmount(String),

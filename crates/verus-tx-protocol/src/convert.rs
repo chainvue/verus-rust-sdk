@@ -191,7 +191,19 @@ impl TransferDestination {
         byte
     }
 
-    fn serialize(&self) -> Result<Vec<u8>, TxError> {
+    /// The bytes a `CTransferDestination` occupies, and the mirror of
+    /// [`Self::deserialize`].
+    ///
+    /// `pub(crate)` rather than private because a destination is not only a
+    /// field of a reserve transfer: the VDXF payloads in [`crate::vdxf`] write
+    /// the same structure, and a second encoder for it would be a second chance
+    /// to disagree about the one thing that is easy to get wrong here — that the
+    /// gateway leg comes *before* the auxiliaries, not after.
+    ///
+    /// `pub(crate)` rather than `pub` because nothing outside this crate should
+    /// be handed a raw wire encoder. The builders are the public surface; this
+    /// is what they are built out of.
+    pub(crate) fn serialize(&self) -> Result<Vec<u8>, TxError> {
         // A raw byte, not a VARINT. `CTransferDestination::type` is a
         // `uint8_t` and `READWRITE` writes one byte for it. Every type this
         // crate used to build is below 128, where a VARINT happens to be the
