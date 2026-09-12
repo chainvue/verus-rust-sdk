@@ -47,3 +47,21 @@ Six cases, each covering a branch that can move the bytes:
 Regenerate with `fixtures/tools/export-vectors.cjs` — only when a rule genuinely
 changes on the TypeScript side, and review the byte diff rather than
 rubber-stamping it. Nothing is fetched at build or test time.
+
+## `vdxf/` — wallet-layer golden vectors
+
+VerusPay invoices and login-consent requests/responses, generated from
+`verus-typescript-primitives` at the revision `chainvue/verus-sdk` pins.
+
+**Read `fixtures/vdxf/README.md` before trusting a number in there, because the
+proof is a weaker kind than the two sections above.** `transparent/` is backed by
+`daemon/`; nothing stands behind `vdxf/` in the same way, because no daemon RPC
+validates an invoice or a login consent request — they are wallet/application-layer
+formats that travel in QR codes and deep links and never enter a transaction. The
+oracle is the deployed upstream TypeScript implementation that real wallets
+interoperate with: an independent implementation, but not daemon-proven.
+
+Twenty vectors: VerusPay invoice v3 and v4 across the flag matrix, plus login
+consent request/response, provisioning and credentials. Regenerate with
+`fixtures/tools/export-vdxf-vectors.cjs`, which needs a checkout of the pinned
+primitives revision and, unlike `export-vectors.cjs`, no build step.
