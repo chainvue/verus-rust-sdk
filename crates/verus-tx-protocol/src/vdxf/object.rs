@@ -8,7 +8,7 @@
 //! ```text
 //! key_hash160 (20 bytes, present iff include_key)
 //! varint(version)
-//! compactSize(data.len())      -- but see the first quirk below
+//! compactSize(data.len())      -- always, even when data is empty
 //! data
 //! ```
 //!
@@ -18,28 +18,60 @@
 //! differ only in how they read and write `data`, so the part that is easy to
 //! get wrong is written and tested once.
 //!
-//! # Two quirks, ported literally
+//! # `if (dataLength)` does not mean what it reads like
 //!
-//! Both are observable in bytes that already exist, so they are part of the
-//! format rather than bugs this port may fix. They are the reason this module
-//! is a literal transcription and not a tidier re-design.
+//! Upstream's `toBuffer` guards the length prefix with `if (dataLength)`, which
+//! reads as "an empty payload emits no `compactSize(0)`, not even a zero byte".
+//! It does not mean that. This module said it did, and was wrong on the wire by
+//! one byte for every empty-payload object; the correction is worth spelling out
+//! because the `if` is right there in `index.ts` inviting the same mistake
+//! again. Three lines have to be held together, not one
+//! (`src/vdxf/index.ts:99-125`):
 //!
-//! **The length prefix is written only when there is data.** Upstream's
-//! `toBuffer` guards it with `if (dataLength)`, so an object with an empty
-//! payload emits no `compactSize(0)` — not a zero byte, *nothing*. The frame is
-//! therefore twenty-one bytes, and the data length is absent rather than zero.
+//! ```text
+//! byteLength()   counts varuint.encodingLength(dataLength) unconditionally,
+//!                and that is 1 even when dataLength is 0
 //!
-//! **The nested read is guarded by `offset < buffer.length - 1`.** Upstream's
-//! `fromBuffer` reads the payload only if that holds, comparing the offset it
-//! was *given* against one less than the whole buffer's length. It reads like an
-//! off-by-one and behaves like one. The asymmetry it produces is that an empty
-//! payload survives the round trip without its key and not with it; the test
-//! `zero_length_data_does_not_round_trip` in this module pins both halves, and
-//! [`VdxfObject::deserialize`] explains why neither is fixable here.
+//! toBuffer()     allocates Buffer.alloc(byteLength()) -- zero-filled, and
+//!                therefore one byte longer than what it is about to write
+//!                skips the writeVarSlice when dataLength is 0
+//!                returns writer.buffer -- the WHOLE allocation, not a slice
+//!                of it up to the writer's position
+//! ```
 //!
-//! Neither quirk is reachable on the VerusPay or login-consent paths, where
-//! every object has a payload. They are pinned anyway, because the next person
-//! to read the upstream source will see the guard and want to "fix" it.
+//! The counted prefix and the skipped write cancel. The byte is allocated,
+//! nothing overwrites it, and it is still returned. A `compactSize(0)` is `0x00`
+//! and an untouched byte of `Buffer.alloc` is `0x00`, so the frame upstream puts
+//! on the wire is byte-identical to one that wrote the prefix. An empty-payload
+//! object is twenty-two bytes with its key and two without it, ending in that
+//! `0x00` — captured from the pinned library by the test
+//! `an_empty_payload_still_carries_its_length_prefix`, which holds the hex.
+//!
+//! So this port writes the prefix unconditionally. That is one branch *fewer*
+//! than transcribing the `if` would be, and it is the faithful choice rather
+//! than a tidied one: transcribing the `if` alone reproduces half of a pair of
+//! behaviours that only agree with the format together.
+//!
+//! # One quirk, ported literally: `offset < buffer.length - 1`
+//!
+//! Upstream's `fromBuffer` reads the payload only if that holds, comparing the
+//! offset it was *given* against one less than the whole buffer's length. It
+//! reads like an off-by-one and behaves like one: an object sitting at a
+//! non-zero offset inside a larger buffer is judged by where it starts rather
+//! than by what is left after it. It is transcribed literally and pinned by
+//! `the_guard_uses_the_offset_it_was_called_with`.
+//!
+//! Its false branch is unreachable from anything a writer emits, and that is a
+//! consequence of the section above rather than a separate fact: because the
+//! prefix is always there, the shortest object any writer produces is two bytes,
+//! and `called_at < len - 1` holds for every one of them. Reaching the other
+//! side needs a buffer that ends one byte after the version, which this crate
+//! and upstream both decline to write.
+//!
+//! Neither an empty payload nor the guard's false branch occurs on the VerusPay
+//! or login-consent paths, where every object has a payload. Both are documented
+//! at this length anyway, because the first reading of the `if` was wrong and
+//! the next reader should not have to re-derive it from the TypeScript.
 
 use verus_keys::{Address, AddressKind};
 use verus_tx_primitives::cc::var_int;
@@ -129,16 +161,14 @@ impl VdxfObject {
 
     /// How many bytes [`VdxfObject::serialize`] writes.
     ///
-    /// `byteLength()`. Mirrors the `if (dataLength)` quirk: with an empty
-    /// payload the `compactSize` is not counted, because it is not written.
+    /// `byteLength()`. The CompactSize is always counted, an empty payload
+    /// included, which is what upstream's `varuint.encodingLength(0)` gives —
+    /// and the `if (dataLength)` in `toBuffer` does not take it back off again.
+    /// See this module's docs for why.
     pub fn byte_length(&self, include_key: bool) -> usize {
         let key_length = if include_key { self.key.len() } else { 0 };
         let version_length = var_int(self.version).len();
-        let data_prefix = if self.data.is_empty() {
-            0
-        } else {
-            compact_size_length(self.data.len() as u64)
-        };
+        let data_prefix = compact_size_length(self.data.len() as u64);
         key_length + version_length + data_prefix + self.data.len()
     }
 
@@ -153,11 +183,11 @@ impl VdxfObject {
             out.extend_from_slice(&self.key);
         }
         out.extend_from_slice(&var_int(self.version));
-        // `if (dataLength)` upstream. An empty payload writes no length at all
-        // — see the module docs.
-        if !self.data.is_empty() {
-            write_var_slice(&mut out, &self.data);
-        }
+        // Unconditional, an empty payload included. Upstream skips this write
+        // when there is no data but counts the prefix in `byteLength` and
+        // returns the whole zero-filled allocation, so the `0x00` is on the wire
+        // either way. Module docs have the captured bytes.
+        write_var_slice(&mut out, &self.data);
         out
     }
 
@@ -185,16 +215,20 @@ impl VdxfObject {
     /// length longer than what remains — nothing is allocated on a declared
     /// count.
     ///
-    /// # The guard, and `zero_length_data_does_not_round_trip`
+    /// # The guard
     ///
     /// The payload is read only when the offset this was *called with* is below
-    /// `bytes.len() - 1`, which is what upstream does. The consequence is worth
-    /// stating because it is not symmetric: an object with an empty payload
-    /// serializes to twenty-one bytes with its key and one byte without it, and
-    /// only the second of those reads back — with the key, the guard holds, the
-    /// reader looks for a CompactSize that was never written, and the buffer has
-    /// ended. That is a property of the format, not of this port: the format
-    /// gives no way to tell "no payload" from "truncated before the payload".
+    /// `bytes.len() - 1` — the offset it was handed, not the reader's position
+    /// after the version. That is what upstream does, and the two differ for any
+    /// object that does not start at zero.
+    ///
+    /// Every buffer a writer emits satisfies it, because the length prefix is
+    /// always present and so the shortest object is two bytes. An empty payload
+    /// therefore round-trips in both `include_key` settings, matching upstream:
+    /// the trailing `0x00` is read as the `compactSize(0)` it is
+    /// indistinguishable from, and the object re-serializes to the bytes it came
+    /// from. The guard does not break that round trip; it only decides whether
+    /// that byte is read as a length at all, and for these buffers it is.
     pub fn deserialize(
         bytes: &[u8],
         offset: &mut usize,
@@ -358,61 +392,140 @@ mod tests {
         assert!(misread.is_err() || misread.unwrap() != invoice);
     }
 
-    /// The `if (dataLength)` quirk: no payload means no length byte.
+    /// The `if (dataLength)` guard does *not* drop the length prefix.
+    ///
+    /// `byteLength` counts it, `toBuffer` allocates that many zero bytes and
+    /// returns all of them, so skipping the write leaves a `0x00` exactly where
+    /// the `compactSize(0)` would have gone. See this module's docs.
+    ///
+    /// The hex is upstream's, not this module's. Captured by running the pinned
+    /// `verus-typescript-primitives` — `4243cd075b4f68df1ce72fd2fd9c9b18ac36767e`,
+    /// the revision `fixtures/vdxf` pins — on an empty-payload object keyed with
+    /// `veruspay.vrsc::invoice`:
+    ///
+    /// ```text
+    /// const v = require('./dist/vdxf/index.js');
+    /// const e = new v.BufferDataVdxfObject('', 'iEETy7La3FTN2Sd2hNRgepek5S8x8eeUeQ');
+    /// // byteLength / toBuffer().length / toBuffer().toString('hex')
+    /// includeKey=true   byteLength=22  actual=22  7600aaf2dde7937adea9e15000d4e2c228fc8e620100
+    /// includeKey=false  byteLength=2   actual=2   0100
+    /// ```
+    ///
+    /// `BufferDataVdxfObject` rather than the base `VDXFObject` because its
+    /// `fromDataBuffer` reads a varslice, which is what this crate's
+    /// [`VdxfObject::deserialize`] does; the base class's is a no-op that reads
+    /// nothing, so it would not be the comparable reader. Both share `toBuffer`
+    /// and `byteLength`, so the bytes above are the frame's and not the
+    /// subclass's.
     #[test]
-    fn an_empty_payload_writes_no_length_prefix() {
-        let empty = VdxfObject::new(VERUSPAY_INVOICE_VDXF_KEY, DEFAULT_VERSION, Vec::new());
-        let bytes = empty.serialize(true);
-        assert_eq!(bytes.len(), 21, "20 key + 1 version, and nothing else");
-        assert_eq!(&bytes[..20], &VERUSPAY_INVOICE_VDXF_KEY);
-        assert_eq!(bytes[20], 0x01);
-        assert_eq!(empty.byte_length(true), 21);
+    fn an_empty_payload_still_carries_its_length_prefix() {
+        const UPSTREAM_KEYED: &str = "7600aaf2dde7937adea9e15000d4e2c228fc8e620100";
+        const UPSTREAM_KEYLESS: &str = "0100";
 
-        // What a tidier format would have written, for contrast.
-        assert_ne!(bytes.last(), Some(&0x00));
+        let empty = VdxfObject::new(VERUSPAY_INVOICE_VDXF_KEY, DEFAULT_VERSION, Vec::new());
+
+        let keyed = empty.serialize(true);
+        assert_eq!(hex::encode(&keyed), UPSTREAM_KEYED);
+        assert_eq!(keyed.len(), 22, "20 key + 1 version + 1 compactSize(0)");
+        assert_eq!(&keyed[..20], &VERUSPAY_INVOICE_VDXF_KEY);
+        assert_eq!(keyed[20], 0x01, "varint(DEFAULT_VERSION)");
+        assert_eq!(
+            keyed[21], 0x00,
+            "compactSize(0) — the byte upstream allocates and declines to write"
+        );
+        assert_eq!(empty.byte_length(true), 22);
+
+        let keyless = empty.serialize(false);
+        assert_eq!(hex::encode(&keyless), UPSTREAM_KEYLESS);
+        assert_eq!(empty.byte_length(false), 2);
     }
 
-    /// The `offset < buffer.length - 1` guard, and the asymmetry it causes.
+    /// An empty payload round-trips in both `include_key` settings — which is
+    /// the opposite of what this test asserted when it was written.
     ///
-    /// Named in [`VdxfObject::deserialize`]'s documentation. Without the key the
-    /// guard is false and an empty payload round-trips; with the key it is true,
-    /// the reader looks for a length that was never written, and the buffer has
-    /// ended. Pinned rather than fixed — the format cannot distinguish "no
-    /// payload" from "truncated", so either answer is a guess.
+    /// The old claim was an asymmetry: round-trips without its key and not with
+    /// it, because at "twenty-one bytes" the guard held, the reader looked for a
+    /// length nobody wrote, and the buffer had ended. There is no twenty-one-byte
+    /// form. The prefix is always written, so the length the guard sends the
+    /// reader looking for is there to be found, and nothing is truncated.
+    ///
+    /// Upstream agrees, reading back what it wrote (same pin, same object as
+    /// `an_empty_payload_still_carries_its_length_prefix`, read with
+    /// `fromBuffer`):
+    ///
+    /// ```text
+    /// keyed:   len=22 called_at=0 guard(0 < 21)=true end=22 data="" reser=<the same 22 bytes>
+    /// keyless: len=2  called_at=0 guard(0 < 1)=true  end=2  data="" reser=0100
+    /// ```
+    ///
+    /// `end` is the full length in both, so the trailing `0x00` is *consumed* —
+    /// read as the `compactSize(0)` it is indistinguishable from. The guard
+    /// decides whether that byte is read as a length at all, not whether the
+    /// round trip survives.
     #[test]
-    fn zero_length_data_does_not_round_trip() {
+    fn an_empty_payload_round_trips_in_both_key_settings() {
         let empty = VdxfObject::new(VERUSPAY_INVOICE_VDXF_KEY, DEFAULT_VERSION, Vec::new());
 
         let keyless = empty.serialize(false);
-        assert_eq!(keyless, vec![0x01]);
+        assert_eq!(keyless, vec![0x01, 0x00]);
         let mut offset = 0;
         let read = VdxfObject::deserialize(&keyless, &mut offset, Some(VERUSPAY_INVOICE_VDXF_KEY))
             .unwrap();
-        assert_eq!(read, empty, "0 < 1 - 1 is false, so no payload is sought");
-        assert_eq!(offset, 1);
+        assert_eq!(read, empty);
+        assert_eq!(
+            offset, 2,
+            "0 < 2 - 1 holds, so the 0x00 is read as the length"
+        );
+        assert_eq!(read.serialize(false), keyless);
 
         let keyed = empty.serialize(true);
         let mut offset = 0;
-        assert!(
-            VdxfObject::deserialize(&keyed, &mut offset, None).is_err(),
-            "0 < 21 - 1 holds, so a CompactSize is sought and the buffer has ended"
+        let read = VdxfObject::deserialize(&keyed, &mut offset, None).unwrap();
+        assert_eq!(read, empty);
+        assert_eq!(
+            offset, 22,
+            "0 < 22 - 1 holds too, and the whole frame is consumed"
         );
+        assert_eq!(read.serialize(true), keyed);
     }
 
-    /// The guard reads the offset it was handed, not the reader's position —
-    /// which is how an object at a non-zero offset behaves differently from the
-    /// same bytes at zero.
+    /// The guard reads the offset it was handed, not the reader's position.
+    ///
+    /// Re-derived for the two-byte empty form rather than renumbered, and this
+    /// buffer is the case where the two readings actually disagree: a keyless
+    /// empty object at offset 2 of a four-byte buffer is *called* at 2 and
+    /// `2 < 4 - 1` holds, so the payload is sought; the reader is at 3 once the
+    /// version is consumed, and `3 < 3` would not hold. Upstream takes the first
+    /// reading and reaches the end of the buffer (same pin):
+    ///
+    /// ```text
+    /// buf=dead0100 len=4 called_at=2 guard(2 < 3)=true end=4 data=""
+    /// ```
     #[test]
     fn the_guard_uses_the_offset_it_was_called_with() {
         let empty = VdxfObject::new(VERUSPAY_INVOICE_VDXF_KEY, DEFAULT_VERSION, Vec::new());
         let mut bytes = vec![0xde, 0xad];
         bytes.extend_from_slice(&empty.serialize(false));
-        // Three bytes long, called at offset 2: 2 < 3 - 1 = 2 is false.
+        assert_eq!(hex::encode(&bytes), "dead0100");
+
         let mut offset = 2;
         let read =
             VdxfObject::deserialize(&bytes, &mut offset, Some(VERUSPAY_INVOICE_VDXF_KEY)).unwrap();
         assert_eq!(read, empty);
-        assert_eq!(offset, 3);
+        assert_eq!(offset, 4, "the length at offset 3 was read, not skipped");
+
+        // The other side of the guard, which no writer reaches: the prefix is
+        // always written, so two bytes is the floor and `called_at < len - 1`
+        // always holds for a serialized object. A buffer that ends one byte after
+        // the version is the only shape that gets there, so it is hand-built —
+        // called at 0 with `0 < 1 - 1` false, no payload is sought, and the
+        // version stands alone. Pinned because `deserialize` still has the
+        // branch, not because anything produces the bytes.
+        let mut offset = 0;
+        let read =
+            VdxfObject::deserialize(&[0x01], &mut offset, Some(VERUSPAY_INVOICE_VDXF_KEY)).unwrap();
+        assert_eq!(read, empty);
+        assert_eq!(offset, 1);
     }
 
     /// A multi-byte version, because the frame's second field is a VARINT and a

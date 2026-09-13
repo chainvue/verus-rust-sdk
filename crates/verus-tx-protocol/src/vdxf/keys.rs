@@ -55,8 +55,36 @@
 //! eighty-three agree — both `vdxfid` against the derivation and
 //! `hash160result` against the reverse of it. So the restriction here is about
 //! what this crate has a use for, not about distrusting the rest of the table.
-//! The same sweep found no `GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY` in
-//! `VerusCoin/verus-typescript-primitives` at all.
+//! What the sweep did find is two copy-paste slips in upstream's table, both in
+//! entries this crate has no constant for, and both in the **pinned** tree —
+//! `4243cd075b4f68df1ce72fd2fd9c9b18ac36767e`, which is the tree that matters
+//! here because it is the one this repo consumes:
+//!
+//! * `GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY` (`src/vdxf/keys.ts:34`) is named
+//!   `vrsc::envelope.generic` but publishes the `vdxfid` and the
+//!   `hash160result` of the entry ten lines below it —
+//!   `GENERIC_REQUEST_DEEPLINK_VDXF_KEY`, `vrsc::request.generic`,
+//!   `iLWiYHVjoTyoeKwji1B5vRT9Xr1aA9yyvX`. Derived, `vrsc::envelope.generic` is
+//!   `iA7r6AnhXAWrqwMcuZpY4PBoa9Kjo3uuDy`, so it is the address half that was
+//!   copied and not the name.
+//! * `ATTESTATION_VIEW_REQUEST` (`:459`) is the same slip in the same direction:
+//!   it carries `ATTESTATION_VIEW_RESPONSE`'s `vdxfid`
+//!   `i5R9p3V1sxZ9p1NDV7nPkz1wvmQTUvuByY` and `hash160result` instead of its own
+//!   name's `iLQ4uV2rJiH6pyQiEhMiuG6brS6M2FmPD9`.
+//!
+//! Upstream `master` has neither: it corrected `ATTESTATION_VIEW_REQUEST` to the
+//! derived address, and deleted `GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY` outright
+//! rather than fixing it. That deletion is where this section's earlier claim —
+//! that the sweep "found no `GENERIC_ENVELOPE_DEEPLINK_VDXF_KEY` at all" — came
+//! from: true of `master`, false of the pin, and it is the pin this crate reads.
+//! Recorded rather than dropped, because the next person to diff this list
+//! against upstream meets the same fork in it.
+//!
+//! None of that reaches a constant in this file. Neither slipped entry is one of
+//! the sixteen, both of the duplicated addresses belong to names that appear
+//! correctly elsewhere in the table, and every constant here is the derivation of
+//! its own qualified name — which is what the test below asserts, and what would
+//! have failed had a slipped address been copied in.
 
 use verus_tx_primitives::CurrencyId;
 
