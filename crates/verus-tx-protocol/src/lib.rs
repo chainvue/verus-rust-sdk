@@ -21,16 +21,24 @@
 //! made, and one that would scatter each structure's layout away from the
 //! evidence that pins it.
 //!
-//! # The decoder is the security boundary
+//! # The decoders are the security boundary
 //!
-//! [`decode::decode_output_script`] is the one function here that eats bytes an
-//! attacker chose. It refuses rather than approximates: a smart output whose
-//! payload does not unpack is an error, never a silent fallback to "native
-//! value only", because that misreports what a UTXO is worth.
+//! [`decode::decode_output_script`] eats bytes an attacker chose. It refuses
+//! rather than approximates: a smart output whose payload does not unpack is an
+//! error, never a silent fallback to "native value only", because that
+//! misreports what a UTXO is worth.
+//!
+//! [`vdxf::VdxfObject::deserialize`] and [`base64url::decode`] are held to the
+//! same rule, and arguably to a harder case — a chain output was at least
+//! accepted by consensus, and a deeplink was validated by nobody at all. Every
+//! declared length is checked against what remains, nothing is allocated on a
+//! count a stranger chose, and input that does not parse is an error rather than
+//! a partial answer.
 
 #![doc(html_no_source)]
 
 pub mod balances;
+pub mod base64url;
 pub mod convert;
 pub mod decode;
 pub mod identity;
@@ -48,4 +56,4 @@ pub use identity::{
     MAX_UNLOCK_DELAY,
 };
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
-pub use vdxf::{data_key, qualified_key, root_namespace};
+pub use vdxf::{data_key, qualified_key, root_namespace, Hash160, VdxfObject};
