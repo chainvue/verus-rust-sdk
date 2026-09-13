@@ -187,7 +187,9 @@ impl Hash160 {
     /// not one.
     pub fn deserialize(bytes: &[u8], offset: &mut usize, varlength: bool) -> Result<Self, TxError> {
         let hash = if varlength {
-            let length = read_compact_size(bytes, offset)?;
+            let length = read_compact_size(bytes, offset).map_err(|_| {
+                bad("a varlength hash160's length is a truncated or non-canonical CompactSize")
+            })?;
             let length = usize::try_from(length)
                 .ok()
                 .filter(|length| *length == 0 || *length == 20)

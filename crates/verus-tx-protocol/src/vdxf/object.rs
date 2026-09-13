@@ -249,10 +249,13 @@ impl VdxfObject {
             }
         };
 
-        let version = read_var_int(bytes, offset)?;
+        let version = read_var_int(bytes, offset)
+            .map_err(|_| bad("a VDXF object's version VARINT is truncated or overflows u64"))?;
 
         let data = if called_at < bytes.len().saturating_sub(1) {
-            let length = read_compact_size(bytes, offset)?;
+            let length = read_compact_size(bytes, offset).map_err(|_| {
+                bad("a VDXF object's data length is a truncated or non-canonical CompactSize")
+            })?;
             let length = usize::try_from(length)
                 .ok()
                 .filter(|length| *length <= bytes.len().saturating_sub(*offset))
@@ -299,6 +302,7 @@ impl VdxfObject {
 mod tests {
     use super::*;
     use crate::vdxf::keys::VERUSPAY_INVOICE_VDXF_KEY;
+    use crate::vdxf::Hash160;
     use verus_wire::compact::write_compact_size;
 
     /// A real VerusPay invoice, as a QR code carries it.
@@ -665,5 +669,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Malformed frame bytes are a malformed *VDXF object*, whatever helper
+    /// noticed.
+    ///
+    /// `read_var_int` and `read_compact_size` are shared with the crypto-
+    /// condition reader and build their own errors, so propagating them bare
+    /// made a truncated VDXF frame surface as `MalformedCryptoCondition` — a
+    /// variant naming a format the caller never handed us. A caller that
+    /// matches on the variant to classify bad input would have missed it, and
+    /// both doc comments here promised otherwise.
+    #[test]
+    fn a_truncated_frame_is_a_vdxf_error_not_a_crypto_condition_one() {
+        // The real invoice QR, cut off right after its twenty-byte key: the
+        // version VARINT is simply not there.
+        let truncated = "dgCq8t3nk3reqeFQANTiwij8jmIE";
+        assert!(matches!(
+            VdxfObject::from_base64url(truncated, None),
+            Err(TxError::MalformedVdxfObject(_))
+        ));
+
+        // That one stops in the CompactSize. The version VARINT is a separate
+        // helper with the same problem, so it needs its own buffer: the key and
+        // nothing after it, so the VARINT read is the one that runs out.
+        let key_only = VERUSPAY_INVOICE_VDXF_KEY.to_vec();
+        let mut offset = 0;
+        assert!(matches!(
+            VdxfObject::deserialize(&key_only, &mut offset, None),
+            Err(TxError::MalformedVdxfObject(_))
+        ));
+
+        // And a varlength hash160 whose length prefix is missing, which reaches
+        // `read_compact_size` through Hash160 rather than through the frame.
+        let mut offset = 0;
+        assert!(matches!(
+            Hash160::deserialize(&[], &mut offset, true),
+            Err(TxError::MalformedVdxfObject(_))
+        ));
     }
 }
