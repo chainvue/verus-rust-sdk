@@ -43,6 +43,28 @@
 //! derives identically; everything else is an error here, never a different
 //! key.** `@` is refused for the same reason: `name@` is an identity, derived
 //! by [`crate::identity_id`], not a data key.
+//!
+//! # The objects those keys address
+//!
+//! A key says *what* a piece of structured data is; it does not say how the
+//! data is written. That is the frame in [`object`] — twenty bytes of key, a
+//! version, a length-prefixed payload — which every VDXF object shares and which
+//! a deeplink or a QR code carries as unpadded URL-safe base64
+//! ([`crate::base64url`]). [`Hash160`] is the one field shape inside those
+//! payloads that is easy to get silently wrong, and [`keys`] holds the constants
+//! the VerusPay and login-consent formats address themselves by — each
+//! re-derived from upstream's qualified name by the code above.
+//!
+//! The payload *structures* are not here. An invoice, a login-consent request
+//! and a challenge each read the bytes inside the frame their own way, and they
+//! come with the code that reads them.
+
+pub mod hash160;
+pub mod keys;
+pub mod object;
+
+pub use hash160::Hash160;
+pub use object::VdxfObject;
 
 use verus_keys::hash160;
 use verus_wire::hash::sha256d;
