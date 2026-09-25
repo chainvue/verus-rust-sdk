@@ -353,7 +353,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -660,7 +660,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serdect",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "visibility",
  "zeroize",
  "zeroize_derive",
@@ -1381,7 +1381,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "web-time",
@@ -1403,7 +1403,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "web-time",
@@ -1535,7 +1535,7 @@ dependencies = [
  "pasta_curves",
  "rand_core 0.6.4",
  "serde",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "zeroize",
 ]
 
@@ -2004,11 +2004,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.19"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl 2.0.19",
+ "thiserror-impl 2.0.21",
 ]
 
 [[package]]
@@ -2024,9 +2024,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.19"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2252,7 +2252,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "verus-flows",
  "verus-keys",
  "verus-light",
@@ -2272,7 +2272,7 @@ dependencies = [
  "pbkdf2",
  "ripemd",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "verus-wire",
  "zeroize",
 ]
@@ -2282,7 +2282,7 @@ name = "verus-light"
 version = "0.0.0"
 dependencies = [
  "hex",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "ureq",
  "url",
  "verus-wire",
@@ -2295,7 +2295,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "ureq",
  "verus-keys",
  "verus-tx",
@@ -2320,7 +2320,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "verus-wire",
  "zcash_note_encryption",
  "zeroize",
@@ -2407,7 +2407,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
  "verus-keys",
  "verus-wire",
 ]
@@ -2467,7 +2467,7 @@ dependencies = [
  "ripemd",
  "serde_json",
  "sha2",
- "thiserror 2.0.19",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
