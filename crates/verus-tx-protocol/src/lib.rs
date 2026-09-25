@@ -44,6 +44,7 @@ pub mod decode;
 pub mod identity;
 pub mod token;
 pub mod vdxf;
+pub mod veruspay;
 
 pub use balances::{token_balances, TokenBalances};
 pub use convert::{
@@ -57,3 +58,7 @@ pub use identity::{
 };
 pub use token::{build_token_send, TokenRecipient, TokenSendParams};
 pub use vdxf::{data_key, qualified_key, root_namespace, Hash160, VdxfObject};
+pub use veruspay::{
+    wallet_deeplink_scheme, InvoiceDestination, InvoiceSignature, RequestedAmount,
+    SaplingDestination, SignatureVersion, VerusPayInvoice, VerusPayInvoiceDetails, VerusPayVersion,
+};

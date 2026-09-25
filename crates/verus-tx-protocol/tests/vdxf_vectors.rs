@@ -29,25 +29,31 @@
 //! [`Hash160`]s of the identities it names and that the signature rides inside
 //! as a nested object.
 //!
-//! # What it cannot prove yet, and therefore does not claim
+//! # Where the field level is asserted instead
 //!
-//! **No invoice field semantics.** `VerusPayInvoiceDetails`,
-//! `LoginConsentRequest` and the rest are issues #196 and #195; until they
-//! exist, `VdxfObject::data` is `Vec<u8>` and an amount, a flags word or a
-//! destination is an opaque run of bytes here. The vectors record all of them
-//! (`details.amount`, `flags_decoded`, `credentials[]`, …) and this file reads
-//! none of those fields, because asserting on them would mean asserting against
-//! a parser that does not exist.
+//! **The fourteen invoices: `tests/veruspay_vectors.rs`.**
+//! `verus_tx_protocol::veruspay` now parses the payload, so `details.amount`,
+//! `flags_decoded`, `details_sha256`, `details_hash_sigv*_h10000` and the
+//! signature bytes are asserted there against a real parser. This file stays at
+//! the frame on purpose: it runs over all twenty vectors including the six whose
+//! insides this crate still cannot read, and the frame is what they have in
+//! common.
 //!
-//! **No hashes.** `details_sha256`, `*_hash_sigv1_h10000` and
-//! `*_hash_sigv2_h10000` are untouched. `getDetailsHash` is a payload method,
-//! and the sha256 of a byte string this file already compares exactly adds
-//! nothing about *this* crate — it would check the fixture against itself.
+//! # What it still cannot prove, and therefore does not claim
 //!
-//! **No signature bytes.** The `signature` fields are RFC 4648 §4 base64, the
-//! padded `+/` alphabet — which is precisely what [`base64url`] refuses, on
-//! purpose. Decoding one needs the other codec, so what is asserted here is the
-//! *frame* the signature rides in, not its content.
+//! **No login-consent field semantics.** `LoginConsentRequest`,
+//! `ProvisioningRequest` and the rest are issue #195; until they exist,
+//! `VdxfObject::data` is `Vec<u8>` for those six vectors and a challenge, a
+//! context or a credential is an opaque run of bytes here. The vectors record
+//! all of them (`challenge_sha256`, `credentials[]`, …) and this file reads none
+//! of those fields, because asserting on them would mean asserting against a
+//! parser that does not exist.
+//!
+//! **No login-consent hashes or signature bytes.** `challenge_sha256`, the
+//! `decision_*` fields and the `signature`s of those six. The signatures are
+//! RFC 4648 §4 base64, the padded `+/` alphabet — which is precisely what
+//! [`base64url`] refuses, on purpose. What is asserted here is the *frame* a
+//! signature rides in, not its content.
 //!
 //! **Two keys are not asserted against a constant.** The provisioning request
 //! and response vdxfids are outside the sixteen on-path keys `vdxf::keys`
