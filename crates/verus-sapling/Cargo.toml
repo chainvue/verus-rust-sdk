@@ -49,10 +49,10 @@ zcash_note_encryption = { workspace = true }
 # consensus node runs over the proofs we just produced. Versions track
 # sapling-crypto 0.7's own graph so no type appears twice.
 bellman = "0.14"
-bls12_381 = "0.8"
-jubjub = "0.10"
+bls12_381 = "0.9"
+jubjub = "0.11"
 redjubjub = "0.8"
-group = "0.13"
+group = "0.14"
 
 [[example]]
 name = "prove_and_verify"

@@ -65,7 +65,7 @@ url = "2"
 
 # Shielded path (feature-gated; this is where bellman/Groth16 enters).
 sapling-crypto = { version = "0.7", default-features = false }
-zcash_note_encryption = "0.4"
+zcash_note_encryption = "0.5"
 zip32 = "0.2"
 rand = "0.8"
 rand_core = "0.6"
