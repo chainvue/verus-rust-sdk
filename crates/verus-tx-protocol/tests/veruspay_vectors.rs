@@ -507,17 +507,22 @@ fn every_signed_invoice_carries_the_signature_the_oracle_recorded() {
             continue;
         };
         let expected_system = currency(&vector["system_id"], "system_id");
-        let expected_signing = currency(&vector["signing_id"], "signing_id");
+        let expected_signing = vector["signing_id"].as_str().expect("signing_id");
         if signature.system_id != expected_system {
             failures.push(format!(
                 "{name}: the system id reads {} and the oracle wrote {expected_system}",
                 signature.system_id
             ));
         }
-        if signature.signing_id != expected_signing {
+        // The signing id is an identity and is typed as twenty bytes rather than
+        // a `CurrencyId`, so this is the assertion that `signing_identity()`
+        // re-stamps them as the `i` address the oracle named — which is not a
+        // guess, because the field decides the version and nothing on the wire
+        // does.
+        if signature.signing_identity().to_string() != expected_signing {
             failures.push(format!(
                 "{name}: the signing id reads {} and the oracle wrote {expected_signing}",
-                signature.signing_id
+                signature.signing_identity()
             ));
         }
         let expected_bytes = base64_standard(vector["signature"].as_str().expect("a signature"));

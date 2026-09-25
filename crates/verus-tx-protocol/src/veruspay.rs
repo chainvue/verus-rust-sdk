@@ -675,15 +675,23 @@ impl VerusPayInvoiceDetails {
     }
 }
 
-/// Twenty raw bytes as a currency id, which is how every id inside an invoice's
-/// details is written.
-fn read_currency(bytes: &[u8], offset: &mut usize, what: &str) -> Result<CurrencyId, TxError> {
+/// Twenty raw bytes, which is how every id inside an invoice is written.
+fn read_hash160(bytes: &[u8], offset: &mut usize, what: &str) -> Result<[u8; 20], TxError> {
     let raw: [u8; 20] = bytes
         .get(*offset..*offset + 20)
         .and_then(|slice| slice.try_into().ok())
         .ok_or_else(|| bad(&format!("an invoice ended before its {what} id")))?;
     *offset += 20;
-    Ok(CurrencyId::from_bytes(raw))
+    Ok(raw)
+}
+
+/// The same twenty bytes, read as a currency id.
+///
+/// Every id in an invoice's *details* is one: the requested currency and the
+/// accepted systems. The signing identity is not, which is why it goes through
+/// [`read_hash160`] instead — see [`InvoiceSignature::signing_id`].
+fn read_currency(bytes: &[u8], offset: &mut usize, what: &str) -> Result<CurrencyId, TxError> {
+    Ok(CurrencyId::from_bytes(read_hash160(bytes, offset, what)?))
 }
 
 /// Which arrangement of the signed details hash to compute.
@@ -711,8 +719,17 @@ pub struct InvoiceSignature {
     /// The system the signature was made on — the chain whose height the
     /// signature counts against.
     pub system_id: CurrencyId,
-    /// The identity that signed. An `i` address.
-    pub signing_id: CurrencyId,
+    /// The identity that signed.
+    ///
+    /// Twenty bytes, **not** a [`CurrencyId`]. On the wire it is the same shape
+    /// as [`Self::system_id`] and upstream reads both with `I_ADDR_VERSION`, but
+    /// they are not the same kind of thing: a system is a chain, and a chain has
+    /// a currency; a signing identity is a VerusID and usually has no currency at
+    /// all. `crate::CurrencyId`'s own module documentation is about exactly this
+    /// confusion, so the two are spelled differently here — and
+    /// [`Self::signing_identity`] is how the twenty bytes become the `i` address
+    /// a wallet shows a user.
+    pub signing_id: [u8; 20],
     /// The `CIdentitySignature`, as bytes.
     ///
     /// Opaque here on purpose: parsing it is
@@ -731,7 +748,7 @@ impl InvoiceSignature {
     fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.byte_length());
         out.extend_from_slice(&Hash160::of(self.system_id.to_bytes(), false).serialize());
-        out.extend_from_slice(&Hash160::of(self.signing_id.to_bytes(), false).serialize());
+        out.extend_from_slice(&Hash160::of(self.signing_id, false).serialize());
         out.extend_from_slice(&self.signature_object().serialize(false));
         out
     }
@@ -757,10 +774,20 @@ impl InvoiceSignature {
         )
     }
 
+    /// The signing identity as the `i` address a wallet shows.
+    ///
+    /// There is no guess here: a signing id is always an identity, so the
+    /// version byte is decided by the field and not by the bytes. Contrast
+    /// [`InvoiceDestination::recipient_address`], where the *type byte* is what
+    /// decides.
+    pub fn signing_identity(&self) -> Address {
+        Address::new(AddressKind::Identity, self.signing_id)
+    }
+
     /// Read the signed prefix back, advancing `offset`.
     fn deserialize(bytes: &[u8], offset: &mut usize) -> Result<Self, TxError> {
         let system_id = read_currency(bytes, offset, "signature system")?;
-        let signing_id = read_currency(bytes, offset, "signing identity")?;
+        let signing_id = read_hash160(bytes, offset, "signing identity")?;
         // `Some(key)` because an invoice's signature object does not carry one.
         // Passing `None` here would read the version out of the middle of the
         // signature.
@@ -979,12 +1006,12 @@ impl VerusPayInvoice {
                 preimage.extend_from_slice(SIGNATURE_PREFIX);
                 preimage.extend_from_slice(&signature.system_id.to_bytes());
                 preimage.extend_from_slice(&height);
-                preimage.extend_from_slice(&signature.signing_id.to_bytes());
+                preimage.extend_from_slice(&signature.signing_id);
             }
             SignatureVersion::V2 => {
                 preimage.extend_from_slice(&signature.system_id.to_bytes());
                 preimage.extend_from_slice(&height);
-                preimage.extend_from_slice(&signature.signing_id.to_bytes());
+                preimage.extend_from_slice(&signature.signing_id);
                 preimage.extend_from_slice(SIGNATURE_PREFIX);
             }
         }
@@ -1196,7 +1223,7 @@ mod tests {
             basic(),
             InvoiceSignature {
                 system_id: vrsctest(),
-                signing_id: vrsctest(),
+                signing_id: vrsctest().to_bytes(),
                 signature: vec![0xab; 72],
             },
         );
@@ -1223,7 +1250,7 @@ mod tests {
     fn a_signed_payload_prepends_two_hashes_and_a_keyless_signature_object() {
         let signature = InvoiceSignature {
             system_id: vrsctest(),
-            signing_id: vrsctest(),
+            signing_id: vrsctest().to_bytes(),
             signature: vec![0xab; 72],
         };
         let signed = VerusPayInvoice::signed(VerusPayVersion::V4, basic(), signature);
