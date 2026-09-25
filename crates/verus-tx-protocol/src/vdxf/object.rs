@@ -92,7 +92,7 @@ fn bad(detail: &str) -> TxError {
 /// every boundary rather than trusting that they do. The alternative was a
 /// throwaway `Vec` per [`VdxfObject::byte_length`] call, and that function is
 /// called once to size the buffer in every [`VdxfObject::serialize`].
-fn compact_size_length(n: u64) -> usize {
+pub(crate) fn compact_size_length(n: u64) -> usize {
     // The branches are in the order `verus_wire::compact::write_compact_size`
     // writes them, so the two read as the same function.
     if n < 0xfd {

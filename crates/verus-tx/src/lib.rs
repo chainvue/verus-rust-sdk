@@ -101,7 +101,7 @@ pub use verus_tx_primitives::{
     CurrencyId, Destination, Expiry, Selection, TxError, Txid, Utxo, DEFAULT_EXPIRY_BLOCKS,
     EXPIRY_HEIGHT_THRESHOLD, SATS_PER_COIN,
 };
-pub use verus_tx_protocol::{balances, convert, decode, identity, vdxf};
+pub use verus_tx_protocol::{balances, convert, decode, identity, vdxf, veruspay};
 pub use verus_tx_protocol::{
     build_conversion, build_conversion_transaction, build_token_send, data_key,
     decode_output_script, identity_id, may_carry_currency, qualified_key, root_namespace,
