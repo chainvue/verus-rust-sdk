@@ -2420,6 +2420,7 @@ dependencies = [
  "serde",
  "serde_json",
  "verus-keys",
+ "verus-sapling",
  "verus-tx-primitives",
  "verus-tx-transparent",
  "verus-wire",

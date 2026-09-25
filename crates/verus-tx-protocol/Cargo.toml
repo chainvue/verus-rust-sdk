@@ -24,3 +24,13 @@ hex = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
+# Test-only, and only so that the one golden invoice with a shielded
+# destination can be checked against the `zs…` address the oracle recorded
+# rather than against its own bytes. A Sapling payment address inside an
+# invoice is forty-three raw bytes; turning those into the string upstream
+# wrote is bech32, and this workspace already has exactly one bech32 codec.
+# Reaching for it here is cheaper than a second one in a test file, which
+# would be a second chance to disagree about the checksum variant. Dev-only
+# deliberately: `veruspay` reads and writes the bytes, and the library does
+# not depend on the shielded stack to parse a payment request.
+verus-sapling = { path = "../verus-sapling", default-features = false }

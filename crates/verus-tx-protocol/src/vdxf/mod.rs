@@ -57,7 +57,8 @@
 //!
 //! The payload *structures* are not here. An invoice, a login-consent request
 //! and a challenge each read the bytes inside the frame their own way, and they
-//! come with the code that reads them.
+//! come with the code that reads them — [`crate::veruspay`] is the first of
+//! them, and is what fills a [`VdxfObject`]'s `data` for a VerusPay invoice.
 
 pub mod hash160;
 pub mod keys;
