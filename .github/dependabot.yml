@@ -1,0 +1,87 @@
+# Dependabot for the Verus Rust SDK.
+#
+# Ecosystems found in the repo: cargo (the root workspace over crates/*), cargo
+# again for fuzz/ — which is deliberately its own workspace, so the root job
+# never sees it — and github-actions (actions are SHA-pinned, which is what
+# Dependabot reads to bump them).
+#
+# Commit-message prefixes follow the conventional-commit history here:
+# runtime deps -> fix(deps), dev deps -> chore(deps-dev), actions -> ci(deps).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: fix
+      prefix-development: chore
+      include: scope
+    groups:
+      # Crate families that only compile against each other. Splitting any of
+      # these across two PRs leaves the tree in a state that does not build —
+      # the same failure mode as the peculium-wallet incident, where Dependabot
+      # bumped `vitest` without `@vitest/coverage-v8` and the peer mismatch
+      # broke CI. Rust does not have peer dependencies to warn us, so the
+      # grouping has to encode the coupling by hand.
+      #
+      # The Sapling stack: sapling-crypto's public API is expressed in
+      # bls12_381/jubjub/group types, so a version skew between them is a type
+      # error, not a warning.
+      zcash-sapling:
+        patterns:
+          - sapling-crypto
+          - zcash_note_encryption
+          - zip32
+          - bellman
+          - bls12_381
+          - jubjub
+          - group
+          - redjubjub
+      # RustCrypto: the digest/signature traits are shared, so sha2, ripemd,
+      # pbkdf2 and k256 have to agree on the same trait major, and rand pulls
+      # rand_core and getrandom with it.
+      rustcrypto:
+        patterns:
+          - sha2
+          - ripemd
+          - pbkdf2
+          - k256
+          - rand
+          - rand_core
+          - getrandom
+          - zeroize
+      # wasm-bindgen generates glue that only its own js-sys/web-sys and the
+      # serde bridge can consume.
+      wasm-bindgen:
+        patterns:
+          - wasm-bindgen
+          - "wasm-bindgen-*"
+          - js-sys
+          - web-sys
+          - serde-wasm-bindgen
+      serde:
+        patterns:
+          - serde
+          - "serde_*"
+      dev-dependencies:
+        dependency-type: development
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
