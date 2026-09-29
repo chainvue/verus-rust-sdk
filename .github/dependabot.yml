@@ -83,6 +83,18 @@ updates:
         versions: [">= 0.9"]
       - dependency-name: rand_core
         versions: [">= 0.7"]
+      # Same story for the curve crates: sapling-crypto 0.7's API is typed in
+      # these exact majors, so ours have to match it.
+      - dependency-name: bls12_381
+        versions: [">= 0.9"]
+      - dependency-name: jubjub
+        versions: [">= 0.11"]
+      - dependency-name: group
+        versions: [">= 0.14"]
+      - dependency-name: redjubjub
+        versions: [">= 0.9"]
+      - dependency-name: zcash_note_encryption
+        versions: [">= 0.5"]
 
   - package-ecosystem: cargo
     directory: "/fuzz"
