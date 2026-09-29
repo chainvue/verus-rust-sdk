@@ -238,10 +238,7 @@ impl PrivateKey {
     /// public key, so the signature verifies against nothing and the failure
     /// looks like a wrong key rather than a wrong encoding.
     pub fn sign_prehash_recoverable(&self, hash: &[u8; 32]) -> Result<[u8; 65], KeyError> {
-        let (signature, recovery_id) = self
-            .signing_key
-            .sign_prehash_recoverable(hash)
-            .map_err(|_| KeyError::InvalidPrivateKey)?;
+        let (signature, recovery_id) = self.signing_key.sign_prehash_recoverable(hash);
         let mut out = [0u8; 65];
         out[0] = 27 + recovery_id.to_byte() + if self.is_compressed() { 4 } else { 0 };
         out[1..].copy_from_slice(&signature.to_bytes());
@@ -279,7 +276,7 @@ impl PublicKey {
     /// SEC1 bytes, in the form this key was derived under.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.verifying_key
-            .to_encoded_point(self.compressed)
+            .to_sec1_point(self.compressed)
             .as_bytes()
             .to_vec()
     }
@@ -421,7 +418,7 @@ mod tests {
         for byte in 0u8..32 {
             let signature = key.sign_prehash(&[byte; 32]).unwrap();
             assert!(
-                signature.normalize_s().is_none(),
+                signature.normalize_s() == signature,
                 "signature for {byte} was not low-S"
             );
         }
