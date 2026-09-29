@@ -30,7 +30,7 @@ sapling-crypto = { workspace = true }
 zcash_note_encryption = { workspace = true }
 zip32 = { workspace = true }
 # Sapling addresses are bech32 (not bech32m).
-bech32 = "0.11"
+bech32 = "0.12"
 verus-wire = { path = "../verus-wire" }
 rand = { workspace = true }
 rand_core = { workspace = true }
