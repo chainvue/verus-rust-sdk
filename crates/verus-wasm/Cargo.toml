@@ -75,8 +75,11 @@ verus-rpc = { path = "../verus-rpc", default-features = false }
 # Nothing in this crate asks for randomness: signing is RFC 6979 deterministic,
 # and a fresh key is made from entropy the caller passes in, so the source stays
 # visible to the application rather than hidden in here.
+#
+# 0.2 arrives through rand_core 0.6, 0.4 through k256's rfc6979 → crypto-bigint.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 # Only for the drift tests, which read a DTO's field names off its own

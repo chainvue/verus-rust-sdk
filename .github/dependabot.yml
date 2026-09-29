@@ -76,12 +76,23 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types: ["minor", "patch"]
+    ignore:
+      # sapling-crypto 0.7 (latest) takes rand_core 0.6 RNGs, so rand can't
+      # move until the Zcash crates do. Lift this when sapling-crypto does.
+      - dependency-name: rand
+        versions: [">= 0.9"]
+      - dependency-name: rand_core
+        versions: [">= 0.7"]
 
   - package-ecosystem: cargo
     directory: "/fuzz"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Everything else here arrives through path deps on the workspace, so it
+    # follows the root lockfile; bumping it alone can't resolve.
+    allow:
+      - dependency-type: direct
     commit-message:
       prefix: chore
       include: scope
