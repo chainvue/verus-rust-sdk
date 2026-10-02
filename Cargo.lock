@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "addchain"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5665045de74fda906c0abfaec40cf2551f88c34dccea869f3fe950dde7209764"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -139,6 +150,25 @@ dependencies = [
  "num_cpus",
  "pairing",
  "rand_core 0.6.4",
+ "rayon",
+ "subtle",
+]
+
+[[package]]
+name = "bellman"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "973b16549796a1274a63e00159a03250e66e8263e2ac6344b1c9fdfe9b7a8325"
+dependencies = [
+ "bitvec",
+ "blake2s_simd",
+ "byteorder",
+ "crossbeam-channel",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "log",
+ "num_cpus",
+ "rand_core 0.10.1",
  "rayon",
  "subtle",
 ]
@@ -698,8 +728,25 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1f686ab92a9fb0eaf188f6c6c87b89490baa6fdb0db4544ba4dc47f7942489f"
 dependencies = [
+ "bitvec",
+ "ff_derive",
  "rand_core 0.10.1",
  "subtle",
+]
+
+[[package]]
+name = "ff_derive"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "241afe8c15ffa21933eaefe8a563af36fd9fc98a3e8a044e8f7db52eb1fae3d8"
+dependencies = [
+ "addchain",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1866,7 +1913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d70756ede56b5e4dd417979777bd87ddb83dfcbd0815dbf8175a9920537f8a0"
 dependencies = [
  "aes",
- "bellman",
+ "bellman 0.14.0",
  "bitvec",
  "blake2b_simd",
  "blake2s_simd",
@@ -2463,7 +2510,7 @@ name = "verus-sapling"
 version = "0.0.0"
 dependencies = [
  "bech32 0.12.0",
- "bellman",
+ "bellman 0.15.0",
  "bls12_381",
  "criterion",
  "group 0.13.0",
